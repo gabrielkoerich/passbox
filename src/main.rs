@@ -1,4 +1,5 @@
 mod crypto;
+mod se;
 mod store;
 
 use anyhow::{Context, Result, bail};
@@ -52,6 +53,8 @@ enum Command {
         #[arg(long)]
         index: Option<usize>,
     },
+    /// Bind this Mac's Secure Enclave to a store that was synced from another machine
+    MachineAdd,
 }
 
 fn main() {
@@ -73,6 +76,7 @@ fn run() -> Result<()> {
         Command::Rm { name } => rm(&store, &name),
         Command::Mode { name, mode, window } => set_mode(&store, &name, mode, window),
         Command::Restore { name, index } => restore(&store, &name, index),
+        Command::MachineAdd => machine_add(&store),
     }
 }
 
@@ -82,16 +86,50 @@ fn init(store: &Store) -> Result<()> {
     if pass.is_empty() {
         bail!("refusing an empty recovery passphrase");
     }
-    if std::env::var_os(PASSPHRASE_ENV).is_none() && ask("again: ")? != pass {
+    if !headless() && ask("again: ")? != pass {
         bail!("passphrases do not match");
     }
-    store.init(SecretString::from(pass))?;
+    let key = store.init(SecretString::from(pass))?;
     eprintln!("store ready at {}", store.dir.display());
+    bind_machine(store, &key);
     Ok(())
 }
 
-fn unlock(store: &Store) -> Result<age::x25519::Identity> {
+/// A store still works without the Enclave, on an older Mac or in CI, so this never fails the call
+fn bind_machine(store: &Store, key: &age::x25519::Identity) {
+    if headless() {
+        return;
+    }
+    match store.create_se_wrap(key) {
+        Ok(()) => eprintln!("bound to this Mac, reads will ask for your fingerprint"),
+        Err(e) => eprintln!("no Secure Enclave here ({e:#}), reads will ask for the passphrase"),
+    }
+}
+
+/// `PASSBOX_PASSPHRASE` says nobody is at the keyboard, and a fingerprint needs somebody
+fn headless() -> bool {
+    std::env::var_os(PASSPHRASE_ENV).is_some()
+}
+
+fn unlock(store: &Store, reason: &str) -> Result<age::x25519::Identity> {
+    if !headless() && store.has_se_wrap() {
+        return store.unlock_with_se(reason);
+    }
     store.unlock_with_passphrase(SecretString::from(ask("passphrase: ")?))
+}
+
+fn machine_add(store: &Store) -> Result<()> {
+    if store.has_se_wrap() {
+        bail!(
+            "this Mac is already bound, its wrap is {}",
+            store.se_wrap_path().display()
+        );
+    }
+    eprintln!("Binding this Mac needs the recovery passphrase once.");
+    let key = store.unlock_with_passphrase(SecretString::from(ask("recovery passphrase: ")?))?;
+    store.create_se_wrap(&key)?;
+    eprintln!("bound, reads on this Mac will ask for your fingerprint");
+    Ok(())
 }
 
 /// `PASSBOX_PASSPHRASE` exists for CI and for headless use, where there is no terminal to type at
@@ -113,7 +151,7 @@ fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Re
     let existing = if store.ids()?.is_empty() {
         None
     } else {
-        let key = unlock(store)?;
+        let key = unlock(store, &format!("passbox wants to replace {name}"))?;
         store
             .find(name, &key)?
             .map(|(id, s)| (id, s.created, s.mode, s.window_secs))
@@ -151,7 +189,7 @@ fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Re
 }
 
 fn get(store: &Store, name: &str) -> Result<()> {
-    let key = unlock(store)?;
+    let key = unlock(store, &format!("passbox wants the password for {name}"))?;
     let (_, secret) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
@@ -164,7 +202,7 @@ fn get(store: &Store, name: &str) -> Result<()> {
 }
 
 fn ls(store: &Store) -> Result<()> {
-    let key = unlock(store)?;
+    let key = unlock(store, "passbox wants to list your secrets")?;
     for name in store.names(&key)? {
         println!("{name}");
     }
@@ -172,7 +210,7 @@ fn ls(store: &Store) -> Result<()> {
 }
 
 fn rm(store: &Store, name: &str) -> Result<()> {
-    let key = unlock(store)?;
+    let key = unlock(store, &format!("passbox wants to delete {name}"))?;
     let (id, _) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
@@ -183,7 +221,10 @@ fn rm(store: &Store, name: &str) -> Result<()> {
 }
 
 fn set_mode(store: &Store, name: &str, mode: Mode, window: Option<u64>) -> Result<()> {
-    let key = unlock(store)?;
+    let key = unlock(
+        store,
+        &format!("passbox wants to change the mode of {name}"),
+    )?;
     let recipient = store.recipient()?;
     let (id, mut secret) = store
         .find(name, &key)?
@@ -199,7 +240,7 @@ fn set_mode(store: &Store, name: &str, mode: Mode, window: Option<u64>) -> Resul
 }
 
 fn restore(store: &Store, name: &str, index: Option<usize>) -> Result<()> {
-    let key = unlock(store)?;
+    let key = unlock(store, &format!("passbox wants to restore {name}"))?;
     let id = match store.find(name, &key)? {
         Some((id, _)) => id,
         None => find_deleted(store, name, &key)?,

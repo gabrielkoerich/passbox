@@ -110,13 +110,20 @@ impl Store {
     fn recovery_path(&self) -> PathBuf {
         self.wraps_dir().join("recovery.age")
     }
+    /// One wrap per machine, because a Secure Enclave key cannot leave the Mac that made it
+    pub fn se_wrap_path(&self) -> PathBuf {
+        self.wraps_dir().join(format!("se-{}.json", hostname()))
+    }
     pub fn is_initialised(&self) -> bool {
         self.recipient_path().exists()
+    }
+    pub fn has_se_wrap(&self) -> bool {
+        self.se_wrap_path().exists()
     }
 
     /// Generate the store key and write both wraps. The recipient stays in the clear so
     /// writing a secret never needs an unlock.
-    pub fn init(&self, passphrase: SecretString) -> Result<()> {
+    pub fn init(&self, passphrase: SecretString) -> Result<x25519::Identity> {
         if self.is_initialised() {
             bail!("{} is already initialised", self.dir.display());
         }
@@ -134,7 +141,7 @@ impl Store {
         )?;
         write_private(&self.recovery_path(), &wrapped)?;
         write_private(&self.recipient_path(), recipient.to_string().as_bytes())?;
-        Ok(())
+        Ok(key)
     }
 
     pub fn recipient(&self) -> Result<x25519::Recipient> {
@@ -152,6 +159,25 @@ impl Store {
         .context("wrong passphrase")?;
         let text = String::from_utf8(raw.clone()).context("recovery wrap is not a key")?;
         raw.zeroize();
+        x25519::Identity::from_str(text.trim()).map_err(|e| anyhow!("bad store key: {e}"))
+    }
+
+    /// Bind the store key to this Mac's Secure Enclave. Neither step raises a prompt.
+    pub fn create_se_wrap(&self, key: &x25519::Identity) -> Result<()> {
+        let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
+        let wrap = crate::se::wrap(text.as_bytes())?;
+        text.zeroize();
+        write_private(&self.se_wrap_path(), &serde_json::to_vec(&wrap)?)
+    }
+
+    /// Raise a Touch ID prompt worded by `reason`, then open the store key.
+    pub fn unlock_with_se(&self, reason: &str) -> Result<x25519::Identity> {
+        let raw =
+            fs::read(self.se_wrap_path()).context("no Secure Enclave wrap on this machine")?;
+        let wrap: crate::se::SeWrap = serde_json::from_slice(&raw)?;
+        let mut plain = crate::se::unwrap(&wrap, reason)?;
+        let text = String::from_utf8(plain.clone()).context("the wrap is not a key")?;
+        plain.zeroize();
         x25519::Identity::from_str(text.trim()).map_err(|e| anyhow!("bad store key: {e}"))
     }
 
@@ -317,6 +343,17 @@ fn home() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("HOME is not set"))
+}
+
+pub fn hostname() -> String {
+    std::process::Command::new("hostname")
+        .arg("-s")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 pub fn private_dir(path: &Path) -> Result<()> {
