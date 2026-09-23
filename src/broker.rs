@@ -1,7 +1,7 @@
 //! Decides who may open a secret, holds the approval windows, and writes the audit log.
 
 use crate::crypto;
-use crate::store::{self, Mode, Store};
+use crate::store::{self, DEFAULT_WINDOW_SECS, Mode, Store};
 use age::x25519;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -14,11 +14,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const KEY_TTL_SECS: u64 = 300;
 static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Op {
+    #[default]
+    Get,
+    List,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Request {
+    #[serde(default)]
     pub name: String,
     pub agent: String,
+    #[serde(default)]
+    pub op: Op,
 }
+
+/// Listing gets its own approval slot. A name cannot hold a NUL, so nothing collides with it.
+const LIST_SLOT: &str = "\u{0}list";
 
 #[derive(Serialize, Deserialize)]
 pub struct Response {
@@ -84,14 +98,52 @@ impl Broker {
 
     /// The Touch ID prompt is the approval, so a prompt and an unlock are the same act
     fn prompt(&mut self, agent: &str, secret: &str) -> Result<()> {
-        let reason = format!("{agent} wants the password for {secret}");
-        let key = self.store.unlock_with_se(&reason)?;
+        self.ask(&format!("{agent} wants the password for {secret}"))
+    }
+
+    fn ask(&mut self, reason: &str) -> Result<()> {
+        let key = self.store.unlock_with_se(reason)?;
         self.key = Some(key);
         self.key_at = store::now();
         Ok(())
     }
 
     fn handle(&mut self, request: &Request, caller: &str) -> Result<String> {
+        match request.op {
+            Op::Get => self.handle_get(request, caller),
+            Op::List => self.handle_list(request, caller),
+        }
+    }
+
+    /// Names are inside the ciphertext, so listing needs the key and therefore a prompt.
+    /// It gets its own window: riding a `get` approval would turn one secret into all of them.
+    fn handle_list(&mut self, request: &Request, caller: &str) -> Result<String> {
+        let slot = (request.agent.clone(), LIST_SLOT.to_string());
+        let approved = self.approvals.get(&slot).copied();
+        let reason = format!("{} wants to list your secret names", request.agent);
+
+        let mut asked = false;
+        if self.cached_key().is_none() {
+            self.ask(&reason)?;
+            asked = true;
+        }
+        if !asked
+            && decide(Mode::Window, DEFAULT_WINDOW_SECS, approved, store::now()) == Decision::Prompt
+        {
+            self.ask(&reason)?;
+            asked = true;
+        }
+        if asked {
+            self.approvals.insert(slot, store::now());
+        }
+
+        let key = self.key.clone().expect("just unlocked");
+        let outcome = if asked { "approved" } else { "within window" };
+        self.audit(&key, &request.agent, "<list>", outcome, caller)?;
+        Ok(self.store.names(&key)?.join("\n"))
+    }
+
+    fn handle_get(&mut self, request: &Request, caller: &str) -> Result<String> {
         let approved = self
             .approvals
             .get(&(request.agent.clone(), request.name.clone()))
@@ -107,13 +159,13 @@ impl Broker {
 
         let found = self.store.find(&request.name, &key)?;
         let Some((_, secret)) = found else {
-            self.audit(&key, request, "unknown", caller)?;
+            self.audit(&key, &request.agent, &request.name, "unknown", caller)?;
             bail!("no secret named {}", request.name);
         };
 
         let outcome = match decide(secret.mode, secret.window_secs, approved, store::now()) {
             Decision::Deny => {
-                self.audit(&key, request, "denied", caller)?;
+                self.audit(&key, &request.agent, &request.name, "denied", caller)?;
                 bail!("{} is marked never, refusing", request.name);
             }
             Decision::Prompt => {
@@ -131,7 +183,7 @@ impl Broker {
             // The window runs from the prompt, so a busy agent still asks again when it expires
             Decision::Allow => "within window",
         };
-        self.audit(&key, request, outcome, caller)?;
+        self.audit(&key, &request.agent, &request.name, outcome, caller)?;
         Ok(secret.value.clone())
     }
 
@@ -143,14 +195,15 @@ impl Broker {
     fn audit(
         &self,
         key: &x25519::Identity,
-        request: &Request,
+        agent: &str,
+        secret: &str,
         decision: &str,
         caller: &str,
     ) -> Result<()> {
         let record = AuditRecord {
             at: store::now(),
-            agent: &request.agent,
-            secret: &request.name,
+            agent,
+            secret,
             decision,
             caller,
         };
@@ -276,8 +329,32 @@ fn ancestry(pid: libc::pid_t) -> String {
     chain.join(" < ")
 }
 
-/// Ask a running broker, starting one if the socket is dead.
 pub fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
+    ask_broker(
+        store,
+        Request {
+            name: name.to_string(),
+            agent: agent.to_string(),
+            op: Op::Get,
+        },
+    )
+}
+
+/// Names come back one per line, so the broker keeps the key and the caller never sees it.
+pub fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
+    let names = ask_broker(
+        store,
+        Request {
+            name: String::new(),
+            agent: agent.to_string(),
+            op: Op::List,
+        },
+    )?;
+    Ok(names.lines().map(str::to_string).collect())
+}
+
+/// Ask a running broker, starting one if the socket is dead.
+fn ask_broker(store: &Store, request: Request) -> Result<String> {
     let socket = store.socket_path();
     let mut stream = match UnixStream::connect(&socket) {
         Ok(s) => s,
@@ -287,10 +364,6 @@ pub fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
         }
     };
 
-    let request = Request {
-        name: name.to_string(),
-        agent: agent.to_string(),
-    };
     writeln!(stream, "{}", serde_json::to_string(&request)?)?;
 
     let mut line = String::new();
@@ -370,6 +443,13 @@ mod tests {
             decide(Mode::Window, WINDOW, Some(1000), 9999),
             Decision::Prompt
         );
+    }
+
+    /// Listing rides its own slot, so a `get` approval cannot be spent on enumerating everything
+    #[test]
+    fn the_list_slot_cannot_hold_a_real_name() {
+        assert!(LIST_SLOT.contains('\u{0}'));
+        assert_eq!(Op::default(), Op::Get);
     }
 
     #[test]

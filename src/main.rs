@@ -79,6 +79,11 @@ enum Command {
         #[arg(long)]
         remote: Option<String>,
     },
+    /// Run git inside the store, for `passbox git init`, `remote add`, `log` and the rest
+    Git {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        args: Vec<String>,
+    },
     /// Serve the approval socket, started on demand by the other commands
     #[command(hide = true)]
     Broker,
@@ -111,8 +116,30 @@ fn run() -> Result<()> {
         } => exec(&store, &envs, stdin.as_deref(), &command),
         Command::Audit { tail } => audit(&store, tail),
         Command::Sync { remote } => run_sync(&store, remote.as_deref()),
+        Command::Git { args } => git(&store, &args),
         Command::Broker => broker::serve(store),
     }
+}
+
+/// A socket cannot be committed, and the versions are this machine's own history
+fn ensure_store_gitignore(store: &Store) -> Result<()> {
+    let path = store.dir.join(".gitignore");
+    if !path.exists() {
+        std::fs::write(&path, "broker.sock\nstore/.versions/\n")?;
+    }
+    Ok(())
+}
+
+/// Saves cd-ing into the store. Values stay encrypted, so git only ever sees opaque files.
+fn git(store: &Store, args: &[String]) -> Result<()> {
+    ensure_store_gitignore(store)?;
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&store.dir)
+        .args(args)
+        .status()
+        .context("git is not on PATH")?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
@@ -142,6 +169,7 @@ fn git_push(store: &Store) {
     if !store.dir.join(".git").exists() {
         return;
     }
+    let _ = ensure_store_gitignore(store);
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .arg("-C")
@@ -351,8 +379,14 @@ fn get(store: &Store, name: &str) -> Result<()> {
 }
 
 fn ls(store: &Store) -> Result<()> {
-    let key = unlock(store, "passbox wants to list your secrets")?;
-    for name in store.names(&key)? {
+    // Through the broker, so a second listing inside the window does not ask again
+    let names = if !headless() && store.has_se_wrap() {
+        broker::list(store, &agent())?
+    } else {
+        let key = unlock(store, "passbox wants to list your secret names")?;
+        store.names(&key)?
+    };
+    for name in names {
         println!("{name}");
     }
     Ok(())

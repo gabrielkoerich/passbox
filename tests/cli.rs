@@ -302,6 +302,22 @@ fn a_secret_deleted_on_another_machine_can_still_be_restored() {
 }
 
 #[test]
+fn git_runs_inside_the_store_and_ignores_the_socket() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    cli.run(&["git", "init"], None).unwrap();
+
+    let ignore = std::fs::read_to_string(cli.path().join(".gitignore")).unwrap();
+    assert!(ignore.contains("broker.sock"), "{ignore}");
+    assert!(ignore.contains("store/.versions/"), "{ignore}");
+
+    // The passthrough reaches the store, not whatever directory the caller stood in
+    let out = cli.run(&["git", "status", "--short"], None).unwrap();
+    assert!(out.contains("wraps/"), "{out}");
+    assert!(!out.contains("broker.sock"), "{out}");
+}
+
+#[test]
 fn a_missing_secret_fails_loudly() {
     let cli = Cli::new();
     let err = cli.run(&["get", "nope"], None).unwrap_err();
