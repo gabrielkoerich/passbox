@@ -2,6 +2,7 @@ mod broker;
 mod crypto;
 mod se;
 mod store;
+mod sync;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -72,6 +73,12 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         tail: usize,
     },
+    /// Copy the store to and from another machine through a shared directory
+    Sync {
+        /// Directory or rclone remote, default $PASSBOX_REMOTE or the iCloud Drive folder
+        #[arg(long)]
+        remote: Option<String>,
+    },
     /// Serve the approval socket, started on demand by the other commands
     #[command(hide = true)]
     Broker,
@@ -103,8 +110,48 @@ fn run() -> Result<()> {
             command,
         } => exec(&store, &envs, stdin.as_deref(), &command),
         Command::Audit { tail } => audit(&store, tail),
+        Command::Sync { remote } => run_sync(&store, remote.as_deref()),
         Command::Broker => broker::serve(store),
     }
+}
+
+fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
+    let remote = match remote {
+        Some(given) => std::path::PathBuf::from(given),
+        None => sync::default_remote()?,
+    };
+
+    // A colon means an rclone remote such as b2:passbox, which no local copy can reach
+    if remote.to_string_lossy().contains(':') {
+        sync::sync_via_rclone(store, &remote.to_string_lossy())?;
+    } else {
+        let report = sync::sync(store, &remote)?;
+        eprintln!(
+            "{} sent, {} received, {}",
+            report.pushed,
+            report.pulled,
+            remote.display()
+        );
+    }
+    git_push(store);
+    Ok(())
+}
+
+/// Optional history alongside the copy. A subject naming an entry would undo the encrypted names.
+fn git_push(store: &Store) {
+    if !store.dir.join(".git").exists() {
+        return;
+    }
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&store.dir)
+            .args(args)
+            .status()
+    };
+    let _ = git(&["add", "-A"]);
+    let _ = git(&["commit", "-m", "update"]);
+    let _ = git(&["push"]);
 }
 
 /// Advisory, since the broker cannot verify it. The prompt shows it beside the secret name.
