@@ -188,6 +188,79 @@ fn an_empty_value_is_refused() {
 }
 
 #[test]
+fn exec_injects_into_the_child_environment() {
+    let cli = Cli::new();
+    cli.run(&["add", "github/token"], Some("ghp_abc")).unwrap();
+
+    let out = cli
+        .run(
+            &[
+                "exec",
+                "--env",
+                "GITHUB_TOKEN=github/token",
+                "--",
+                "sh",
+                "-c",
+                "printf %s \"$GITHUB_TOKEN\"",
+            ],
+            None,
+        )
+        .unwrap();
+    assert_eq!(out, "ghp_abc");
+}
+
+#[test]
+fn exec_pipes_a_secret_on_stdin() {
+    let cli = Cli::new();
+    cli.run(&["add", "db/password"], Some("swordfish")).unwrap();
+
+    let out = cli
+        .run(&["exec", "--stdin", "db/password", "--", "cat"], None)
+        .unwrap();
+    assert_eq!(out, "swordfish");
+}
+
+/// The mode is enforced by passbox, not by the Enclave, so it holds with no hardware
+#[test]
+fn exec_refuses_a_never_secret() {
+    let cli = Cli::new();
+    cli.run(
+        &["add", "banking/login", "--mode", "never"],
+        Some("swordfish"),
+    )
+    .unwrap();
+
+    let err = cli
+        .run(
+            &[
+                "exec",
+                "--env",
+                "P=banking/login",
+                "--",
+                "sh",
+                "-c",
+                "echo $P",
+            ],
+            None,
+        )
+        .unwrap_err();
+    assert!(err.contains("never"), "{err}");
+    assert!(!err.contains("swordfish"));
+
+    assert_eq!(
+        cli.run(&["get", "banking/login"], None).unwrap(),
+        "swordfish"
+    );
+}
+
+#[test]
+fn exec_passes_the_child_exit_code_through() {
+    let cli = Cli::new();
+    let err = cli.run(&["exec", "--", "sh", "-c", "exit 3"], None);
+    assert!(err.is_err());
+}
+
+#[test]
 fn a_missing_secret_fails_loudly() {
     let cli = Cli::new();
     let err = cli.run(&["get", "nope"], None).unwrap_err();

@@ -1033,6 +1033,7 @@ dependencies = [
  "anyhow",
  "clap",
  "hex",
+ "libc",
  "rand 0.10.3",
  "rpassword",
  "secrecy",

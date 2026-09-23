@@ -114,6 +114,13 @@ impl Store {
     pub fn se_wrap_path(&self) -> PathBuf {
         self.wraps_dir().join(format!("se-{}.json", hostname()))
     }
+    pub fn socket_path(&self) -> PathBuf {
+        self.dir.join("broker.sock")
+    }
+    /// Per machine, so two Macs never append to the same file through a syncer
+    pub fn audit_path(&self) -> PathBuf {
+        self.dir.join(format!("audit-{}.log", hostname()))
+    }
     pub fn is_initialised(&self) -> bool {
         self.recipient_path().exists()
     }

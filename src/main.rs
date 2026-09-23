@@ -1,3 +1,4 @@
+mod broker;
 mod crypto;
 mod se;
 mod store;
@@ -55,6 +56,25 @@ enum Command {
     },
     /// Bind this Mac's Secure Enclave to a store that was synced from another machine
     MachineAdd,
+    /// Run a command with secrets injected, so the value never reaches the caller
+    Exec {
+        /// VAR=secret, repeatable
+        #[arg(long = "env", value_name = "VAR=SECRET")]
+        envs: Vec<String>,
+        /// Secret to pipe to the child on stdin
+        #[arg(long)]
+        stdin: Option<String>,
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Show what the broker has released, newest last
+    Audit {
+        #[arg(long, default_value_t = 20)]
+        tail: usize,
+    },
+    /// Serve the approval socket, started on demand by the other commands
+    #[command(hide = true)]
+    Broker,
 }
 
 fn main() {
@@ -77,7 +97,92 @@ fn run() -> Result<()> {
         Command::Mode { name, mode, window } => set_mode(&store, &name, mode, window),
         Command::Restore { name, index } => restore(&store, &name, index),
         Command::MachineAdd => machine_add(&store),
+        Command::Exec {
+            envs,
+            stdin,
+            command,
+        } => exec(&store, &envs, stdin.as_deref(), &command),
+        Command::Audit { tail } => audit(&store, tail),
+        Command::Broker => broker::serve(store),
     }
+}
+
+/// Advisory, since the broker cannot verify it. The prompt shows it beside the secret name.
+fn agent() -> String {
+    std::env::var("PASSBOX_AGENT").unwrap_or_else(|_| "passbox".to_string())
+}
+
+/// The broker owns windows and the audit log, so every read goes through it when it can.
+/// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
+fn read_secret(store: &Store, name: &str, for_agent: bool) -> Result<String> {
+    if !headless() && store.has_se_wrap() {
+        return broker::request(store, name, &agent());
+    }
+    let key = unlock(store, &format!("passbox wants the password for {name}"))?;
+    let (_, secret) = store
+        .find(name, &key)?
+        .with_context(|| format!("no secret named {name}"))?;
+    if for_agent && secret.mode == Mode::Never {
+        bail!("{name} is marked never, refusing");
+    }
+    Ok(secret.value.clone())
+}
+
+fn exec(store: &Store, envs: &[String], stdin: Option<&str>, command: &[String]) -> Result<()> {
+    let (program, args) = command.split_first().context("no command to run")?;
+    let mut child = std::process::Command::new(program);
+    child.args(args);
+
+    for pair in envs {
+        let (var, name) = pair
+            .split_once('=')
+            .with_context(|| format!("expected VAR=secret, got {pair}"))?;
+        child.env(var, read_secret(store, name, true)?);
+    }
+
+    let piped = match stdin {
+        Some(name) => Some(read_secret(store, name, true)?),
+        None => None,
+    };
+    child.stdin(if piped.is_some() {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::inherit()
+    });
+
+    let mut running = child
+        .spawn()
+        .with_context(|| format!("could not run {program}"))?;
+    if let Some(value) = piped {
+        running
+            .stdin
+            .as_mut()
+            .expect("piped")
+            .write_all(value.as_bytes())?;
+        drop(running.stdin.take());
+    }
+
+    let status = running.wait()?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn audit(store: &Store, tail: usize) -> Result<()> {
+    let path = store.audit_path();
+    if !path.exists() {
+        eprintln!("nothing released on this machine yet");
+        return Ok(());
+    }
+    let key = unlock(store, "passbox wants to read the audit log")?;
+    let text = std::fs::read_to_string(&path)?;
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    for line in lines.iter().skip(lines.len().saturating_sub(tail)) {
+        match crypto::decrypt_line(line, &key) {
+            Ok(record) => println!("{}", String::from_utf8_lossy(&record)),
+            Err(e) => eprintln!("unreadable record: {e:#}"),
+        }
+    }
+    Ok(())
 }
 
 fn init(store: &Store) -> Result<()> {
@@ -189,12 +294,9 @@ fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Re
 }
 
 fn get(store: &Store, name: &str) -> Result<()> {
-    let key = unlock(store, &format!("passbox wants the password for {name}"))?;
-    let (_, secret) = store
-        .find(name, &key)?
-        .with_context(|| format!("no secret named {name}"))?;
+    let value = read_secret(store, name, false)?;
     let mut out = std::io::stdout();
-    out.write_all(secret.value.as_bytes())?;
+    out.write_all(value.as_bytes())?;
     if out.is_terminal() {
         out.write_all(b"\n")?;
     }

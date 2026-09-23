@@ -26,6 +26,19 @@ pub fn encrypt(plaintext: &[u8], recipients: &[Box<dyn Recipient + Send>]) -> Re
     Ok(out)
 }
 
+/// One record per line, hex rather than armour because age armour spans several lines
+pub fn encrypt_line(plaintext: &[u8], recipient: &age::x25519::Recipient) -> Result<String> {
+    Ok(hex::encode(encrypt(
+        plaintext,
+        &[Box::new(recipient.clone())],
+    )?))
+}
+
+pub fn decrypt_line(line: &str, key: &age::x25519::Identity) -> Result<Vec<u8>> {
+    let raw = hex::decode(line.trim()).map_err(|e| anyhow!("bad audit line: {e}"))?;
+    decrypt(&raw, &[Box::new(key.clone())])
+}
+
 pub fn decrypt(ciphertext: &[u8], identities: &[Box<dyn Identity>]) -> Result<Vec<u8>> {
     let decryptor = Decryptor::new_buffered(ciphertext)?;
     let refs: Vec<&dyn Identity> = identities

@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-age = { version = "0.12.1", features = ["armor"] }
+age = "0.12.1"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 hex = "0.4.3"
+libc = "0.2.180"
 rand = "0.10.3"
 rpassword = "7.4.0"
 secrecy = "0.10.3"
