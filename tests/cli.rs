@@ -12,11 +12,30 @@ struct Cli {
 
 impl Cli {
     fn new() -> Self {
-        let cli = Cli {
-            dir: tempfile::tempdir().unwrap(),
-        };
+        let cli = Cli::empty();
         cli.run(&["init"], None).expect("init");
         cli
+    }
+
+    /// A machine that has no store yet, which is how a second Mac starts
+    fn empty() -> Self {
+        Cli {
+            dir: tempfile::tempdir().unwrap(),
+        }
+    }
+
+    fn sync(&self, remote: &Path) {
+        let (ok, _, stderr) = {
+            let mut cmd = self.cmd(PASSPHRASE);
+            cmd.env("PASSBOX_REMOTE", remote);
+            let out = cmd.arg("sync").output().unwrap();
+            (
+                out.status.success(),
+                String::new(),
+                String::from_utf8_lossy(&out.stderr).to_string(),
+            )
+        };
+        assert!(ok, "sync failed: {stderr}");
     }
 
     fn cmd(&self, passphrase: &str) -> Command {
@@ -258,6 +277,28 @@ fn exec_passes_the_child_exit_code_through() {
     let cli = Cli::new();
     let err = cli.run(&["exec", "--", "sh", "-c", "exit 3"], None);
     assert!(err.is_err());
+}
+
+/// A synced delete leaves the file in place with a tombstone over it, which `restore` must find
+#[test]
+fn a_secret_deleted_on_another_machine_can_still_be_restored() {
+    let remote = tempfile::tempdir().unwrap();
+    let one = Cli::new();
+    one.run(&["add", "github/token"], Some("ghp_abc")).unwrap();
+    one.sync(remote.path());
+
+    let two = Cli::empty();
+    two.sync(remote.path());
+    assert_eq!(two.run(&["get", "github/token"], None).unwrap(), "ghp_abc");
+
+    two.run(&["rm", "github/token"], None).unwrap();
+    two.sync(remote.path());
+    one.sync(remote.path());
+    assert_eq!(one.run(&["ls"], None).unwrap(), "");
+
+    one.run(&["restore", "github/token", "--index", "0"], None)
+        .unwrap();
+    assert_eq!(one.run(&["get", "github/token"], None).unwrap(), "ghp_abc");
 }
 
 #[test]

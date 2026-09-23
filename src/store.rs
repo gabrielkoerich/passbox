@@ -190,6 +190,14 @@ impl Store {
 
     /// Ids with a secret file and no tombstone.
     pub fn ids(&self) -> Result<Vec<String>> {
+        let mut out = self.ids_with_files()?;
+        out.retain(|id| !self.tomb_path(id).exists());
+        Ok(out)
+    }
+
+    /// Every id that still has a file, tombstoned or not. A delete that arrived through a
+    /// sync leaves the file in place, so undeleting it is a matter of dropping the tombstone.
+    pub fn ids_with_files(&self) -> Result<Vec<String>> {
         let mut out = Vec::new();
         let dir = self.secrets_dir();
         if !dir.exists() {
@@ -200,17 +208,20 @@ impl Store {
             if path.extension().and_then(|e| e.to_str()) != Some("age") {
                 continue;
             }
-            let id = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-            if self.tomb_path(&id).exists() {
-                continue;
+            if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                out.push(id.to_string());
             }
-            out.push(id);
         }
         out.sort();
         Ok(out)
+    }
+
+    pub fn untomb(&self, id: &str) -> Result<()> {
+        let tomb = self.tomb_path(id);
+        if tomb.exists() {
+            fs::remove_file(tomb)?;
+        }
+        Ok(())
     }
 
     pub fn secret_path(&self, id: &str) -> PathBuf {

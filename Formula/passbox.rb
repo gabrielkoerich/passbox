@@ -7,6 +7,8 @@ class Passbox < Formula
   license "MIT"
 
   depends_on "rust" => :build
+  # build.rs compiles the Secure Enclave helper with swiftc
+  depends_on xcode: :build
   depends_on :macos
 
   def install

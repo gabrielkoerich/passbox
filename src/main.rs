@@ -395,6 +395,13 @@ fn restore(store: &Store, name: &str, index: Option<usize>) -> Result<()> {
         None => find_deleted(store, name, &key)?,
     };
 
+    // A delete that arrived through a sync left the file behind, so lifting the tombstone is enough
+    if store.tomb_path(&id).exists() && store.secret_path(&id).exists() {
+        store.untomb(&id)?;
+        eprintln!("restored {name}");
+        return Ok(());
+    }
+
     // Newest first, so index 0 is the most recent version
     let mut versions = store.versions(&id)?;
     versions.reverse();
@@ -428,8 +435,16 @@ fn restore(store: &Store, name: &str, index: Option<usize>) -> Result<()> {
     Ok(())
 }
 
-/// A deleted secret has no live file, so its id only shows up through its versions.
+/// A deleted secret is hidden from `ids`, so look through tombstoned files and then versions.
 fn find_deleted(store: &Store, name: &str, key: &age::x25519::Identity) -> Result<String> {
+    for id in store.ids_with_files()? {
+        if let Ok(secret) = store.load(&id, key)
+            && secret.name == name
+        {
+            return Ok(id);
+        }
+    }
+
     let dir = store.versions_dir();
     if dir.exists() {
         for entry in std::fs::read_dir(&dir)? {
