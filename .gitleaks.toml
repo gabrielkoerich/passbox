@@ -1,0 +1,8 @@
+title = "passbox gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fixture values in tests are not real credentials"
+paths = ['''tests/cli\.rs''', '''src/store\.rs''']

@@ -12,7 +12,9 @@ struct Cli {
 
 impl Cli {
     fn new() -> Self {
-        let cli = Cli { dir: tempfile::tempdir().unwrap() };
+        let cli = Cli {
+            dir: tempfile::tempdir().unwrap(),
+        };
         cli.run(&["init"], None).expect("init");
         cli
     }
@@ -29,7 +31,12 @@ impl Cli {
         self.run_as(PASSPHRASE, args, stdin)
     }
 
-    fn run_as(&self, passphrase: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+    fn run_as(
+        &self,
+        passphrase: &str,
+        args: &[&str],
+        stdin: Option<&str>,
+    ) -> Result<String, String> {
         let (ok, stdout, stderr) = self.exec(passphrase, args, stdin);
         if ok { Ok(stdout) } else { Err(stderr) }
     }
@@ -51,7 +58,12 @@ impl Cli {
             .spawn()
             .unwrap();
         if let Some(text) = stdin {
-            child.stdin.as_mut().unwrap().write_all(text.as_bytes()).unwrap();
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap();
         }
         drop(child.stdin.take());
 
@@ -72,10 +84,14 @@ impl Cli {
 fn add_get_and_list() {
     let cli = Cli::new();
     cli.run(&["add", "github/token"], Some("ghp_abc")).unwrap();
-    cli.run(&["add", "banking/login"], Some("swordfish")).unwrap();
+    cli.run(&["add", "banking/login"], Some("swordfish"))
+        .unwrap();
 
     assert_eq!(cli.run(&["get", "github/token"], None).unwrap(), "ghp_abc");
-    assert_eq!(cli.run(&["ls"], None).unwrap(), "banking/login\ngithub/token\n");
+    assert_eq!(
+        cli.run(&["ls"], None).unwrap(),
+        "banking/login\ngithub/token\n"
+    );
 }
 
 #[test]
@@ -90,8 +106,14 @@ fn nothing_on_disk_reveals_a_name() {
         if path.is_file() {
             let raw = std::fs::read(&path).unwrap();
             let text = String::from_utf8_lossy(&raw);
-            assert!(!text.contains("github"), "{name} holds the name in the clear");
-            assert!(!text.contains("ghp_abc"), "{name} holds the value in the clear");
+            assert!(
+                !text.contains("github"),
+                "{name} holds the name in the clear"
+            );
+            assert!(
+                !text.contains("ghp_abc"),
+                "{name} holds the value in the clear"
+            );
         }
     }
 }
@@ -100,7 +122,8 @@ fn nothing_on_disk_reveals_a_name() {
 #[test]
 fn replacing_a_value_keeps_the_mode() {
     let cli = Cli::new();
-    cli.run(&["add", "banking/login", "--mode", "never"], Some("old")).unwrap();
+    cli.run(&["add", "banking/login", "--mode", "never"], Some("old"))
+        .unwrap();
     let out = cli.note(&["add", "banking/login"], Some("new"));
 
     assert!(out.contains("never"), "mode was reset: {out}");
@@ -123,21 +146,27 @@ fn an_overwrite_is_recoverable() {
     cli.run(&["add", "github/token"], Some("bad")).unwrap();
     assert_eq!(cli.run(&["get", "github/token"], None).unwrap(), "bad");
 
-    cli.run(&["restore", "github/token", "--index", "0"], None).unwrap();
+    cli.run(&["restore", "github/token", "--index", "0"], None)
+        .unwrap();
     assert_eq!(cli.run(&["get", "github/token"], None).unwrap(), "good");
 }
 
 #[test]
 fn a_deleted_secret_is_still_recoverable() {
     let cli = Cli::new();
-    cli.run(&["add", "banking/login"], Some("swordfish")).unwrap();
+    cli.run(&["add", "banking/login"], Some("swordfish"))
+        .unwrap();
     cli.run(&["rm", "banking/login"], None).unwrap();
 
     assert_eq!(cli.run(&["ls"], None).unwrap(), "");
     assert!(cli.run(&["get", "banking/login"], None).is_err());
 
-    cli.run(&["restore", "banking/login", "--index", "0"], None).unwrap();
-    assert_eq!(cli.run(&["get", "banking/login"], None).unwrap(), "swordfish");
+    cli.run(&["restore", "banking/login", "--index", "0"], None)
+        .unwrap();
+    assert_eq!(
+        cli.run(&["get", "banking/login"], None).unwrap(),
+        "swordfish"
+    );
 }
 
 #[test]
@@ -145,7 +174,9 @@ fn a_wrong_passphrase_is_refused() {
     let cli = Cli::new();
     cli.run(&["add", "github/token"], Some("ghp_abc")).unwrap();
 
-    let err = cli.run_as("wrong", &["get", "github/token"], None).unwrap_err();
+    let err = cli
+        .run_as("wrong", &["get", "github/token"], None)
+        .unwrap_err();
     assert!(err.contains("passphrase"), "{err}");
     assert!(!err.contains("ghp_abc"));
 }

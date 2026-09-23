@@ -1,16 +1,21 @@
 //! age encryption, including plugin identities such as Secure Enclave and YubiKey.
 
 use age::{Decryptor, Encryptor, Identity, Recipient};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::io::{Read, Write};
 
 /// Encrypt to every recipient. One recipient failing to wrap is fatal, a store
 /// that silently drops its recovery key is worse than no store.
 pub fn encrypt(plaintext: &[u8], recipients: &[Box<dyn Recipient + Send>]) -> Result<Vec<u8>> {
     if recipients.is_empty() {
-        return Err(anyhow!("no recipients, refusing to write an unreadable file"));
+        return Err(anyhow!(
+            "no recipients, refusing to write an unreadable file"
+        ));
     }
-    let refs: Vec<&dyn Recipient> = recipients.iter().map(|r| r.as_ref() as &dyn Recipient).collect();
+    let refs: Vec<&dyn Recipient> = recipients
+        .iter()
+        .map(|r| r.as_ref() as &dyn Recipient)
+        .collect();
     let encryptor = Encryptor::with_recipients(refs.into_iter())
         .map_err(|e| anyhow!("could not build encryptor: {e}"))?;
 
@@ -23,7 +28,10 @@ pub fn encrypt(plaintext: &[u8], recipients: &[Box<dyn Recipient + Send>]) -> Re
 
 pub fn decrypt(ciphertext: &[u8], identities: &[Box<dyn Identity>]) -> Result<Vec<u8>> {
     let decryptor = Decryptor::new_buffered(ciphertext)?;
-    let refs: Vec<&dyn Identity> = identities.iter().map(|i| i.as_ref() as &dyn Identity).collect();
+    let refs: Vec<&dyn Identity> = identities
+        .iter()
+        .map(|i| i.as_ref() as &dyn Identity)
+        .collect();
     let mut reader = decryptor.decrypt(refs.into_iter())?;
     let mut out = Vec::new();
     reader.read_to_end(&mut out)?;

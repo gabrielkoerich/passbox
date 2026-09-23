@@ -1,0 +1,241 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Format
+        run: cargo fmt --check
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: detect --source . --config .gitleaks.toml --no-banner --redact --exit-code=1
+
+  # macOS only, because the Secure Enclave is the point of the product
+  test-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Confirm the binary needs no developer identity
+        run: |
+          cargo build
+          codesign -dvvv target/debug/passbox 2>&1 | tee sig.txt
+          grep -q "Signature=adhoc" sig.txt
+
+  release:
+    needs: [lint, gitleaks, test-macos]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for new commits since last tag
+        id: check
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$LAST_TAG" ]; then
+            COMMIT_COUNT=$(git rev-list "$LAST_TAG"..HEAD --count)
+          else
+            COMMIT_COUNT=$(git rev-list HEAD --count)
+          fi
+
+          if [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "No new commits since $LAST_TAG, skipping release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$LAST_TAG" ]; then
+            SUBJECTS=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s")
+          else
+            SUBJECTS=$(git log --pretty=format:"%s")
+          fi
+          NON_CHORE=$(echo "$SUBJECTS" | grep -cvE '^chore(\(.*\))?:' || true)
+          if [ "$NON_CHORE" -eq 0 ]; then
+            echo "All $COMMIT_COUNT commits are chore, skipping release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$COMMIT_COUNT new commits since ${LAST_TAG:-beginning} ($NON_CHORE non-chore)"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine version bump from conventional commits
+        if: steps.check.outputs.skip == 'false'
+        id: version
+        env:
+          LAST_TAG: ${{ steps.check.outputs.last_tag }}
+        run: |
+          if [ -n "$LAST_TAG" ]; then
+            COMMITS=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s")
+          else
+            COMMITS=$(git log --pretty=format:"%s")
+          fi
+
+          BUMP="patch"
+          if echo "$COMMITS" | grep -qiE '^feat(\(.*\))?!?:'; then
+            BUMP="minor"
+          fi
+
+          HAS_BREAKING=false
+          if echo "$COMMITS" | grep -qiE '\bbreaking\b'; then
+            HAS_BREAKING=true
+          fi
+          if [ -n "$LAST_TAG" ] && git log "$LAST_TAG"..HEAD --pretty=format:"%b" | grep -qiE '\bbreaking\b'; then
+            HAS_BREAKING=true
+          fi
+          if [ "$HAS_BREAKING" = true ]; then
+            BUMP="major"
+          fi
+
+          if [ -z "$LAST_TAG" ]; then
+            NEW_VERSION="v0.1.0"
+          else
+            CURRENT="${LAST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            case "$BUMP" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+            NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $NEW_VERSION (${BUMP} bump)"
+
+      - name: Generate changelog
+        if: steps.check.outputs.skip == 'false'
+        id: changelog
+        env:
+          LAST_TAG: ${{ steps.check.outputs.last_tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -n "$LAST_TAG" ]; then
+            RAW=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s|%h")
+          else
+            RAW=$(git log --pretty=format:"%s|%h")
+          fi
+
+          BREAKING=""
+          FEATURES=""
+          FIXES=""
+          OTHER=""
+
+          while IFS='|' read -r msg hash; do
+            [ -n "$msg" ] || continue
+            entry="- ${msg} (${hash})"
+            if echo "$msg" | grep -qiE '\bbreaking\b'; then
+              BREAKING+="${entry}"$'\n'
+            elif echo "$msg" | grep -qiE '^feat(\(.*\))?!?:'; then
+              FEATURES+="${entry}"$'\n'
+            elif echo "$msg" | grep -qiE '\bfix(ed|es)?\b|\bbug\b|\bhotfix\b'; then
+              FIXES+="${entry}"$'\n'
+            else
+              OTHER+="${entry}"$'\n'
+            fi
+          done <<< "$RAW"
+
+          CHANGELOG="## ${VERSION}"$'\n\n'
+          [ -n "$BREAKING" ] && CHANGELOG+="### Breaking Changes"$'\n'"${BREAKING}"$'\n'
+          [ -n "$FEATURES" ] && CHANGELOG+="### Features"$'\n'"${FEATURES}"$'\n'
+          [ -n "$FIXES" ] && CHANGELOG+="### Bug Fixes"$'\n'"${FIXES}"$'\n'
+          [ -n "$OTHER" ] && CHANGELOG+="### Other Changes"$'\n'"${OTHER}"$'\n'
+
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$CHANGELOG"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Only the package version, which is the first version key in the manifest
+          sed -i "0,/^version = /s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml
+          git add Cargo.toml
+          git commit -m "chore: bump version to ${VERSION}"
+
+          git tag -a "$VERSION" -m "$VERSION"
+          git push origin main "$VERSION"
+
+      - name: Create release
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          # Through the environment, since the body is built from commit subjects
+          CHANGELOG: ${{ steps.changelog.outputs.body }}
+        run: gh release create "$VERSION" --title "$VERSION" --notes "$CHANGELOG"
+
+      - name: Update Homebrew formula
+        if: steps.check.outputs.skip == 'false'
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          URL="https://github.com/${REPO}/archive/refs/tags/${VERSION}.tar.gz"
+          TAP_REPO="gabrielkoerich/homebrew-tap"
+
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "HOMEBREW_TAP_TOKEN secret is required to push to ${TAP_REPO}"
+            exit 1
+          fi
+
+          SHA256=$(curl -sL "$URL" | sha256sum | awk '{print $1}')
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" tap-repo
+          mkdir -p tap-repo/Formula
+
+          sed -e "s|url \"[^\"]*\"|url \"${URL}\"|" \
+              -e "s|sha256 \"[^\"]*\"|sha256 \"${SHA256}\"|" \
+              Formula/passbox.rb > tap-repo/Formula/passbox.rb
+
+          git -C tap-repo config user.name "github-actions[bot]"
+          git -C tap-repo config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C tap-repo add Formula/passbox.rb
+          if git -C tap-repo diff --cached --quiet; then
+            echo "Homebrew formula unchanged"
+            exit 0
+          fi
+          git -C tap-repo commit -m "chore: update passbox formula for ${VERSION}"
+          git -C tap-repo push origin main

@@ -10,7 +10,11 @@ use store::{DEFAULT_WINDOW_SECS, Mode, Secret, Store};
 const PASSPHRASE_ENV: &str = "PASSBOX_PASSPHRASE";
 
 #[derive(Parser)]
-#[command(name = "passbox", version, about = "An age password store that asks before an agent reads it")]
+#[command(
+    name = "passbox",
+    version,
+    about = "An age password store that asks before an agent reads it"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -173,6 +177,7 @@ fn rm(store: &Store, name: &str) -> Result<()> {
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
     store.delete(&id)?;
+    store.prune_tombs()?;
     eprintln!("deleted {name}, recoverable with `passbox restore {name}`");
     Ok(())
 }
@@ -209,7 +214,10 @@ fn restore(store: &Store, name: &str, index: Option<usize>) -> Result<()> {
 
     let Some(index) = index else {
         for (i, (stamp, path)) in versions.iter().enumerate() {
-            let bytes = store.load_path(path, &key).map(|s| s.value.len()).unwrap_or(0);
+            let bytes = store
+                .load_path(path, &key)
+                .map(|s| s.value.len())
+                .unwrap_or(0);
             println!("{i}\t{stamp}\t{bytes} bytes");
         }
         eprintln!("restore one with `passbox restore {name} --index N`");

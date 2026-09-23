@@ -95,10 +95,6 @@ impl Store {
         Ok(Store { dir })
     }
 
-    pub fn at(dir: impl Into<PathBuf>) -> Self {
-        Store { dir: dir.into() }
-    }
-
     pub fn secrets_dir(&self) -> PathBuf {
         self.dir.join("store")
     }
@@ -114,13 +110,6 @@ impl Store {
     fn recovery_path(&self) -> PathBuf {
         self.wraps_dir().join("recovery.age")
     }
-    pub fn socket_path(&self) -> PathBuf {
-        self.dir.join("broker.sock")
-    }
-    pub fn audit_path(&self) -> PathBuf {
-        self.dir.join(format!("audit-{}.log", hostname()))
-    }
-
     pub fn is_initialised(&self) -> bool {
         self.recipient_path().exists()
     }
@@ -156,8 +145,11 @@ impl Store {
 
     pub fn unlock_with_passphrase(&self, passphrase: SecretString) -> Result<x25519::Identity> {
         let wrapped = fs::read(self.recovery_path()).context("no recovery wrap")?;
-        let mut raw = crypto::decrypt(&wrapped, &[Box::new(age::scrypt::Identity::new(passphrase))])
-            .context("wrong passphrase")?;
+        let mut raw = crypto::decrypt(
+            &wrapped,
+            &[Box::new(age::scrypt::Identity::new(passphrase))],
+        )
+        .context("wrong passphrase")?;
         let text = String::from_utf8(raw.clone()).context("recovery wrap is not a key")?;
         raw.zeroize();
         x25519::Identity::from_str(text.trim()).map_err(|e| anyhow!("bad store key: {e}"))
@@ -204,7 +196,7 @@ impl Store {
         let mut plain = crypto::decrypt(&raw, &[Box::new(key.clone())])?;
         let secret = serde_json::from_slice(&plain).context("secret file is not valid json");
         plain.zeroize();
-        secret.map_err(Into::into)
+        secret
     }
 
     pub fn find(&self, name: &str, key: &x25519::Identity) -> Result<Option<(String, Secret)>> {
@@ -327,17 +319,6 @@ fn home() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("HOME is not set"))
 }
 
-pub fn hostname() -> String {
-    std::process::Command::new("hostname")
-        .arg("-s")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
 pub fn private_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
@@ -359,7 +340,9 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, Store, x25519::Identity) {
         let tmp = tempfile::tempdir().unwrap();
-        let store = Store::at(tmp.path());
+        let store = Store {
+            dir: tmp.path().to_path_buf(),
+        };
         let pass = SecretString::from("hunter2".to_string());
         store.init(pass.clone()).unwrap();
         let key = store.unlock_with_passphrase(pass).unwrap();
@@ -381,7 +364,9 @@ mod tests {
     fn round_trip_by_name() {
         let (_tmp, store, key) = store();
         let r = store.recipient().unwrap();
-        store.put(&new_id(), &secret("github/token", "ghp_abc"), &r).unwrap();
+        store
+            .put(&new_id(), &secret("github/token", "ghp_abc"), &r)
+            .unwrap();
 
         let (_id, found) = store.find("github/token", &key).unwrap().unwrap();
         assert_eq!(found.value, "ghp_abc");
@@ -392,7 +377,9 @@ mod tests {
     fn filename_never_holds_the_name() {
         let (_tmp, store, _key) = store();
         let r = store.recipient().unwrap();
-        store.put(&new_id(), &secret("github/token", "ghp_abc"), &r).unwrap();
+        store
+            .put(&new_id(), &secret("github/token", "ghp_abc"), &r)
+            .unwrap();
 
         for id in store.ids().unwrap() {
             assert!(!id.contains("github"));
