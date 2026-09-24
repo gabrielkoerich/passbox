@@ -245,7 +245,7 @@ passbox exists because of the first two rows. It is not a replacement for
 | Platforms | anywhere GPG runs | macOS only |
 | Ecosystem | browser, mobile, dmenu, otp, import | none |
 | Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on |
-| Reading the source | 721 lines of shell | 2,900 lines of Rust and Swift, plus a daemon |
+| Reading the source | 721 lines of shell | 2,286 lines of Rust and Swift, plus a daemon |
 
 Use passbox for the secrets your agents touch, where a prompt naming the caller
 is the whole point. Keep pass for the ones you cannot afford to lose, until this
