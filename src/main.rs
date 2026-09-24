@@ -391,7 +391,18 @@ fn enable_with_yubikey(store: &Store) -> Result<()> {
 
     let mut found = yubikey::recipients()?;
     if found.is_empty() {
-        eprintln!("No age identity on the token yet. Generating one changes a PIV slot on it.");
+        eprintln!("No age identity on the token yet. Generating one uses a PIV slot.");
+        match yubikey::piv_slots_in_use() {
+            Some(slots) if !slots.is_empty() => {
+                eprintln!("The PIV applet already holds:");
+                for slot in &slots {
+                    eprintln!("  {slot}");
+                }
+                eprintln!("A free slot is used, and your OpenPGP keys are a separate applet.");
+            }
+            Some(_) => eprintln!("The PIV applet is empty, and OpenPGP is a separate applet."),
+            None => eprintln!("Could not read the PIV applet. Install ykman to check it first."),
+        }
         eprint!("Generate one now? [y/N] ");
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
@@ -408,9 +419,9 @@ fn enable_with_yubikey(store: &Store) -> Result<()> {
     eprintln!("using {recipient}");
 
     let key = unlock(store, "turn on sync with a YubiKey")?;
-    store.create_yubikey_wrap(&key, recipient)?;
-    eprintln!("sync is on, and the copy is useless without that token");
-    eprintln!("keep a second token or add a passphrase, or losing it loses the way back");
+    let total = store.add_yubikey_recipient(&key, recipient)?;
+    eprintln!("sync is on, and the copy is useless without one of those {total} token(s)");
+    eprintln!("add a second with `passbox yubikey-add`, or losing it loses the way back");
     Ok(())
 }
 
@@ -478,11 +489,12 @@ attacked offline, because the private half never leaves the token. */
 fn yubikey_add(store: &Store, recipient: &str) -> Result<()> {
     yubikey::offer_install()?;
     let key = unlock(store, "wrap the store key to a YubiKey")?;
-    store.create_yubikey_wrap(&key, recipient)?;
+    let total = store.add_yubikey_recipient(&key, recipient)?;
     eprintln!("wrapped to {recipient}");
-    eprintln!(
-        "that token now opens this store on any machine, so keep a second one or a passphrase"
-    );
+    eprintln!("{total} token(s) can now open this store on any machine");
+    if total == 1 {
+        eprintln!("add a second with `passbox yubikey-add`, or losing it loses the way back");
+    }
     Ok(())
 }
 

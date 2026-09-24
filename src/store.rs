@@ -218,13 +218,45 @@ impl Store {
         write_private(to, &wrapped)
     }
 
+    /// Recipients are public, so they sit in the clear beside the wrap they opened
+    pub fn yubikey_recipients_path(&self) -> PathBuf {
+        self.wraps_dir().join("yubikey.recipients")
+    }
+
+    pub fn yubikey_recipients(&self) -> Vec<String> {
+        fs::read_to_string(self.yubikey_recipients_path())
+            .map(|raw| {
+                raw.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /* age takes any number of recipients, so a second token is added to the same wrap rather
+    than replacing it. Adding one re-encrypts to every recipient, which is why it needs the key. */
     #[cfg(feature = "host")]
-    pub fn create_yubikey_wrap(&self, key: &x25519::Identity, recipient: &str) -> Result<()> {
-        let to = crate::yubikey::recipient(recipient)?;
-        let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
-        let wrapped = crypto::encrypt(text.as_bytes(), &[to])?;
-        text.zeroize();
-        write_private(&self.yubikey_wrap_path(), &wrapped)
+    pub fn add_yubikey_recipient(&self, key: &x25519::Identity, recipient: &str) -> Result<usize> {
+        let mut all = self.yubikey_recipients();
+        let recipient = recipient.trim().to_string();
+        if !all.contains(&recipient) {
+            all.push(recipient);
+        }
+
+        let mut to = Vec::new();
+        for text in &all {
+            to.push(crate::yubikey::recipient(text)?);
+        }
+
+        let mut plain = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
+        let wrapped = crypto::encrypt(plain.as_bytes(), &to)?;
+        plain.zeroize();
+
+        write_private(&self.yubikey_wrap_path(), &wrapped)?;
+        write_private(&self.yubikey_recipients_path(), all.join("\n").as_bytes())?;
+        Ok(all.len())
     }
 
     /// The token prompts for a touch itself, so passbox raises nothing here
@@ -713,6 +745,37 @@ mod tests {
 
         let pass = SecretString::from("hunter2".to_string());
         assert!(store.unlock_with_passphrase(pass).is_err());
+    }
+
+    #[test]
+    fn yubikey_recipients_accumulate_on_disk() {
+        let (_tmp, store, _key) = store();
+        assert!(store.yubikey_recipients().is_empty());
+
+        write_private(
+            &store.yubikey_recipients_path(),
+            b"age1yubikey1aaa\nage1yubikey1bbb\n",
+        )
+        .unwrap();
+        assert_eq!(
+            store.yubikey_recipients(),
+            vec!["age1yubikey1aaa", "age1yubikey1bbb"]
+        );
+    }
+
+    #[test]
+    fn a_yubikey_wrap_counts_as_a_way_off_this_mac() {
+        let (_tmp, store, _key) = store();
+        assert!(
+            store.has_portable_wrap(),
+            "the test store has a passphrase wrap"
+        );
+
+        fs::remove_file(store.wraps_dir().join("recovery.age")).unwrap();
+        assert!(!store.has_portable_wrap());
+
+        write_private(&store.yubikey_wrap_path(), b"x").unwrap();
+        assert!(store.has_portable_wrap());
     }
 
     #[test]

@@ -120,6 +120,10 @@ jobs:
     needs: [lint, gitleaks, test-macos, client-build, binaries]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Two pushes close together raced and both computed the same next tag. Queue instead.
+    concurrency:
+      group: release
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:

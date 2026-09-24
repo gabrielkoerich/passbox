@@ -261,8 +261,18 @@ when the wrap is there, and falls back to the passphrase otherwise.
 | You must keep | the phrase | the token |
 | Recovery needs | the phrase | the token and `age-plugin-yubikey` |
 
-Lose the token and you lose that route. Enrol a second one, or keep the
-passphrase wrap as well. Any number of wraps can open the same store.
+Enrol a second token. age takes any number of recipients, so `yubikey-add` adds
+to the same wrap rather than replacing it, and either token then opens the store.
+
+```bash
+passbox yubikey-add age1yubikey1...   # the second one
+```
+
+Recipients are public keys, so they sit in the clear in `wraps/yubikey.recipients`.
+
+passbox uses the **PIV** applet. OpenPGP keys live in a separate applet on the
+same chip and are never touched. Before provisioning a slot it reads what PIV
+already holds and shows you, using `ykman` when it is installed.
 
 ### Recovering on a replacement Mac
 

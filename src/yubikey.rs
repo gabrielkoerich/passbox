@@ -69,6 +69,26 @@ pub fn offer_install() -> Result<()> {
     Ok(())
 }
 
+/* What the PIV applet already holds. OpenPGP is a separate applet on the same chip, so PGP keys
+are never at risk, but a PIV slot in use is worth seeing before provisioning one. None means the
+check could not run. */
+pub fn piv_slots_in_use() -> Option<Vec<String>> {
+    let out = std::process::Command::new("ykman")
+        .args(["piv", "info"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.trim_start().starts_with("Slot "))
+            .map(|l| l.trim().to_string())
+            .collect(),
+    )
+}
+
 /// Recipients already provisioned on whatever token is plugged in
 pub fn recipients() -> Result<Vec<String>> {
     let out = std::process::Command::new(PLUGIN)
