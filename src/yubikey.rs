@@ -37,6 +37,38 @@ pub fn identity() -> Result<Box<dyn age::Identity>> {
     Ok(Box::new(plugin))
 }
 
+/* Offer rather than act. Installing software is a change to the user's machine, and this
+particular binary goes on to handle key material, so it is not something to do quietly. */
+pub fn offer_install() -> Result<()> {
+    if installed() {
+        return Ok(());
+    }
+    let brew = std::process::Command::new("brew").arg("--version").output();
+    if brew.is_err() || !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        bail!("{PLUGIN} is not on PATH, install it with `brew install {PLUGIN}`");
+    }
+
+    eprintln!("passbox needs {PLUGIN} to talk to the token, and it is not installed.");
+    eprintln!("It is the age plugin that holds the key in the YubiKey's secure element.");
+    eprint!("Install it with Homebrew now? [y/N] ");
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .context("could not read the answer")?;
+    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+        bail!("install it with `brew install {PLUGIN}` and run this again");
+    }
+
+    let status = std::process::Command::new("brew")
+        .args(["install", PLUGIN])
+        .status()
+        .context("could not run brew")?;
+    if !status.success() || !installed() {
+        bail!("brew could not install {PLUGIN}");
+    }
+    Ok(())
+}
+
 pub fn installed() -> bool {
     std::process::Command::new(PLUGIN)
         .arg("--version")

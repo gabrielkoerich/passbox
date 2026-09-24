@@ -436,11 +436,7 @@ fn unlock(store: &Store, reason: &str) -> Result<age::x25519::Identity> {
 attacked offline, because the private half never leaves the token. */
 #[cfg(feature = "host")]
 fn yubikey_add(store: &Store, recipient: &str) -> Result<()> {
-    if !yubikey::installed() {
-        bail!(
-            "age-plugin-yubikey is not on PATH, install it with `brew install age-plugin-yubikey`"
-        );
-    }
+    yubikey::offer_install()?;
     let key = unlock(store, "wrap the store key to a YubiKey")?;
     store.create_yubikey_wrap(&key, recipient)?;
     eprintln!("wrapped to {recipient}");
