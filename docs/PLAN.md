@@ -128,6 +128,41 @@ Nine jobs need these, and they are the only ones needing anything new.
 
 Done when the nine run on the client. That is all twenty three moved.
 
+## Shipping binaries
+
+`cargo install` from source costs one to three minutes on every install and
+upgrade, and requires Rust and the Command Line Tools on the user's machine. The
+Swift helper is already embedded in the Rust binary, so a prebuilt artefact
+carries it and neither is needed.
+
+macOS ships as **one universal binary**, arm64 and x86_64 joined with `lipo`,
+rather than two downloads. `build.rs` has to pass the target architecture to
+`swiftc` for this to cross compile.
+
+Keep source builds working. For a tool holding passwords, compiling what you can
+read is a fair position, and `brew install --build-from-source` already covers it
+once a `head` block is kept in the formula.
+
+Check Gatekeeper rather than assume it. The binary is ad-hoc signed with no
+Developer ID, so a downloaded archive carries a quarantine attribute. Homebrew
+normally strips it, which is exactly the kind of thing that works locally and
+fails for a stranger.
+
+## Linux is a client only
+
+Decided 2026-09-24. A Linux build never holds the Enclave, the store, the broker
+server or the crypto, because the host returns values and the client only asks.
+That leaves the request path, `exec` injection and the MCP server.
+
+So the split is `cfg(target_os)`, with no cargo features to combine wrongly.
+macOS compiles host and client, Linux compiles client alone. The pieces that are
+macOS bound today are `se.rs`, the Enclave functions in `store.rs`, and the
+broker's peer identification through `LOCAL_PEERPID` and `lsof`, all of which are
+host side anyway.
+
+This lands with Phase 4, and it is on the critical path only if a secret using
+job runs on the Linux box. If everything Mac adjacent goes to m1-max, it waits.
+
 ## What is deliberately not here
 
 - A plugin system. Subcommand dispatch exists on the `poc-extensions` branch at
