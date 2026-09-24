@@ -145,6 +145,16 @@ project manifests use: a changed hash means it asks again.
 Without that rule this feature hands an attacker a way to be asked for the store
 key. It should not ship before the allowlist does.
 
+## Documentation, later
+
+A GitHub wiki, or a docs site. Not now, and worth writing down so it is not
+rediscovered.
+
+The repository already splits by purpose: README for what it is and how to run
+it, DESIGN for why it is built that way and what it cost, PLAN for the order of
+work, this file for what is not decided. A site would be a rendering of those
+rather than a second set of documents to keep in step.
+
 ## Not plugins
 
 - **Secret types**, such as TOTP or SSH keys. These change the payload schema
