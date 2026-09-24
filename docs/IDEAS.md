@@ -305,8 +305,8 @@ tailnet can be identified for real, so the prompt can name a machine the host ha
 actually authenticated, and policy per machine becomes enforceable rather than
 advisory.
 
-Local callers still declare their own name. The asymmetry is worth stating in any
-prompt that mixes the two.
+Local callers still declare their own name. A prompt that mixes the two should
+say which kind it is showing.
 
 ## SSH already carries an identity
 
