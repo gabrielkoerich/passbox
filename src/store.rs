@@ -110,6 +110,14 @@ impl Store {
     fn recovery_path(&self) -> PathBuf {
         self.wraps_dir().join("recovery.age")
     }
+    /// Opened by the token rather than by a passphrase, so the file is inert on its own
+    pub fn yubikey_wrap_path(&self) -> PathBuf {
+        self.wraps_dir().join("yubikey.age")
+    }
+    pub fn has_yubikey_wrap(&self) -> bool {
+        self.yubikey_wrap_path().exists()
+    }
+
     /// One wrap per machine, because a Secure Enclave key cannot leave the Mac that made it
     pub fn se_wrap_path(&self) -> PathBuf {
         self.wraps_dir().join(format!("se-{}.json", hostname()))
@@ -203,6 +211,26 @@ impl Store {
         let wrapped = crypto::encrypt(text.as_bytes(), &[Box::new(recipient)])?;
         text.zeroize();
         write_private(to, &wrapped)
+    }
+
+    #[cfg(feature = "host")]
+    pub fn create_yubikey_wrap(&self, key: &x25519::Identity, recipient: &str) -> Result<()> {
+        let to = crate::yubikey::recipient(recipient)?;
+        let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
+        let wrapped = crypto::encrypt(text.as_bytes(), &[to])?;
+        text.zeroize();
+        write_private(&self.yubikey_wrap_path(), &wrapped)
+    }
+
+    /// The token prompts for a touch itself, so passbox raises nothing here
+    #[cfg(feature = "host")]
+    pub fn unlock_with_yubikey(&self) -> Result<x25519::Identity> {
+        let wrapped = fs::read(self.yubikey_wrap_path()).context("no YubiKey wrap")?;
+        let mut raw = crypto::decrypt(&wrapped, &[crate::yubikey::identity()?])
+            .context("the YubiKey refused, or it is not the one this was wrapped to")?;
+        let text = String::from_utf8(raw.clone()).context("the wrap is not a key")?;
+        raw.zeroize();
+        x25519::Identity::from_str(text.trim()).map_err(|e| anyhow!("bad store key: {e}"))
     }
 
     pub fn recipient(&self) -> Result<x25519::Recipient> {

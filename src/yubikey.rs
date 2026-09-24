@@ -1,0 +1,66 @@
+/* A wrap opened by a YubiKey instead of a passphrase.
+
+The passphrase wrap is the one file in a synced store worth attacking, because it can be ground
+offline by anyone holding a copy. This wrap has nothing to grind: the private half lives in the
+token's secure element and the copy is inert without it in your hand. */
+
+use age::cli_common::UiCallbacks;
+use age::plugin::{Identity, IdentityPluginV1, Recipient, RecipientPluginV1};
+use anyhow::{Context, Result, anyhow, bail};
+use std::str::FromStr;
+
+const PLUGIN: &str = "age-plugin-yubikey";
+
+/// Recipients look like `age1yubikey1...` and identities like `AGE-PLUGIN-YUBIKEY-1...`
+pub fn recipient(text: &str) -> Result<Box<dyn age::Recipient + Send>> {
+    let parsed = Recipient::from_str(text.trim())
+        .map_err(|e| anyhow!("{text} is not an age recipient: {e}"))?;
+    if parsed.plugin() != PLUGIN {
+        bail!(
+            "{} is a {} recipient, not a YubiKey one",
+            text,
+            parsed.plugin()
+        );
+    }
+    let name = parsed.plugin().to_string();
+    let plugin = RecipientPluginV1::new(&name, &[parsed], &[], UiCallbacks)
+        .context("age-plugin-yubikey is not on PATH")?;
+    Ok(Box::new(plugin))
+}
+
+/// Asks the plugin for whichever token is plugged in, so no identity file has to be kept
+pub fn identity() -> Result<Box<dyn age::Identity>> {
+    let found =
+        Identity::default_for_plugin(PLUGIN).map_err(|e| anyhow!("no YubiKey identity: {e}"))?;
+    let plugin = IdentityPluginV1::new(PLUGIN, &[found], UiCallbacks)
+        .context("age-plugin-yubikey is not on PATH")?;
+    Ok(Box::new(plugin))
+}
+
+pub fn installed() -> bool {
+    std::process::Command::new(PLUGIN)
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_plain_x25519_recipient_is_refused() {
+        let err = match recipient("age1yyc8rqn67hcupyasv6d0tdpghndh2nnkk599emt3z8cqzkhr5ccqg4xglx")
+        {
+            Ok(_) => panic!("an x25519 recipient was accepted as a YubiKey one"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("not an age recipient"), "{err}");
+    }
+
+    #[test]
+    fn nonsense_is_refused() {
+        assert!(recipient("hello").err().is_some());
+        assert!(recipient("").err().is_some());
+    }
+}

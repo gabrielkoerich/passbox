@@ -9,7 +9,9 @@ default = ["host"]
 host = []
 
 [dependencies]
-age = "0.12.1"
+# `plugin` is back for the YubiKey wrap alone. It carries no prompt wording of its own,
+# so it cannot take over the Touch ID text, which is why it was dropped before.
+age = { version = "0.12.1", features = ["plugin", "cli-common"] }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 hex = "0.4.3"

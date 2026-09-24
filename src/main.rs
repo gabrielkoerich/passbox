@@ -11,6 +11,8 @@ mod store;
 #[cfg(feature = "host")]
 mod sync;
 mod tree;
+#[cfg(feature = "host")]
+mod yubikey;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -67,6 +69,12 @@ enum Command {
     #[cfg(feature = "host")]
     /// Bind this Mac's Secure Enclave to a store that was synced from another machine
     MachineAdd,
+    #[cfg(feature = "host")]
+    /// Wrap the store key to a YubiKey, so a backup needs the token rather than a passphrase
+    YubikeyAdd {
+        /// The `age1yubikey1...` recipient from `age-plugin-yubikey --list`
+        recipient: String,
+    },
     /// Run a command with secrets injected, so the value never reaches the caller
     Exec {
         /// VAR=secret, repeatable
@@ -139,6 +147,8 @@ fn run() -> Result<()> {
         Command::Restore { name, index } => restore(&store, &name, index),
         #[cfg(feature = "host")]
         Command::MachineAdd => machine_add(&store),
+        #[cfg(feature = "host")]
+        Command::YubikeyAdd { recipient } => yubikey_add(&store, &recipient),
         Command::Exec {
             envs,
             stdin,
@@ -418,6 +428,24 @@ fn unlock(store: &Store, reason: &str) -> Result<age::x25519::Identity> {
     store.unlock_with_passphrase(SecretString::from(ask("passphrase: ")?))
 }
 
+/* A YubiKey wrap replaces the passphrase for recovery. Nothing in a synced copy can then be
+attacked offline, because the private half never leaves the token. */
+#[cfg(feature = "host")]
+fn yubikey_add(store: &Store, recipient: &str) -> Result<()> {
+    if !yubikey::installed() {
+        bail!(
+            "age-plugin-yubikey is not on PATH, install it with `brew install age-plugin-yubikey`"
+        );
+    }
+    let key = unlock(store, "wrap the store key to a YubiKey")?;
+    store.create_yubikey_wrap(&key, recipient)?;
+    eprintln!("wrapped to {recipient}");
+    eprintln!(
+        "that token now opens this store on any machine, so keep a second one or a passphrase"
+    );
+    Ok(())
+}
+
 #[cfg(feature = "host")]
 fn machine_add(store: &Store) -> Result<()> {
     if store.has_se_wrap() {
@@ -426,8 +454,13 @@ fn machine_add(store: &Store) -> Result<()> {
             store.se_wrap_path().display()
         );
     }
-    eprintln!("Binding this Mac needs the recovery passphrase once.");
-    let key = store.unlock_with_passphrase(SecretString::from(ask("recovery passphrase: ")?))?;
+    let key = if store.has_yubikey_wrap() && yubikey::installed() {
+        eprintln!("Touch the YubiKey to bind this Mac.");
+        store.unlock_with_yubikey()?
+    } else {
+        eprintln!("Binding this Mac needs the recovery passphrase once.");
+        store.unlock_with_passphrase(SecretString::from(ask("recovery passphrase: ")?))?
+    };
     store.create_se_wrap(&key)?;
     eprintln!("bound, reads on this Mac will ask for your fingerprint");
     Ok(())

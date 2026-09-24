@@ -229,6 +229,31 @@ If you use a stick, set the remote in your shell profile. A later bare
 export PASSBOX_REMOTE="/Volumes/stick/passbox"
 ```
 
+### A YubiKey instead of a passphrase
+
+A passphrase wrap is the one file in a synced copy worth attacking. A YubiKey
+wrap has nothing to grind, because the private half stays in the token.
+
+```bash
+brew install age-plugin-yubikey
+age-plugin-yubikey --generate          # once, provisions a PIV slot
+age-plugin-yubikey --list              # gives the age1yubikey1... recipient
+passbox yubikey-add age1yubikey1...
+```
+
+The copy in iCloud is then inert without the token in your hand. Touch ID stays
+the daily path on this Mac; the token is only for recovery. `machine add` uses it
+when the wrap is there, and falls back to the passphrase otherwise.
+
+| | passphrase wrap | YubiKey wrap |
+|---|---|---|
+| A stolen copy | can be ground offline | is useless |
+| You must keep | the phrase | the token |
+| Recovery needs | the phrase | the token and `age-plugin-yubikey` |
+
+Lose the token and you lose that route. Enrol a second one, or keep the
+passphrase wrap as well. Any number of wraps can open the same store.
+
 ### Recovering on a replacement Mac
 
 ```bash
