@@ -145,8 +145,9 @@ open it. For that, turn on sync.
 
 ## Sync
 
-Sync is off. Turning it on creates a recovery passphrase, because a second
-machine has no other way to open the copy.
+Sync is off, and nothing leaves the Mac until you run `passbox sync` yourself.
+There is no timer and no syncing on write. Turning it on creates a recovery
+passphrase, because a second machine has no other way to open the copy.
 
 ```sh
 passbox sync --enable
@@ -213,7 +214,7 @@ sizes, and their modification times.
 | Variable | Effect |
 |---|---|
 | `PASSBOX_DIR` | Where the store lives, default `~/.passbox` |
-| `PASSBOX_REMOTE` | Sync target, default the iCloud Drive folder |
+| `PASSBOX_REMOTE` | Where `passbox sync` copies to **once you have turned sync on**, default the iCloud Drive folder |
 | `PASSBOX_AGENT` | Name shown in the prompt beside the secret |
 | `PASSBOX_PASSPHRASE` | Supplies the passphrase for CI and headless use, and turns off the Enclave path |
 
