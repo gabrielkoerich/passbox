@@ -1,18 +1,29 @@
 //! Decides who may open a secret, holds the approval windows, and writes the audit log.
 
+#[cfg(feature = "host")]
 use crate::crypto;
+#[cfg(feature = "host")]
 use crate::project::{self, Grant};
-use crate::store::{self, DEFAULT_WINDOW_SECS, Mode, Store};
+use crate::store::Store;
+#[cfg(feature = "host")]
+use crate::store::{self, DEFAULT_WINDOW_SECS, Mode};
+#[cfg(feature = "host")]
 use age::x25519;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "host")]
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(feature = "host")]
+use std::os::unix::net::UnixListener;
+use std::os::unix::net::UnixStream;
+#[cfg(feature = "host")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The store key leaves memory after this long with no traffic
+#[cfg(feature = "host")]
 const KEY_TTL_SECS: u64 = 300;
+#[cfg(feature = "host")]
 static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -32,6 +43,7 @@ pub struct Request {
     pub op: Op,
 }
 
+#[cfg(feature = "host")]
 /// Listing gets its own approval slot. A name cannot hold a NUL, so nothing collides with it.
 const LIST_SLOT: &str = "\u{0}list";
 
@@ -42,6 +54,7 @@ pub struct Response {
     pub error: Option<String>,
 }
 
+#[cfg(feature = "host")]
 #[derive(PartialEq, Eq, Debug)]
 pub enum Decision {
     Allow,
@@ -49,6 +62,7 @@ pub enum Decision {
     Deny,
 }
 
+#[cfg(feature = "host")]
 /// The one piece of logic that must not be wrong, so it stays pure and tested
 pub fn decide(mode: Mode, window_secs: u64, approved_at: Option<u64>, now: u64) -> Decision {
     match mode {
@@ -63,6 +77,7 @@ pub fn decide(mode: Mode, window_secs: u64, approved_at: Option<u64>, now: u64) 
     }
 }
 
+#[cfg(feature = "host")]
 #[derive(Serialize)]
 struct AuditRecord<'a> {
     at: u64,
@@ -72,14 +87,17 @@ struct AuditRecord<'a> {
     caller: &'a str,
 }
 
+#[cfg(feature = "host")]
 struct Broker {
     store: Store,
     key: Option<x25519::Identity>,
     key_at: u64,
     approvals: HashMap<(String, String), u64>,
+    #[cfg(feature = "host")]
     grants: Vec<Grant>,
 }
 
+#[cfg(feature = "host")]
 impl Broker {
     fn new(store: Store) -> Self {
         Broker {
@@ -87,6 +105,7 @@ impl Broker {
             key: None,
             key_at: 0,
             approvals: HashMap::new(),
+            #[cfg(feature = "host")]
             grants: Vec::new(),
         }
     }
@@ -106,12 +125,16 @@ impl Broker {
 
     fn ask(&mut self, reason: &str) -> Result<()> {
         let key = self.store.unlock_with_se(reason)?;
-        self.grants = project::load(&self.store, &key);
+        #[cfg(feature = "host")]
+        {
+            self.grants = project::load(&self.store, &key);
+        }
         self.key = Some(key);
         self.key_at = store::now();
         Ok(())
     }
 
+    #[cfg(feature = "host")]
     fn granted(&self, secret: &str, cwd: Option<&std::path::Path>) -> bool {
         let Some(manifest) = cwd.and_then(project::find) else {
             return false;
@@ -121,6 +144,7 @@ impl Broker {
     }
 
     /// One prompt covers the whole manifest, which is the point of declaring it up front
+    #[cfg(feature = "host")]
     fn grant_manifest(&mut self, request: &Request, cwd: Option<&std::path::Path>) -> Result<bool> {
         let Some(manifest) = cwd.and_then(project::find) else {
             return Ok(false);
@@ -218,11 +242,16 @@ impl Broker {
                 self.audit(&key, &request.agent, &request.name, "denied", caller)?;
                 bail!("{} is marked never, refusing", request.name);
             }
+            #[cfg(feature = "host")]
             Decision::Prompt if self.granted(&request.name, cwd) => "project grant",
             Decision::Prompt => {
                 // The unlock a moment ago was itself the prompt, so do not ask twice for one read
                 if !asked {
-                    if self.grant_manifest(request, cwd)? {
+                    #[cfg(feature = "host")]
+                    let by_manifest = self.grant_manifest(request, cwd)?;
+                    #[cfg(not(feature = "host"))]
+                    let by_manifest = false;
+                    if by_manifest {
                         "project grant"
                     } else {
                         self.prompt(&request.agent, &request.name)?;
@@ -275,6 +304,7 @@ impl Broker {
     }
 }
 
+#[cfg(feature = "host")]
 pub fn serve(store: Store) -> Result<()> {
     let socket = store.socket_path();
     if socket.exists() {
@@ -328,6 +358,7 @@ pub fn serve(store: Store) -> Result<()> {
 }
 
 /// Exiting is how the key is dropped, which is blunter and surer than clearing it in place
+#[cfg(feature = "host")]
 fn watchdog(socket: std::path::PathBuf) {
     std::thread::spawn(move || {
         loop {
@@ -341,6 +372,7 @@ fn watchdog(socket: std::path::PathBuf) {
 }
 
 /// The peer pid comes from the kernel, so the caller cannot fake its own path
+#[cfg(feature = "host")]
 fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
     use std::os::unix::io::AsRawFd;
     // SOL_LOCAL and LOCAL_PEERPID, which libc does not expose on every release
@@ -364,6 +396,7 @@ fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
 /* The project a grant belongs to is the caller's working directory, read from the kernel rather
 than taken from the request. A caller that could name its own directory could point at a manifest
 it wrote and approved somewhere else. */
+#[cfg(feature = "host")]
 fn caller_cwd(pid: libc::pid_t) -> Option<std::path::PathBuf> {
     let out = std::process::Command::new("lsof")
         .args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
@@ -376,6 +409,7 @@ fn caller_cwd(pid: libc::pid_t) -> Option<std::path::PathBuf> {
 }
 
 /// Walk up the process tree, because the caller is `passbox` and the agent is somewhere above it
+#[cfg(feature = "host")]
 fn ancestry(pid: libc::pid_t) -> String {
     let mut chain = Vec::new();
     let mut current = pid;
@@ -430,8 +464,16 @@ fn ask_broker(store: &Store, request: Request) -> Result<String> {
     let mut stream = match UnixStream::connect(&socket) {
         Ok(s) => s,
         Err(_) => {
-            spawn(store)?;
-            UnixStream::connect(&socket).context("the broker did not come up")?
+            #[cfg(feature = "host")]
+            {
+                spawn(store)?;
+                UnixStream::connect(&socket).context("the broker did not come up")?
+            }
+            #[cfg(not(feature = "host"))]
+            bail!(
+                "no broker at {}, and a client cannot start one",
+                socket.display()
+            )
         }
     };
 
@@ -451,6 +493,7 @@ fn ask_broker(store: &Store, request: Request) -> Result<String> {
         .ok_or_else(|| anyhow!("broker sent no value"))
 }
 
+#[cfg(feature = "host")]
 fn spawn(store: &Store) -> Result<()> {
     std::process::Command::new(std::env::current_exe()?)
         .arg("broker")
@@ -470,7 +513,7 @@ fn spawn(store: &Store) -> Result<()> {
     bail!("the broker never opened its socket")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
 

@@ -33,6 +33,16 @@ jobs:
             | tar -xz -C /tmp gitleaks
           /tmp/gitleaks dir . --config .gitleaks.toml --no-banner --redact --exit-code=1
 
+  # A client build carries no Enclave, no broker server and no store crypto. It is what a
+  # Linux box will run, so it has to keep compiling even while nothing here uses it yet.
+  client-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy, client only
+        run: cargo clippy --no-default-features -- -D warnings
+
   # macOS only, because the Secure Enclave is the point of the product
   test-macos:
     runs-on: macos-latest
@@ -68,7 +78,7 @@ jobs:
           grep -q "Signature=adhoc" sig.txt
 
   release:
-    needs: [lint, gitleaks, test-macos]
+    needs: [lint, gitleaks, test-macos, client-build]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

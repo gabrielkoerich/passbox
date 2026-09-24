@@ -3,6 +3,11 @@ name = "passbox"
 version = "0.7.0"
 edition = "2024"
 
+[features]
+# The host holds the Enclave, the store and the broker. A client only asks one.
+default = ["host"]
+host = []
+
 [dependencies]
 age = "0.12.1"
 anyhow = "1.0.104"

@@ -4,13 +4,22 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=swift/passbox-se.swift");
 
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+    // Only a host talks to the Secure Enclave, so a client build needs no Swift at all
+    if std::env::var_os("CARGO_FEATURE_HOST").is_none()
+        || std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
+    {
         return;
     }
 
+    // swiftc follows the host architecture unless told, which breaks a universal build
+    let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "x86_64",
+        _ => "arm64",
+    };
+
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join("passbox-se");
     let status = Command::new("swiftc")
-        .args(["-O", "-o"])
+        .args(["-O", "-target", &format!("{arch}-apple-macosx13.0"), "-o"])
         .arg(&out)
         .arg("swift/passbox-se.swift")
         .status()

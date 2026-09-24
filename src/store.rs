@@ -200,6 +200,7 @@ impl Store {
     }
 
     /// Bind the store key to this Mac's Secure Enclave. Neither step raises a prompt.
+    #[cfg(feature = "host")]
     pub fn create_se_wrap(&self, key: &x25519::Identity) -> Result<()> {
         let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
         let wrap = crate::se::wrap(text.as_bytes())?;
@@ -208,6 +209,7 @@ impl Store {
     }
 
     /// Raise a Touch ID prompt worded by `reason`, then open the store key.
+    #[cfg(feature = "host")]
     pub fn unlock_with_se(&self, reason: &str) -> Result<x25519::Identity> {
         let raw =
             fs::read(self.se_wrap_path()).context("no Secure Enclave wrap on this machine")?;

@@ -1,10 +1,14 @@
 mod broker;
 mod crypto;
+#[cfg(feature = "host")]
 mod import;
 mod mcp;
+#[cfg(feature = "host")]
 mod project;
+#[cfg(feature = "host")]
 mod se;
 mod store;
+#[cfg(feature = "host")]
 mod sync;
 
 use anyhow::{Context, Result, bail};
@@ -59,6 +63,7 @@ enum Command {
         #[arg(long)]
         index: Option<usize>,
     },
+    #[cfg(feature = "host")]
     /// Bind this Mac's Secure Enclave to a store that was synced from another machine
     MachineAdd,
     /// Run a command with secrets injected, so the value never reaches the caller
@@ -72,11 +77,13 @@ enum Command {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
+    #[cfg(feature = "host")]
     /// Show what the broker has released, newest last
     Audit {
         #[arg(long, default_value_t = 20)]
         tail: usize,
     },
+    #[cfg(feature = "host")]
     /// Copy the store to and from another machine through a shared directory
     Sync {
         /// Directory or rclone remote, default $PASSBOX_REMOTE or the iCloud Drive folder
@@ -86,6 +93,7 @@ enum Command {
         #[arg(long)]
         enable: bool,
     },
+    #[cfg(feature = "host")]
     /// Copy entries across from `pass`, all of them or one namespace
     ImportPass {
         /// A namespace such as `bean`, or one entry. Everything, if omitted.
@@ -104,6 +112,7 @@ enum Command {
         args: Vec<String>,
     },
     /// Serve the approval socket, started on demand by the other commands
+    #[cfg(feature = "host")]
     #[command(hide = true)]
     Broker,
 }
@@ -127,14 +136,18 @@ fn run() -> Result<()> {
         Command::Rm { name } => rm(&store, &name),
         Command::Mode { name, mode, window } => set_mode(&store, &name, mode, window),
         Command::Restore { name, index } => restore(&store, &name, index),
+        #[cfg(feature = "host")]
         Command::MachineAdd => machine_add(&store),
         Command::Exec {
             envs,
             stdin,
             command,
         } => exec(&store, &envs, stdin.as_deref(), &command),
+        #[cfg(feature = "host")]
         Command::Audit { tail } => audit(&store, tail),
+        #[cfg(feature = "host")]
         Command::Sync { remote, enable } => run_sync(&store, remote.as_deref(), enable),
+        #[cfg(feature = "host")]
         Command::ImportPass {
             prefix,
             mode,
@@ -142,6 +155,7 @@ fn run() -> Result<()> {
         } => import_pass(&store, prefix.as_deref(), mode, force),
         Command::Mcp => mcp::serve(store),
         Command::Git { args } => git(&store, &args),
+        #[cfg(feature = "host")]
         Command::Broker => broker::serve(store),
     }
 }
@@ -172,6 +186,7 @@ fn git(store: &Store, args: &[String]) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+#[cfg(feature = "host")]
 fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
     if enable {
         enable_sync(store)?;
@@ -206,6 +221,7 @@ fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
 }
 
 /// Optional history alongside the copy. A subject naming an entry would undo the encrypted names.
+#[cfg(feature = "host")]
 fn git_push(store: &Store) {
     if !store.dir.join(".git").exists() {
         return;
@@ -290,6 +306,7 @@ fn exec(store: &Store, envs: &[String], stdin: Option<&str>, command: &[String])
     std::process::exit(status.code().unwrap_or(1));
 }
 
+#[cfg(feature = "host")]
 fn audit(store: &Store, tail: usize) -> Result<()> {
     let path = store.audit_path();
     if !path.exists() {
@@ -314,7 +331,11 @@ fn init(store: &Store) -> Result<()> {
     eprintln!("store ready at {}", store.dir.display());
 
     // Without an Enclave there is nothing holding the key, so a passphrase is the only option
-    if headless() || !bind_machine(store, &key) {
+    #[cfg(not(feature = "host"))]
+    let bound = false;
+    #[cfg(feature = "host")]
+    let bound = bind_machine(store, &key);
+    if headless() || !bound {
         new_passphrase(store, &key)?;
     } else {
         eprintln!();
@@ -324,6 +345,7 @@ fn init(store: &Store) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "host")]
 fn enable_sync(store: &Store) -> Result<()> {
     if store.has_recovery_wrap() {
         eprintln!("sync is already on");
@@ -364,6 +386,7 @@ fn test_work_factor() -> Option<u8> {
 }
 
 /// True when the Enclave took the key. An older Mac or CI cannot, and falls back to a passphrase.
+#[cfg(feature = "host")]
 fn bind_machine(store: &Store, key: &age::x25519::Identity) -> bool {
     if headless() {
         return false;
@@ -386,12 +409,15 @@ fn headless() -> bool {
 }
 
 fn unlock(store: &Store, reason: &str) -> Result<age::x25519::Identity> {
+    #[cfg(feature = "host")]
     if !headless() && store.has_se_wrap() {
         return store.unlock_with_se(reason);
     }
+    let _ = reason;
     store.unlock_with_passphrase(SecretString::from(ask("passphrase: ")?))
 }
 
+#[cfg(feature = "host")]
 fn machine_add(store: &Store) -> Result<()> {
     if store.has_se_wrap() {
         bail!(
@@ -462,6 +488,7 @@ fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Re
     Ok(())
 }
 
+#[cfg(feature = "host")]
 fn import_pass(store: &Store, prefix: Option<&str>, mode: Option<Mode>, force: bool) -> Result<()> {
     let dir = import::store_dir();
     let all = import::entries(&dir)?;
