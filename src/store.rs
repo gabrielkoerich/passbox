@@ -175,10 +175,34 @@ impl Store {
         if let Some(log_n) = log_n {
             recipient.set_work_factor(log_n);
         }
+        self.write_recovery_wrap(key, recipient, &self.recovery_path())
+    }
+
+    /// The same wrap written wherever the caller wants it, for a backup that never syncs
+    pub fn export_recovery_wrap(
+        &self,
+        key: &x25519::Identity,
+        passphrase: SecretString,
+        to: &Path,
+        log_n: Option<u8>,
+    ) -> Result<()> {
+        let mut recipient = age::scrypt::Recipient::new(passphrase);
+        if let Some(log_n) = log_n {
+            recipient.set_work_factor(log_n);
+        }
+        self.write_recovery_wrap(key, recipient, to)
+    }
+
+    fn write_recovery_wrap(
+        &self,
+        key: &x25519::Identity,
+        recipient: age::scrypt::Recipient,
+        to: &Path,
+    ) -> Result<()> {
         let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
         let wrapped = crypto::encrypt(text.as_bytes(), &[Box::new(recipient)])?;
         text.zeroize();
-        write_private(&self.recovery_path(), &wrapped)
+        write_private(to, &wrapped)
     }
 
     pub fn recipient(&self) -> Result<x25519::Recipient> {

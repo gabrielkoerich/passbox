@@ -172,11 +172,8 @@ passbox sync --enable
 passbox sync
 ```
 
-Understand what that passphrase is. It wraps the store key into
-`wraps/recovery.age`, which then travels with the store, so anyone who obtains
-the synced copy can attack it offline. It is the one file worth attacking.
-Use a long one. passbox asks for at least 12 characters and a diceware phrase is
-better.
+The passphrase it asks for guards the copy. See [If you lose the
+Mac](#if-you-lose-the-mac) for what that costs.
 
 The default target is the iCloud Drive folder, which is an ordinary directory on
 macOS. No account, no rclone, no network code.
@@ -193,14 +190,60 @@ If the store directory is also a git repo, `passbox sync` commits and pushes aft
 the copy, which gives you history and an off-site remote. Commit subjects are
 generic, since a subject naming an entry would undo the encrypted names.
 
-On a second Mac, pull the store and then bind it.
+On a second Mac, `passbox sync` then `passbox machine add`, the same steps as
+recovering onto a replacement.
+
+## If you lose the Mac
+
+By default there is no way back. `init` binds the store to this Mac's Secure
+Enclave and writes no other wrap, so the key exists in one place and cannot
+leave it.
+
+**Time Machine does not help.** It copies `wraps/se-<host>.json` faithfully, and
+the file is inert anywhere else. The private half never leaves the Enclave.
+Erasing the Mac destroys the Enclave keys, so a restore onto a wiped machine
+finds files it cannot open. Only a restore to the same Mac, not erased, still
+works.
+
+To have a way back, turn on sync. It writes `wraps/recovery.age`, a copy of the
+store key under a passphrase, and copies the store to a directory.
 
 ```bash
-passbox sync
+passbox sync --enable                                    # to iCloud Drive
+PASSBOX_REMOTE=/Volumes/stick/passbox passbox sync --enable   # to a USB stick
+```
+
+| Destination | Updates | The passphrase wrap sits |
+|---|---|---|
+| iCloud Drive, the default | on every `passbox sync` | in iCloud, replicated |
+| any directory, through `PASSBOX_REMOTE` | when you plug the stick in | wherever you put it |
+
+Pick one knowing the cost. Anyone holding the copy can attack that wrap offline
+at their own pace. passbox refuses a passphrase under 12 characters. Use five or
+six diceware words.
+
+If you use a stick, set the remote in your shell profile. A later bare
+`passbox sync` uses the default and would put a copy in iCloud without asking.
+
+```bash
+export PASSBOX_REMOTE="/Volumes/stick/passbox"
+```
+
+### Recovering on a replacement Mac
+
+```bash
+brew install gabrielkoerich/tap/passbox
+cp -R ~/Library/Mobile\ Documents/com~apple~CloudDocs/passbox ~/.passbox
 passbox machine add
 ```
 
-## Recovering
+`machine add` asks the recovery passphrase, then binds the new Mac's Enclave, so
+reads go back to asking for a fingerprint.
+
+Rejected: backing up the Enclave key itself. It cannot be exported, which is the
+property that makes a stolen copy of the store useless.
+
+## Undoing a change
 
 Every write keeps the last 5 versions, and `rm` keeps the file too.
 
