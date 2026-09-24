@@ -25,7 +25,13 @@ Recent Homebrew asks you to trust a third party tap before it will build from
 one. If the install stops and says so, run `brew trust --formula
 gabrielkoerich/tap/passbox` and try again.
 
-Building needs the Command Line Tools, for `swiftc`. A full Xcode is not needed.
+That downloads a prebuilt binary. Nothing is compiled, so Rust is not needed.
+Building from source, with `--build-from-source` or `--HEAD`, needs Rust and the
+Command Line Tools for `swiftc`. A full Xcode is not needed either way.
+
+On Linux `brew install` gives the client build: no Secure Enclave, no broker and
+no `sync`, so it opens the store with a passphrase. See [Known
+limits](docs/DESIGN.md#known-limits).
 
 `init` binds the store to this Mac's Secure Enclave and asks for nothing else.
 There is no passphrase, so there is no file anyone can carry off and grind at.
@@ -355,10 +361,10 @@ passbox exists because of the first two rows. It is not a replacement for
 | Who asked for it | unknowable | named in the prompt and in the audit log |
 | Giving one to an agent | prints to stdout | injected into one child, and scrubbed from its output |
 | Maturity | a decade old, packaged everywhere | young, unreviewed |
-| Platforms | anywhere GPG runs | macOS only |
+| Platforms | anywhere GPG runs | macOS, with a passphrase-only client on Linux |
 | Ecosystem | browser, mobile, dmenu, otp, import | none |
-| Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on |
-| Reading the source | 721 lines of shell | 2,286 lines of Rust and Swift, plus a daemon |
+| Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on, then a passphrase or a YubiKey opens it |
+| Reading the source | 721 lines of shell | 3,079 lines of Rust and Swift, plus a daemon |
 
 Use passbox for the secrets your agents touch. Keep pass for the ones you cannot
 afford to lose, until this has had outside eyes on it.

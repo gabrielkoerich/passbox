@@ -216,5 +216,6 @@ Cost: a delete racing an edit can resurrect a secret.
 - The file count is not the secret count, because tombstones linger for 90 days.
 - `PASSBOX_PASSPHRASE` turns off the Enclave path. It exists for CI and headless
   use, and it makes the passphrase the only gate.
-- Linux is not supported. The Secure Enclave is the point, and the rest of the
-  design follows from it.
+- Linux builds the client half only, behind the `host` cargo feature being off.
+  It has no Enclave, no broker server and no `sync`, so it opens the store with a
+  passphrase. Asking a Mac to approve a read is designed, not built.

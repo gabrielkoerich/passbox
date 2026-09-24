@@ -36,7 +36,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create the store and its recovery wrap
+    /// Create the store, bound to this Mac's Secure Enclave and nothing else
     Init,
     /// Add or replace a secret, reading the value from stdin or a prompt
     Add {

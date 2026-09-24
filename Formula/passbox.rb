@@ -41,10 +41,11 @@ class Passbox < Formula
       the Secure Enclave and asks for nothing else.
 
       The store opens on that Mac only. Lose it and the secrets are gone.
-      `passbox sync --enable` adds a recovery passphrase and a copy elsewhere.
+      `passbox sync --enable` asks how a copy should be opened, a passphrase or
+      a YubiKey, then asks where it goes.
 
-      Install rclone only if you point PASSBOX_REMOTE at a cloud remote such as
-      b2:passbox. A directory target needs no extra tools.
+      Install rclone only if you choose an rclone remote. iCloud Drive, a plain
+      directory and a git remote need no extra tools.
     EOS
   end
 
