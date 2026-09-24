@@ -202,6 +202,15 @@ jobs:
             NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
           fi
 
+          # A run that tagged and then lost its push leaves a tag that `describe` cannot see,
+          # so skip past anything already taken rather than failing on the collision
+          while git rev-parse "$NEW_VERSION" >/dev/null 2>&1; do
+            CURRENT="${NEW_VERSION#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            NEW_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+            echo "tag was taken, trying $NEW_VERSION"
+          done
+
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $NEW_VERSION (${BUMP} bump)"
 
