@@ -531,6 +531,116 @@ mod tests {
         assert!(!store.versions_dir().join(&id).exists());
     }
 
+    /* The reference `age` CLI is a separate implementation in another language. If it can open
+    what we wrote, the files are standard age files rather than something only this crate reads,
+    and the store stays recoverable with off the shelf tools if passbox ever goes away. */
+    #[test]
+    fn a_secret_file_opens_with_the_reference_age_cli() {
+        let Ok(age_cli) = which("age") else {
+            eprintln!("skipped, the age CLI is not installed");
+            return;
+        };
+        let (tmp, store, key) = store();
+        let r = store.recipient().unwrap();
+        let id = new_id();
+        store.put(&id, &secret("db", "swordfish"), &r).unwrap();
+
+        let identity = tmp.path().join("identity.txt");
+        fs::write(
+            &identity,
+            secrecy::ExposeSecret::expose_secret(&key.to_string()),
+        )
+        .unwrap();
+
+        let out = std::process::Command::new(age_cli)
+            .arg("--decrypt")
+            .arg("-i")
+            .arg(&identity)
+            .arg(store.secret_path(&id))
+            .output()
+            .unwrap();
+
+        assert!(
+            out.status.success(),
+            "age refused our file: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let plain = String::from_utf8_lossy(&out.stdout);
+        assert!(plain.contains("swordfish"), "{plain}");
+        assert!(plain.contains("\"name\":\"db\""), "{plain}");
+    }
+
+    fn which(tool: &str) -> Result<PathBuf> {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("command -v {tool}"))
+            .output()?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            bail!("{tool} not found");
+        }
+        Ok(PathBuf::from(path))
+    }
+
+    #[test]
+    fn a_tampered_audit_line_is_refused() {
+        let (_tmp, store, key) = store();
+        let line = crypto::encrypt_line(b"{\"at\":1}", &store.recipient().unwrap()).unwrap();
+
+        assert!(crypto::decrypt_line(&line, &key).is_ok());
+
+        let mut bytes = line.into_bytes();
+        let last = bytes.len() - 1;
+        bytes[last] = if bytes[last] == b'a' { b'b' } else { b'a' };
+        let tampered = String::from_utf8(bytes).unwrap();
+        assert!(crypto::decrypt_line(&tampered, &key).is_err());
+    }
+
+    /// A flipped byte must fail rather than hand back something that looks like a secret
+    #[test]
+    fn a_tampered_secret_file_is_refused() {
+        let (_tmp, store, key) = store();
+        let r = store.recipient().unwrap();
+        let id = new_id();
+        store.put(&id, &secret("db", "swordfish"), &r).unwrap();
+
+        let path = store.secret_path(&id);
+        let mut raw = fs::read(&path).unwrap();
+        let last = raw.len() - 1;
+        raw[last] ^= 0x01;
+        fs::write(&path, &raw).unwrap();
+
+        let opened = store.load(&id, &key);
+        assert!(opened.is_err(), "a tampered file decrypted");
+    }
+
+    #[test]
+    fn a_truncated_secret_file_is_refused() {
+        let (_tmp, store, key) = store();
+        let r = store.recipient().unwrap();
+        let id = new_id();
+        store.put(&id, &secret("db", "swordfish"), &r).unwrap();
+
+        let path = store.secret_path(&id);
+        let raw = fs::read(&path).unwrap();
+        fs::write(&path, &raw[..raw.len() / 2]).unwrap();
+
+        assert!(store.load(&id, &key).is_err());
+    }
+
+    #[test]
+    fn a_tampered_recovery_wrap_is_refused() {
+        let (_tmp, store, _key) = store();
+        let path = store.wraps_dir().join("recovery.age");
+        let mut raw = fs::read(&path).unwrap();
+        let last = raw.len() - 1;
+        raw[last] ^= 0x01;
+        fs::write(&path, &raw).unwrap();
+
+        let pass = SecretString::from("hunter2".to_string());
+        assert!(store.unlock_with_passphrase(pass).is_err());
+    }
+
     #[test]
     fn init_refuses_twice() {
         let (_tmp, store, _key) = store();

@@ -189,6 +189,38 @@ mod tests {
         assert_eq!(m.window_secs, MAX_GRANT_SECS);
     }
 
+    /// A grant file that has been edited must read as no grants, never as a grant
+    #[test]
+    fn a_tampered_grant_file_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store {
+            dir: tmp.path().to_path_buf(),
+        };
+        let key = store.init().unwrap();
+        save(
+            &store,
+            &[Grant {
+                dir: "/x".into(),
+                hash: "h".into(),
+                secrets: vec!["a".into()],
+                until: store::now() + 600,
+            }],
+        )
+        .unwrap();
+        assert_eq!(load(&store, &key).len(), 1);
+
+        let file = path(&store);
+        let mut raw = std::fs::read(&file).unwrap();
+        let last = raw.len() - 1;
+        raw[last] ^= 0x01;
+        std::fs::write(&file, &raw).unwrap();
+
+        assert!(
+            load(&store, &key).is_empty(),
+            "a tampered grant was honoured"
+        );
+    }
+
     #[test]
     fn grants_survive_a_round_trip_and_expired_ones_are_dropped() {
         let tmp = tempfile::tempdir().unwrap();

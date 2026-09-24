@@ -239,6 +239,62 @@ Contents write on the tap repo alone. Actions' built-in `GITHUB_TOKEN` cannot
 reach another repository. Without it the release still happens and the formula
 update is skipped with a warning.
 
+## Compared with pass
+
+passbox exists because of the first two rows. It is not a replacement for
+[pass](https://www.passwordstore.org) in the rows below them.
+
+| | `pass` | passbox |
+|---|---|---|
+| Private key at rest | a portable file under a passphrase, attackable offline | sealed to the Secure Enclave, inert on any other machine |
+| Entry names | plaintext filenames, and in git commit subjects | inside the ciphertext |
+| Authorisation | one GPG passphrase, then the agent caches it | per agent and per secret, with modes and windows |
+| Who asked for it | unknowable | named in the prompt and in the audit log |
+| Giving one to an agent | prints to stdout | injected into one child, and scrubbed from its output |
+| Maturity | a decade old, packaged everywhere | days old, unreviewed |
+| Platforms | anywhere GPG runs | macOS only |
+| Ecosystem | browser, mobile, dmenu, otp, import | none |
+| Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on |
+| Reading the source | 721 lines of shell | 2,900 lines of Rust and Swift, plus a daemon |
+
+Use passbox for the secrets your agents touch, where a prompt naming the caller
+is the whole point. Keep pass for the ones you cannot afford to lose, until this
+has had outside eyes on it.
+
+## What this has and has not been checked against
+
+The parts that came from elsewhere carry other people's review. age and scrypt
+come from the `age` crate. The Secure Enclave, HKDF and AES-GCM come from
+CryptoKit. The hardware guarantee is Apple's.
+
+What is ours is the composition, and these are the checks on it:
+
+- A second implementation, Python's `cryptography`, opens what CryptoKit sealed.
+  Two libraries agreeing is the evidence the construction is standard rather than
+  something invented here. It also checks that a stranger's key, a flipped tag
+  byte and a swapped ephemeral key are all refused, and that no ephemeral key
+  repeats. Run it with `tests/ecies.py`.
+- The reference `age` CLI opens the secret files, so the store is standard age
+  and stays readable with off the shelf tools if passbox goes away.
+- Tampered and truncated files are refused: secrets, the recovery wrap, audit
+  records, and grants, which fail closed to no grants at all.
+- The base64 the helper is fed matches the RFC 4648 vectors.
+
+## Disclaimer
+
+This is not proven and it is not fault proof.
+
+It is young, it was written quickly, and no independent security review has
+happened. Several real bugs were found during development, including a
+permission mode that silently widened on rewrite, a published checksum that was
+the hash of a 404 page, and a prompt whose wording had to be fixed after seeing
+it on screen. That rate suggests more are still in here.
+
+Cross-implementation tests raise confidence. They do not replace an audit, and
+nothing above is a proof of security. Treat it accordingly: good for the secrets
+your agents reach for, not yet the only copy of anything you cannot afford to
+lose. Findings are welcome.
+
 ## Licence
 
 MIT

@@ -42,11 +42,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # The reference implementation, so the interop test runs rather than skipping
+      - name: Install age
+        run: brew install age
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
         run: cargo test
+
+      # A second implementation opening what CryptoKit sealed is the evidence that the
+      # construction is standard. Wrapping uses only a public key, so no Enclave is involved.
+      - name: Cross-check the Secure Enclave ECIES against an independent implementation
+        run: |
+          swiftc -O -o /tmp/passbox-se swift/passbox-se.swift
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet cryptography
+          /tmp/venv/bin/python tests/ecies.py /tmp/passbox-se
 
       - name: Confirm the binary needs no developer identity
         run: |
