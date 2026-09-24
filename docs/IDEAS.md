@@ -152,6 +152,52 @@ key. It should not ship before the allowlist does.
 - **The MCP server.** One implementation, and the protocol is the interface.
 - **Output formats.** JSON on a flag is smaller than any plugin.
 
+## Hosts and clients
+
+The shape is one **host** and many **clients**, not peers.
+
+| | Host | Client |
+|---|---|---|
+| Secure Enclave | yes, and it is why it is the host | no |
+| The store | holds it | holds nothing |
+| The broker | runs it, raises the prompt | asks the host |
+| Examples | the Mac you sit at | a Linux server, a Mac running lid closed |
+
+A client asks the host. The human approves on the host, where the sensor is. The
+value comes back over the same channel, and the client never holds the key.
+
+`init` decides which it is. `canEvaluatePolicy` already tells us whether biometry
+is usable, so a machine that cannot reach a sensor becomes a client pointed at a
+host rather than binding to an Enclave it cannot use.
+
+This also fixes a real bug found by installing on a lid closed MacBook: `init`
+bound to the Secure Enclave and reported "reads will ask for your fingerprint",
+on a machine whose sensor is sealed inside a shut lid, leaving a store that
+nothing could open and no recovery wrap to fall back to.
+
+## The broker has to outlive the request
+
+A request arriving over SSH cannot raise the prompt itself. Measured on
+2026-09-24: a process spawned by SSH gets `canEvaluatePolicy` false with
+`systemCancel`, and so does a launchd agent in the Aqua session when the lid is
+shut. Whoever calls `evaluatePolicy` has to be somewhere a sensor is reachable.
+
+So the broker becomes a LaunchAgent in the host's login session, and the SSH side
+only carries bytes to its socket. Spawning a broker on demand, which is what
+passbox does today, would put it inside the SSH session where it cannot ask
+anybody anything.
+
+This is the one hard constraint the remote design adds.
+
+## SSH already carries an identity
+
+The agent name in a prompt is self declared and unverifiable. A client connecting
+over SSH has authenticated with a key, and the host knows which key. That is a
+real caller identity, and it is the first thing in this design that could make
+per agent policy enforceable rather than advisory.
+
+Tailscale would do the same through node identity.
+
 ## Remote capabilities, a later idea
 
 Gabriel's examples: Things and Mail run on the Mac, a Linux box cannot have
