@@ -218,6 +218,8 @@ jobs:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
           REPO: ${{ github.repository }}
+          # Without this the visibility check runs unauthenticated and reads nothing
+          GH_TOKEN: ${{ github.token }}
         run: |
           URL="https://github.com/${REPO}/archive/refs/tags/${VERSION}.tar.gz"
           TAP_REPO="gabrielkoerich/homebrew-tap"
