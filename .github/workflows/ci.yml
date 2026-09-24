@@ -228,7 +228,14 @@ jobs:
             exit 0
           fi
 
-          SHA256=$(curl -sL "$URL" | sha256sum | awk '{print $1}')
+          # Fetch to a file and prove it is a tarball. A bare `curl | sha256sum` hides a 404
+          # behind the pipeline's exit status and publishes the hash of the error page.
+          curl -sSfL "$URL" -o release.tar.gz
+          file release.tar.gz | grep -q 'gzip compressed' || {
+            echo "::error::$URL did not return a tarball, is the repository private?"
+            exit 1
+          }
+          SHA256=$(sha256sum release.tar.gz | awk '{print $1}')
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" tap-repo
           mkdir -p tap-repo/Formula
