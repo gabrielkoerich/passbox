@@ -69,6 +69,32 @@ pub fn offer_install() -> Result<()> {
     Ok(())
 }
 
+/// Recipients already provisioned on whatever token is plugged in
+pub fn recipients() -> Result<Vec<String>> {
+    let out = std::process::Command::new(PLUGIN)
+        .arg("--list")
+        .output()
+        .context("could not run age-plugin-yubikey")?;
+
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().find(|w| w.starts_with("age1yubikey1")))
+        .map(str::to_string)
+        .collect())
+}
+
+/// Provisioning a PIV slot changes the token, so it runs only when the user says so
+pub fn generate() -> Result<()> {
+    let status = std::process::Command::new(PLUGIN)
+        .arg("--generate")
+        .status()
+        .context("could not run age-plugin-yubikey --generate")?;
+    if !status.success() {
+        bail!("age-plugin-yubikey --generate did not finish");
+    }
+    Ok(())
+}
+
 pub fn installed() -> bool {
     std::process::Command::new(PLUGIN)
         .arg("--version")

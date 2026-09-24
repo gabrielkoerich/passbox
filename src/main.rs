@@ -358,19 +358,59 @@ fn init(store: &Store) -> Result<()> {
 
 #[cfg(feature = "host")]
 fn enable_sync(store: &Store) -> Result<()> {
-    if store.has_yubikey_wrap() {
-        eprintln!("sync is on, the YubiKey wrap already opens the copy");
+    if store.has_portable_wrap() {
+        eprintln!("sync is already on, the store has a wrap that opens it elsewhere");
         return Ok(());
     }
-    if store.has_recovery_wrap() {
-        eprintln!("sync is already on");
-        return Ok(());
-    }
+
     eprintln!("Syncing puts a copy of this store where another machine can read it.");
-    eprintln!("That copy is opened by a passphrase, so it is the one an attacker would attack.");
-    let key = unlock(store, "turn on sync")?;
-    new_passphrase(store, &key)?;
-    eprintln!("sync is on, wraps/recovery.age now travels with the store");
+    eprintln!("That copy needs a way in. Two choices:");
+    eprintln!();
+    eprintln!("  1) A YubiKey. Nothing in the copy can be attacked, and you keep the token.");
+    eprintln!("  2) A passphrase. Works anywhere, and anyone holding the copy can grind it.");
+    eprintln!();
+    eprint!("Which? [1/2] ");
+
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    match answer.trim() {
+        "1" => enable_with_yubikey(store),
+        "2" => {
+            let key = unlock(store, "turn on sync")?;
+            new_passphrase(store, &key)?;
+            eprintln!("sync is on, wraps/recovery.age now travels with the store");
+            Ok(())
+        }
+        other => bail!("expected 1 or 2, got {other}"),
+    }
+}
+
+#[cfg(feature = "host")]
+fn enable_with_yubikey(store: &Store) -> Result<()> {
+    yubikey::offer_install()?;
+
+    let mut found = yubikey::recipients()?;
+    if found.is_empty() {
+        eprintln!("No age identity on the token yet. Generating one changes a PIV slot on it.");
+        eprint!("Generate one now? [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            bail!("run `age-plugin-yubikey --generate` when ready, then try again");
+        }
+        yubikey::generate()?;
+        found = yubikey::recipients()?;
+    }
+
+    let recipient = found
+        .first()
+        .context("no YubiKey recipient found, is the token plugged in?")?;
+    eprintln!("using {recipient}");
+
+    let key = unlock(store, "turn on sync with a YubiKey")?;
+    store.create_yubikey_wrap(&key, recipient)?;
+    eprintln!("sync is on, and the copy is useless without that token");
+    eprintln!("keep a second token or add a passphrase, or losing it loses the way back");
     Ok(())
 }
 
