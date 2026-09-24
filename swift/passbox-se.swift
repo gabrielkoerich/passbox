@@ -101,6 +101,17 @@ func unwrap(reason: String) {
     let context = LAContext()
     context.localizedCancelTitle = "Deny"
 
+    /* Ask whether the sensor is reachable before raising anything. Hardware present, a print
+    enrolled and an unlocked session are all still not enough: a MacBook running with the lid shut
+    has its sensor inside the closed keyboard, and `evaluatePolicy` then fails with a cancellation
+    that reads like the user refused. */
+    var reachable: NSError?
+    if !context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &reachable) {
+        let why = reachable?.localizedDescription ?? "unknown reason"
+        fail("Touch ID is unavailable on this Mac right now (\(why)). A closed lid or a sleeping "
+            + "Touch ID keyboard will do this. Use the recovery passphrase, or open the lid.")
+    }
+
     var authError: Error?
     let waiter = DispatchSemaphore(value: 0)
     context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) {
