@@ -202,11 +202,11 @@ fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
     if enable {
         enable_sync(store)?;
     // An empty directory is a machine joining, and the wrap it needs arrives with the pull
-    } else if store.is_initialised() && !store.has_recovery_wrap() {
+    } else if store.is_initialised() && !store.has_portable_wrap() {
         bail!(
             "sync is off. No other machine could open this store, because the key is held by \
-             this Mac's Secure Enclave alone. `passbox sync --enable` adds a recovery \
-             passphrase, which is what a second machine uses to open the copy."
+             this Mac's Secure Enclave alone. Add a way in first: `passbox sync --enable` for \
+             a recovery passphrase, or `passbox yubikey-add` for a token."
         );
     }
 
@@ -358,6 +358,10 @@ fn init(store: &Store) -> Result<()> {
 
 #[cfg(feature = "host")]
 fn enable_sync(store: &Store) -> Result<()> {
+    if store.has_yubikey_wrap() {
+        eprintln!("sync is on, the YubiKey wrap already opens the copy");
+        return Ok(());
+    }
     if store.has_recovery_wrap() {
         eprintln!("sync is already on");
         return Ok(());

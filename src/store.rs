@@ -159,6 +159,11 @@ impl Store {
         self.recovery_path().exists()
     }
 
+    /// A wrap that opens the store away from this Mac. Sync is worth nothing without one.
+    pub fn has_portable_wrap(&self) -> bool {
+        self.has_recovery_wrap() || self.has_yubikey_wrap()
+    }
+
     /* The passphrase wrap is the only thing that opens the store away from this Mac, which makes
     it both what syncing needs and the one file worth attacking in a synced copy. It is written
     when the user asks for sync, never before. */
