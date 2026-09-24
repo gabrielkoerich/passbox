@@ -301,6 +301,31 @@ per agent policy enforceable rather than advisory.
 
 Tailscale would do the same through node identity.
 
+## The phone could approve, and that is a fork
+
+A phone on the tailnet is reachable and `whois` identifies it the same way it
+identifies a Mac. As a client it is unremarkable. As an **approver** it answers
+the question the first design notes left open, which is what a machine with no
+sensor does, and it removes the requirement that the host be awake and unlocked.
+
+It cannot be bolted on. The host's Enclave key is `.biometryAny` today, so it
+cannot be used at all without a fingerprint on that Mac. Approving somewhere else
+means choosing one of these:
+
+| | The host key becomes | Keeps | Costs |
+|---|---|---|---|
+| A | access control `.none`, still hardware bound | the key cannot be stolen off the Mac | the key can be used with nobody at the Mac, so the broker is the only presence check |
+| B | the phone holds its own wrap in its own Enclave | real biometric presence | the key exists on two devices |
+| C | `.none`, opened only on a signed approval from the phone | both guarantees | a signing key on the phone and more parts |
+
+iOS has no background daemons, so the phone cannot listen for requests. An
+approver needs a push notification into an app, or a Shortcut the user triggers.
+That weighs against B and C more than against A.
+
+Undecided. Worth deciding before any of it is built, because the answer changes
+the access control on the host key, and that is not a setting you can flip on a
+store that already exists.
+
 ## Remote capabilities, a later idea
 
 Gabriel's examples: Things and Mail run on the Mac, a Linux box cannot have
