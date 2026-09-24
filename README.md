@@ -284,16 +284,12 @@ What is ours is the composition, and these are the checks on it:
 
 This is not proven and it is not fault proof.
 
-It is young, it was written quickly, and no independent security review has
-happened. Several real bugs were found during development, including a
-permission mode that silently widened on rewrite, a published checksum that was
-the hash of a 404 page, and a prompt whose wording had to be fixed after seeing
-it on screen. That rate suggests more are still in here.
-
+It is young, and no independent security review has happened yet.
 Cross-implementation tests raise confidence. They do not replace an audit, and
-nothing above is a proof of security. Treat it accordingly: good for the secrets
-your agents reach for, not yet the only copy of anything you cannot afford to
-lose. Findings are welcome.
+nothing above is a proof of security.
+
+Use it for the secrets your agents reach for. Keep another copy of anything you
+cannot afford to lose. Findings are welcome.
 
 ## Licence
 

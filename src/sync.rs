@@ -162,7 +162,9 @@ mod tests {
         };
         let pass = SecretString::from("hunter2".to_string());
         let key = store.init().unwrap();
-        store.create_recovery_wrap(&key, pass).unwrap();
+        store
+            .create_recovery_wrap_with_factor(&key, pass, Some(10))
+            .unwrap();
         (store, key)
     }
 

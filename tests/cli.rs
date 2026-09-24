@@ -42,6 +42,8 @@ impl Cli {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_passbox"));
         cmd.env("PASSBOX_DIR", self.dir.path());
         cmd.env("PASSBOX_PASSPHRASE", passphrase);
+        // A one second KDF per store is the right default and the wrong thing to pay here
+        cmd.env("PASSBOX_SCRYPT_LOG_N", "10");
         cmd
     }
 

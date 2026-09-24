@@ -330,7 +330,21 @@ fn new_passphrase(store: &Store, key: &age::x25519::Identity) -> Result<()> {
     if !headless() && ask("again: ")? != pass {
         bail!("passphrases do not match");
     }
-    store.create_recovery_wrap(key, SecretString::from(pass))
+    store.create_recovery_wrap_with_factor(key, SecretString::from(pass), test_work_factor())
+}
+
+/// Only a debug build will weaken the KDF, so a release binary cannot be talked into it
+fn test_work_factor() -> Option<u8> {
+    #[cfg(debug_assertions)]
+    {
+        std::env::var("PASSBOX_SCRYPT_LOG_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
 }
 
 /// True when the Enclave took the key. An older Mac or CI cannot, and falls back to a passphrase.

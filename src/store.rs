@@ -159,11 +159,24 @@ impl Store {
         key: &x25519::Identity,
         passphrase: SecretString,
     ) -> Result<()> {
+        self.create_recovery_wrap_with_factor(key, passphrase, None)
+    }
+
+    /* The age crate calibrates scrypt to about a second of work on this machine, which is the
+    right default and the wrong thing to pay sixty times over in a test suite. `log_n` lowers it,
+    and only a debug build will read the environment variable that asks for that. */
+    pub fn create_recovery_wrap_with_factor(
+        &self,
+        key: &x25519::Identity,
+        passphrase: SecretString,
+        log_n: Option<u8>,
+    ) -> Result<()> {
+        let mut recipient = age::scrypt::Recipient::new(passphrase);
+        if let Some(log_n) = log_n {
+            recipient.set_work_factor(log_n);
+        }
         let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
-        let wrapped = crypto::encrypt(
-            text.as_bytes(),
-            &[Box::new(age::scrypt::Recipient::new(passphrase))],
-        )?;
+        let wrapped = crypto::encrypt(text.as_bytes(), &[Box::new(recipient)])?;
         text.zeroize();
         write_private(&self.recovery_path(), &wrapped)
     }
@@ -417,7 +430,9 @@ mod tests {
         };
         let pass = SecretString::from("hunter2".to_string());
         let key = store.init().unwrap();
-        store.create_recovery_wrap(&key, pass).unwrap();
+        store
+            .create_recovery_wrap_with_factor(&key, pass, Some(10))
+            .unwrap();
         (tmp, store, key)
     }
 
