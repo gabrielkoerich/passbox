@@ -24,6 +24,12 @@ brew install gabrielkoerich/tap/passbox
 passbox init
 ```
 
+Recent Homebrew asks you to trust a third party tap before it will build from
+one. If the install stops and says so, run `brew trust --formula
+gabrielkoerich/tap/passbox` and try again.
+
+Building needs the Command Line Tools, for `swiftc`. A full Xcode is not needed.
+
 `init` binds the store to this Mac's Secure Enclave and asks for nothing else.
 There is no passphrase, so there is no file anyone can carry off and grind at.
 

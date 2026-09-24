@@ -7,9 +7,10 @@ class Passbox < Formula
   license "MIT"
 
   depends_on "rust" => :build
-  # build.rs compiles the Secure Enclave helper with swiftc
-  depends_on xcode: :build
   depends_on :macos
+
+  # build.rs needs swiftc, which ships with the Command Line Tools that Homebrew already
+  # requires. `depends_on xcode: :build` would demand a full Xcode.app install instead.
 
   def install
     system "cargo", "install", *std_cargo_args
