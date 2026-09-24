@@ -205,13 +205,23 @@ Erasing the Mac destroys the Enclave keys, so a restore onto a wiped machine
 finds files it cannot open. Only a restore to the same Mac, not erased, still
 works.
 
-To have a way back, turn on sync. It writes `wraps/recovery.age`, a copy of the
-store key under a passphrase, and copies the store to a directory.
+To have a way back, turn on sync. It asks how the copy should be opened, then
+writes that wrap and copies the store to a directory.
 
 ```bash
 passbox sync --enable                                    # to iCloud Drive
 PASSBOX_REMOTE=/Volumes/stick/passbox passbox sync --enable   # to a USB stick
 ```
+
+```
+That copy needs a way in. Two choices:
+
+  1) A YubiKey. Nothing in the copy can be attacked, and you keep the token.
+  2) A passphrase. Works anywhere, and anyone holding the copy can grind it.
+```
+
+Choosing the token handles the rest: it offers to install `age-plugin-yubikey`,
+and asks before provisioning a slot, because that changes the hardware.
 
 | Destination | Updates | The passphrase wrap sits |
 |---|---|---|
