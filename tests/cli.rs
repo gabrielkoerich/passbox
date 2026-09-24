@@ -349,6 +349,90 @@ fn git_runs_inside_the_store_and_ignores_the_socket() {
     assert!(!out.contains("broker.sock"), "{out}");
 }
 
+/* pass entries carry `key: value` lines under the password, and bean's get_fields reads them, so
+the import has to keep the whole body rather than the first line. */
+#[test]
+fn importing_from_pass_keeps_the_whole_entry() {
+    let cli = Cli::new();
+    let fake = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+
+    for name in ["bean/hl-mainnet-pk", "bean/fred-api-key", "beanstalk/other"] {
+        let path = store.path().join(format!("{name}.gpg"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"x").unwrap();
+    }
+
+    let shim = fake.path().join("pass");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\nprintf 'topsecret\\nlogin: gb\\nurl: https://example.com'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let out = cli
+        .cmd(PASSPHRASE)
+        .env("PASSWORD_STORE_DIR", store.path())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake.path().display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .args(["import-pass", "bean"])
+        .output()
+        .unwrap();
+    let note = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{note}");
+    assert!(note.contains("importing 2 of 3"), "{note}");
+
+    // The namespace filter must not have dragged in beanstalk
+    assert_eq!(
+        cli.run(&["ls"], None).unwrap(),
+        "bean/fred-api-key\nbean/hl-mainnet-pk\n"
+    );
+
+    let body = cli.run(&["get", "bean/hl-mainnet-pk"], None).unwrap();
+    assert_eq!(body, "topsecret\nlogin: gb\nurl: https://example.com");
+}
+
+#[test]
+fn importing_twice_skips_what_is_already_there() {
+    let cli = Cli::new();
+    let fake = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+    std::fs::write(store.path().join("solo.gpg"), b"x").unwrap();
+
+    let shim = fake.path().join("pass");
+    std::fs::write(&shim, "#!/bin/sh\nprintf 'value'\n").unwrap();
+    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let run = || {
+        let out = cli
+            .cmd(PASSPHRASE)
+            .env("PASSWORD_STORE_DIR", store.path())
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    fake.path().display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .arg("import-pass")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stderr).to_string()
+    };
+
+    assert!(run().contains("imported 1, skipped 0"));
+    let second = run();
+    assert!(second.contains("imported 0, skipped 1"), "{second}");
+}
+
 #[test]
 fn a_missing_secret_fails_loudly() {
     let cli = Cli::new();

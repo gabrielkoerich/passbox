@@ -44,6 +44,19 @@ passbox ls
 passbox get github/token
 ```
 
+### Coming from pass
+
+```bash
+passbox import-pass              # everything
+passbox import-pass bean         # one namespace
+passbox import-pass bean/token   # one entry
+```
+
+Each entry is decrypted through GPG and re-encrypted to the store key. The whole
+body is kept, so the `key: value` lines many pass entries carry under the
+password survive. Entries already in the store are skipped unless you pass
+`--force`, and nothing in `pass` is changed or removed.
+
 ### Giving a secret to an agent
 
 The value goes into one child process and never into the agent.

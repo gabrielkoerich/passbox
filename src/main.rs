@@ -1,5 +1,6 @@
 mod broker;
 mod crypto;
+mod import;
 mod mcp;
 mod project;
 mod se;
@@ -85,6 +86,16 @@ enum Command {
         #[arg(long)]
         enable: bool,
     },
+    /// Copy entries across from `pass`, all of them or one namespace
+    ImportPass {
+        /// A namespace such as `bean`, or one entry. Everything, if omitted.
+        prefix: Option<String>,
+        #[arg(long)]
+        mode: Option<Mode>,
+        /// Overwrite entries that are already in the store
+        #[arg(long)]
+        force: bool,
+    },
     /// Serve MCP over stdio, so an agent asks through tools rather than a shell
     Mcp,
     /// Run git inside the store, for `passbox git init`, `remote add`, `log` and the rest
@@ -124,6 +135,11 @@ fn run() -> Result<()> {
         } => exec(&store, &envs, stdin.as_deref(), &command),
         Command::Audit { tail } => audit(&store, tail),
         Command::Sync { remote, enable } => run_sync(&store, remote.as_deref(), enable),
+        Command::ImportPass {
+            prefix,
+            mode,
+            force,
+        } => import_pass(&store, prefix.as_deref(), mode, force),
         Command::Mcp => mcp::serve(store),
         Command::Git { args } => git(&store, &args),
         Command::Broker => broker::serve(store),
@@ -443,6 +459,41 @@ fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Re
     let (id, secret) = secret;
     store.put(&id, &secret, &recipient)?;
     eprintln!("stored {name} as {}", secret.mode);
+    Ok(())
+}
+
+fn import_pass(store: &Store, prefix: Option<&str>, mode: Option<Mode>, force: bool) -> Result<()> {
+    let dir = import::store_dir();
+    let all = import::entries(&dir)?;
+    if all.is_empty() {
+        bail!("no pass entries under {}", dir.display());
+    }
+
+    let picked = import::select(&all, prefix);
+    if picked.is_empty() {
+        bail!(
+            "nothing in pass matches {}, of {} entries",
+            prefix.unwrap_or("*"),
+            all.len()
+        );
+    }
+    eprintln!("importing {} of {} entries", picked.len(), all.len());
+
+    // Spotting duplicates needs the name to id map, which only the key can produce
+    let key = if store.ids()?.is_empty() {
+        None
+    } else {
+        Some(unlock(store, "import entries from pass")?)
+    };
+
+    let report = import::import(
+        store,
+        &picked,
+        key.as_ref(),
+        mode.unwrap_or(Mode::Window),
+        force,
+    )?;
+    eprintln!("imported {}, skipped {}", report.imported, report.skipped);
     Ok(())
 }
 
