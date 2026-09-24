@@ -19,7 +19,7 @@ Runs with no Apple Developer Program membership.
 
 ## Install
 
-```sh
+```bash
 brew install gabrielkoerich/tap/passbox
 passbox init
 ```
@@ -32,7 +32,7 @@ gone. Turning on sync is what adds a way back, and it is off until you ask.
 
 ## Use
 
-```sh
+```bash
 printf 'ghp_xxx' | passbox add github/token
 passbox ls
 passbox get github/token
@@ -42,7 +42,7 @@ passbox get github/token
 
 The value goes into one child process and never into the agent.
 
-```sh
+```bash
 passbox exec --env GITHUB_TOKEN=github/token -- gh api /user
 passbox exec --stdin db/password -- psql
 ```
@@ -52,15 +52,17 @@ child's environment with `ps eww`.
 
 Set `PASSBOX_AGENT` so the prompt names the caller.
 
-```sh
+```bash
 PASSBOX_AGENT=claude-code passbox exec --env GH_TOKEN=github/token -- gh pr list
 ```
 
-The prompt then reads `claude-code wants the password for github/token`.
+The prompt then reads `passbox is trying to release the password for
+github/token to claude-code.` macOS writes the opening clause from the binary
+name, and passbox writes the rest.
 
 ### Through MCP
 
-```sh
+```bash
 claude mcp add passbox -- passbox mcp
 ```
 
@@ -112,7 +114,7 @@ Every secret carries one.
 | `always` | A prompt on every read |
 | `never` | Never released to an agent, interactive `get` only |
 
-```sh
+```bash
 passbox mode banking/login never
 passbox add github/token --mode window --window 600
 ```
@@ -122,7 +124,7 @@ already had unless you pass `--mode`.
 
 ### Seeing what was released
 
-```sh
+```bash
 passbox audit --tail 50
 ```
 
@@ -132,7 +134,7 @@ Every decision is logged, encrypted, one record per line.
 
 git carries the encrypted secrets and nothing that opens them.
 
-```sh
+```bash
 passbox git init
 passbox git remote add origin git@github.com:you/passbox-store.git
 passbox git add -A && passbox git commit -m backup && passbox git push
@@ -149,7 +151,7 @@ Sync is off, and nothing leaves the Mac until you run `passbox sync` yourself.
 There is no timer and no syncing on write. Turning it on creates a recovery
 passphrase, because a second machine has no other way to open the copy.
 
-```sh
+```bash
 passbox sync --enable
 passbox sync
 ```
@@ -163,7 +165,7 @@ better.
 The default target is the iCloud Drive folder, which is an ordinary directory on
 macOS. No account, no rclone, no network code.
 
-```sh
+```bash
 PASSBOX_REMOTE=~/Dropbox/passbox passbox sync   # any directory
 PASSBOX_REMOTE=b2:passbox passbox sync          # any rclone remote
 ```
@@ -177,7 +179,7 @@ generic, since a subject naming an entry would undo the encrypted names.
 
 On a second Mac, pull the store and then bind it.
 
-```sh
+```bash
 passbox sync
 passbox machine add
 ```
@@ -186,14 +188,14 @@ passbox machine add
 
 Every write keeps the last 5 versions, and `rm` keeps the file too.
 
-```sh
+```bash
 passbox restore github/token            # list versions
 passbox restore github/token --index 0  # put the newest one back
 ```
 
 ## What is on disk
 
-```
+```text
 ~/.passbox/
   store/<random-id>.age     one self describing secret per file
   store/<random-id>.tomb    deletion marker
@@ -220,7 +222,7 @@ sizes, and their modification times.
 
 ## Building
 
-```sh
+```bash
 cargo test
 cargo test -- --ignored   # the Secure Enclave round trip, needs a finger
 ```
