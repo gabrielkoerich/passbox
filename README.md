@@ -181,6 +181,18 @@ cargo test -- --ignored   # the Secure Enclave round trip, needs a finger
 
 `build.rs` compiles the Swift helper with `swiftc` from the Command Line Tools.
 
+## Releasing
+
+Every push to `main` that is not all `chore:` commits cuts a release. The version
+comes from the commit subjects, `feat:` bumping the minor and anything else the
+patch. CI tags it, writes the changelog, and pushes an updated `Formula/passbox.rb`
+into `gabrielkoerich/homebrew-tap`.
+
+That last step needs a `HOMEBREW_TAP_TOKEN` secret, a fine-grained token with
+Contents write on the tap repo alone. Actions' built-in `GITHUB_TOKEN` cannot
+reach another repository. Without it the release still happens and the formula
+update is skipped with a warning.
+
 ## Licence
 
 MIT
