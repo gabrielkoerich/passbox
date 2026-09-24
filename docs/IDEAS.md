@@ -193,6 +193,20 @@ by making that name resolve from a datacentre as easily as from the next room,
 with no port forwarding, and by adding a second verifiable identity beside the
 ssh key.
 
+The destination has to be an `ssh_config` entry rather than a shell alias. An
+alias such as `alias ssh-mac='ssh gabriel@192.168.1.253'` is visible only to an
+interactive shell, so passbox cannot use it. The same name written as a host
+block works for passbox, scp, rsync and git at once:
+
+```
+Host m4
+  HostName 192.168.1.253
+  User gabriel
+```
+
+Swapping `HostName` for a Tailscale name later moves every tool with it, and
+changes nothing in passbox.
+
 Nothing here wakes a sleeping Mac, and a host that cannot be reached cannot
 approve. The client needs a timeout and a plain message rather than a hang.
 
