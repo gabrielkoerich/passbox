@@ -239,7 +239,7 @@ passbox exists because of the first two rows. It is not a replacement for
 | Authorisation | one GPG passphrase, then the agent caches it | per agent and per secret, with modes and windows |
 | Who asked for it | unknowable | named in the prompt and in the audit log |
 | Giving one to an agent | prints to stdout | injected into one child, and scrubbed from its output |
-| Maturity | a decade old, packaged everywhere | days old, unreviewed |
+| Maturity | a decade old, packaged everywhere | young, unreviewed |
 | Platforms | anywhere GPG runs | macOS only |
 | Ecosystem | browser, mobile, dmenu, otp, import | none |
 | Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on |
