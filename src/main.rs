@@ -469,6 +469,8 @@ fn enable_with_yubikey(store: &Store) -> Result<()> {
             Some(_) => eprintln!("The PIV applet is empty, and OpenPGP is a separate applet."),
             None => eprintln!("Could not read the PIV applet. Install ykman to check it first."),
         }
+        // Fail here rather than after the plugin has asked for a PIN it cannot use
+        yubikey::management_key_is_supported()?;
         eprint!("Generate one now? [y/N] ");
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;

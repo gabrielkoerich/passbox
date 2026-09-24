@@ -69,23 +69,57 @@ pub fn offer_install() -> Result<()> {
     Ok(())
 }
 
-/* What the PIV applet already holds. OpenPGP is a separate applet on the same chip, so PGP keys
-are never at risk, but a PIV slot in use is worth seeing before provisioning one. None means the
-check could not run. */
-pub fn piv_slots_in_use() -> Option<Vec<String>> {
+/// None means ykman is missing or the applet could not be read
+fn piv_info() -> Option<String> {
     let out = std::process::Command::new("ykman")
         .args(["piv", "info"])
         .output()
         .ok()?;
-    if !out.status.success() {
-        return None;
-    }
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/* What the PIV applet already holds. OpenPGP is a separate applet on the same chip, so PGP keys
+are never at risk, but a PIV slot in use is worth seeing before provisioning one. None means the
+check could not run. */
+pub fn piv_slots_in_use() -> Option<Vec<String>> {
     Some(
-        String::from_utf8_lossy(&out.stdout)
+        piv_info()?
             .lines()
             .filter(|l| l.trim_start().starts_with("Slot "))
             .map(|l| l.trim().to_string())
             .collect(),
+    )
+}
+
+/* age-plugin-yubikey authenticates with the PIV management key and supports TDES only, so an AES
+key fails after the PIN prompt with an error naming neither the cause nor the token. Recent ykman
+picks AES192 when it sets a management key, so this is the state a careful user lands in.
+See https://github.com/str4d/age-plugin-yubikey/issues/92 */
+pub fn management_key_is_supported() -> Result<()> {
+    match piv_info() {
+        // No ykman, so let the plugin speak for itself
+        None => Ok(()),
+        Some(info) => check_management_key(&info),
+    }
+}
+
+fn check_management_key(info: &str) -> Result<()> {
+    let Some(algorithm) = info
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Management key algorithm:"))
+    else {
+        return Ok(());
+    };
+    let algorithm = algorithm.trim();
+    if algorithm.eq_ignore_ascii_case("TDES") {
+        return Ok(());
+    }
+    bail!(
+        "the PIV management key is {algorithm}, and {PLUGIN} can only use TDES.\n\
+         Change it, which leaves your OpenPGP keys and any PIV slot untouched:\n\
+         \n    ykman piv access change-management-key -a TDES --protect\n"
     )
 }
 
@@ -134,6 +168,28 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("not an age recipient"), "{err}");
+    }
+
+    /* The exact `ykman piv info` shape this has to read, from a 5.7.4 token */
+    const AES_INFO: &str = "PIV version:              5.7.4\nPIN tries remaining:      3/3\nManagement key algorithm: AES192\nManagement key is stored on the YubiKey, protected by PIN.\n";
+
+    #[test]
+    fn an_aes_management_key_is_refused_with_the_fix() {
+        let err = check_management_key(AES_INFO).unwrap_err().to_string();
+        assert!(err.contains("AES192"), "{err}");
+        assert!(err.contains("change-management-key -a TDES"), "{err}");
+    }
+
+    #[test]
+    fn a_tdes_management_key_passes() {
+        let info = AES_INFO.replace("AES192", "TDES");
+        assert!(check_management_key(&info).is_ok());
+    }
+
+    #[test]
+    fn an_unreadable_applet_does_not_block_the_plugin() {
+        assert!(check_management_key("").is_ok());
+        assert!(check_management_key("PIV version: 5.7.4\n").is_ok());
     }
 
     #[test]
