@@ -182,6 +182,17 @@ other file and suppresses its id everywhere. The algorithm only ever copies file
 and writes markers, so it cannot delete a secret it misunderstood. Tombstones are
 pruned after 90 days.
 
+`sync --enable` asks two questions: how a copy is opened, and where it goes. They
+were one question before, which meant a store that already had a passphrase wrap
+skipped straight past the destination and silently copied to iCloud. A wrap says
+nothing about where the copy belongs.
+
+The destination goes in `~/.passbox/remote` rather than a shell profile, so a bare
+`passbox sync` cannot fall back to the iCloud default behind your back. passbox
+tells the four kinds apart by shape, and tests the git URL forms before the rclone
+colon so `git@host:repo` is not read as an rclone remote. That file is excluded
+from the copy, since each machine picks its own destination.
+
 Rejected: rclone for the default path. It is an external binary in the read path
 of a password store, and the default remote is a local directory where a file copy
 does the whole job. `rclone bisync` needs a `--resync` baseline and a state

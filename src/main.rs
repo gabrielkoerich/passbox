@@ -211,23 +211,26 @@ fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
     }
 
     let remote = match remote {
-        Some(given) => std::path::PathBuf::from(given),
-        None => sync::default_remote()?,
+        Some(given) => given.to_string(),
+        None => sync::default_remote(store)?,
     };
 
-    // A colon means an rclone remote such as b2:passbox, which no local copy can reach
-    if remote.to_string_lossy().contains(':') {
-        sync::sync_via_rclone(store, &remote.to_string_lossy())?;
-    } else {
-        let report = sync::sync(store, &remote)?;
-        eprintln!(
-            "{} sent, {} received, {}",
-            report.pushed,
-            report.pulled,
-            remote.display()
-        );
+    match sync::classify(&remote) {
+        // git carries its own history, so there is no directory to copy into
+        sync::Kind::Git => git_push(store),
+        sync::Kind::Rclone => {
+            sync::sync_via_rclone(store, &remote)?;
+            git_push(store);
+        }
+        sync::Kind::Directory => {
+            let report = sync::sync(store, std::path::Path::new(&remote))?;
+            eprintln!(
+                "{} sent, {} received, {remote}",
+                report.pushed, report.pulled
+            );
+            git_push(store);
+        }
     }
-    git_push(store);
     Ok(())
 }
 
@@ -358,9 +361,10 @@ fn init(store: &Store) -> Result<()> {
 
 #[cfg(feature = "host")]
 fn enable_sync(store: &Store) -> Result<()> {
+    // How the copy is opened and where it goes are separate questions
     if store.has_portable_wrap() {
-        eprintln!("sync is already on, the store has a wrap that opens it elsewhere");
-        return Ok(());
+        eprintln!("the store already has a wrap that opens it elsewhere");
+        return choose_remote(store);
     }
 
     eprintln!("Syncing puts a copy of this store where another machine can read it.");
@@ -374,15 +378,77 @@ fn enable_sync(store: &Store) -> Result<()> {
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
     match answer.trim() {
-        "1" => enable_with_yubikey(store),
+        "1" => enable_with_yubikey(store)?,
         "2" => {
             let key = unlock(store, "turn on sync")?;
             new_passphrase(store, &key)?;
             eprintln!("sync is on, wraps/recovery.age now travels with the store");
-            Ok(())
         }
         other => bail!("expected 1 or 2, got {other}"),
     }
+    choose_remote(store)
+}
+
+/// Asked once and remembered, so a later bare `passbox sync` cannot surprise you with iCloud
+#[cfg(feature = "host")]
+fn choose_remote(store: &Store) -> Result<()> {
+    // Only `sync --enable` reaches here, so a destination already set is one to offer changing
+    if let Some(already) = sync::configured_remote(store) {
+        eprintln!("copies currently go to {already}");
+        eprint!("Change that? [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            return Ok(());
+        }
+        std::fs::remove_file(sync::remote_path(store)).ok();
+    }
+
+    eprintln!();
+    eprintln!("Where should the copy go?");
+    eprintln!();
+    eprintln!("  1) iCloud Drive, a folder on this Mac that Apple replicates");
+    eprintln!("  2) A directory you name, such as a USB stick or Dropbox");
+    eprintln!("  3) A git remote, which also gives you history");
+    eprintln!("  4) An rclone remote, for S3, B2, Drive and the rest");
+    eprintln!();
+    eprint!("Which? [1/2/3/4] ");
+
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+
+    let remote = match answer.trim() {
+        "1" => sync::default_remote(store)?,
+        "2" => prompt("directory: ")?,
+        "3" => {
+            let url = prompt("git remote, such as git@github.com:you/passbox-store.git: ")?;
+            git(store, &["init".into()]).ok();
+            git(
+                store,
+                &["remote".into(), "add".into(), "origin".into(), url.clone()],
+            )
+            .ok();
+            url
+        }
+        "4" => prompt("rclone remote, such as b2:passbox: ")?,
+        other => bail!("expected 1 to 4, got {other}"),
+    };
+
+    store::write_private(&sync::remote_path(store), remote.trim().as_bytes())?;
+    eprintln!("copies go to {}", remote.trim());
+    Ok(())
+}
+
+#[cfg(feature = "host")]
+fn prompt(label: &str) -> Result<String> {
+    eprint!("{label}");
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim().to_string();
+    if answer.is_empty() {
+        bail!("nothing given");
+    }
+    Ok(answer)
 }
 
 #[cfg(feature = "host")]

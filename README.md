@@ -164,31 +164,50 @@ open it. For that, turn on sync.
 ## Sync
 
 Sync is off, and nothing leaves the Mac until you run `passbox sync` yourself.
-There is no timer and no syncing on write. Turning it on creates a recovery
-passphrase, because a second machine has no other way to open the copy.
+There is no timer and no syncing on write.
 
 ```bash
 passbox sync --enable
 passbox sync
 ```
 
-The passphrase it asks for guards the copy. See [If you lose the
-Mac](#if-you-lose-the-mac) for what that costs.
+`--enable` asks two questions.
 
-The default target is the iCloud Drive folder, which is an ordinary directory on
-macOS. No account, no rclone, no network code.
+The first is how a second machine gets in, a YubiKey or a passphrase. See [If you
+lose the Mac](#if-you-lose-the-mac).
 
-```bash
-PASSBOX_REMOTE=~/Dropbox/passbox passbox sync   # any directory
-PASSBOX_REMOTE=b2:passbox passbox sync          # any rclone remote
+The second is where the copy goes:
+
+```
+Where should the copy go?
+
+  1) iCloud Drive, a folder on this Mac that Apple replicates
+  2) A directory you name, such as a USB stick or Dropbox
+  3) A git remote, which also gives you history
+  4) An rclone remote, for S3, B2, Drive and the rest
 ```
 
-A remote containing a colon goes through `rclone bisync`, which covers every
-backend rclone supports. Nobody on the default path needs rclone installed.
+The answer is written to `~/.passbox/remote`, so later runs of bare `passbox sync`
+go to the same place. Running `--enable` again shows the current destination and
+offers to change it. `PASSBOX_REMOTE` overrides one run without changing the file.
 
-If the store directory is also a git repo, `passbox sync` commits and pushes after
-the copy, which gives you history and an off-site remote. Commit subjects are
-generic, since a subject naming an entry would undo the encrypted names.
+| Answer | Goes to | Needs |
+|---|---|---|
+| iCloud Drive | `~/Library/Mobile Documents/com~apple~CloudDocs/passbox` | nothing |
+| a directory | wherever you say | nothing |
+| a git remote | `~/.passbox` made a repo, pushed on each sync | `git` |
+| an rclone remote | any of rclone's backends | `rclone` |
+
+iCloud Drive is an ordinary directory on macOS, so the default path is a directory
+to directory copy. No account, no rclone, no network code.
+
+passbox tells them apart by shape. A remote starting `git@`, `ssh://` or `https://`,
+or ending `.git`, is git. One starting `/`, `~` or `.` is a directory. Anything else
+holding a colon goes to `rclone bisync`. The rest is a directory.
+
+Git commits after the copy, which gives you history and an off-site remote. Commit
+subjects are generic, since a subject naming an entry would undo the encrypted
+names.
 
 On a second Mac, `passbox sync` then `passbox machine add`, the same steps as
 recovering onto a replacement.
@@ -205,12 +224,11 @@ Erasing the Mac destroys the Enclave keys, so a restore onto a wiped machine
 finds files it cannot open. Only a restore to the same Mac, not erased, still
 works.
 
-To have a way back, turn on sync. It asks how the copy should be opened, then
-writes that wrap and copies the store to a directory.
+To have a way back, turn on sync. It asks how the copy should be opened, writes
+that wrap, then asks where the copy goes.
 
 ```bash
-passbox sync --enable                                    # to iCloud Drive
-PASSBOX_REMOTE=/Volumes/stick/passbox passbox sync --enable   # to a USB stick
+passbox sync --enable
 ```
 
 ```
@@ -223,21 +241,12 @@ That copy needs a way in. Two choices:
 Choosing the token handles the rest: it offers to install `age-plugin-yubikey`,
 and asks before provisioning a slot, because that changes the hardware.
 
-| Destination | Updates | The passphrase wrap sits |
-|---|---|---|
-| iCloud Drive, the default | on every `passbox sync` | in iCloud, replicated |
-| any directory, through `PASSBOX_REMOTE` | when you plug the stick in | wherever you put it |
+Pick the passphrase knowing the cost. Anyone holding the copy can attack that wrap
+offline at their own pace. passbox refuses a passphrase under 12 characters. Use
+five or six diceware words.
 
-Pick one knowing the cost. Anyone holding the copy can attack that wrap offline
-at their own pace. passbox refuses a passphrase under 12 characters. Use five or
-six diceware words.
-
-If you use a stick, set the remote in your shell profile. A later bare
-`passbox sync` uses the default and would put a copy in iCloud without asking.
-
-```bash
-export PASSBOX_REMOTE="/Volumes/stick/passbox"
-```
+A wrap only helps where the copy reaches. A USB stick in the same bag as the Mac
+survives neither a fire nor a theft.
 
 ### A YubiKey instead of a passphrase
 
@@ -320,7 +329,7 @@ sizes, and their modification times.
 | Variable | Effect |
 |---|---|
 | `PASSBOX_DIR` | Where the store lives, default `~/.passbox` |
-| `PASSBOX_REMOTE` | Where `passbox sync` copies to **once you have turned sync on**, default the iCloud Drive folder |
+| `PASSBOX_REMOTE` | Overrides the destination for one run, ahead of the one `sync --enable` recorded |
 | `PASSBOX_AGENT` | Name shown in the prompt beside the secret |
 | `PASSBOX_PASSPHRASE` | Supplies the passphrase for CI and headless use, and turns off the Enclave path |
 

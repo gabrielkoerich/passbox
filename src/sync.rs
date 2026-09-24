@@ -7,21 +7,66 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// iCloud Drive is an ordinary directory on macOS, so the default needs no account and no network
-pub fn default_remote() -> Result<PathBuf> {
-    if let Some(set) = std::env::var_os("PASSBOX_REMOTE") {
-        return Ok(PathBuf::from(set));
-    }
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join("Library/Mobile Documents/com~apple~CloudDocs/passbox"))
+#[derive(PartialEq, Eq, Debug)]
+pub enum Kind {
+    Directory,
+    Rclone,
+    Git,
 }
 
-/* The socket is a live endpoint and the versions are this machine's own history. Grants stay
-put too: one that travelled would let a machine you have not touched inherit an approval you
-gave here. */
+/// A destination is a directory unless it looks like a git URL or an rclone remote
+pub fn classify(remote: &str) -> Kind {
+    let remote = remote.trim();
+    if remote.starts_with("git@")
+        || remote.starts_with("ssh://")
+        || remote.ends_with(".git")
+        || remote.starts_with("https://")
+    {
+        return Kind::Git;
+    }
+    if remote.starts_with('/') || remote.starts_with('~') || remote.starts_with('.') {
+        return Kind::Directory;
+    }
+    if remote.contains(':') {
+        return Kind::Rclone;
+    }
+    Kind::Directory
+}
+
+/// Where a chosen destination is kept, so a later bare `passbox sync` goes to the same place
+pub fn remote_path(store: &Store) -> PathBuf {
+    store.dir.join("remote")
+}
+
+pub fn configured_remote(store: &Store) -> Option<String> {
+    std::fs::read_to_string(remote_path(store))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The environment wins, then whatever was chosen, then iCloud Drive
+pub fn default_remote(store: &Store) -> Result<String> {
+    if let Some(set) = std::env::var_os("PASSBOX_REMOTE") {
+        return Ok(set.to_string_lossy().to_string());
+    }
+    if let Some(chosen) = configured_remote(store) {
+        return Ok(chosen);
+    }
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home)
+        .join("Library/Mobile Documents/com~apple~CloudDocs/passbox")
+        .to_string_lossy()
+        .to_string())
+}
+
+/* The socket is a live endpoint and the versions are this machine's own history. Grants stay put
+too, since one that travelled would let a machine you have not touched inherit an approval given
+here. The chosen remote is machine local, because a USB path on one Mac means nothing on another. */
 fn skip(relative: &Path) -> bool {
     let text = relative.to_string_lossy();
     text == "broker.sock"
+        || text == "remote"
         || text.starts_with("store/.versions")
         || (text.starts_with("grants-") && text.ends_with(".age"))
 }
@@ -177,6 +222,36 @@ mod tests {
             created: now(),
             updated: now(),
         }
+    }
+
+    #[test]
+    fn destinations_are_classified_by_shape() {
+        assert_eq!(classify("/Volumes/stick/passbox"), Kind::Directory);
+        assert_eq!(classify("~/Dropbox/passbox"), Kind::Directory);
+        assert_eq!(classify("b2:passbox"), Kind::Rclone);
+        assert_eq!(classify("drive:passbox"), Kind::Rclone);
+        assert_eq!(classify("git@github.com:you/store.git"), Kind::Git);
+        assert_eq!(classify("https://github.com/you/store.git"), Kind::Git);
+        assert_eq!(classify("ssh://git@host/store"), Kind::Git);
+    }
+
+    /// A git URL also contains a colon, so it must be tested before the rclone shape
+    #[test]
+    fn a_git_url_is_not_read_as_an_rclone_remote() {
+        assert_ne!(classify("git@github.com:you/store.git"), Kind::Rclone);
+    }
+
+    #[test]
+    fn a_chosen_remote_outlives_the_shell() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (one, _key) = store(tmp.path());
+        assert!(configured_remote(&one).is_none());
+
+        crate::store::write_private(&remote_path(&one), b"/Volumes/stick/passbox").unwrap();
+        assert_eq!(
+            configured_remote(&one).as_deref(),
+            Some("/Volumes/stick/passbox")
+        );
     }
 
     #[test]
