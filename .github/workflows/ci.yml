@@ -228,11 +228,18 @@ jobs:
             exit 0
           fi
 
+          # A private repo serves 404 to the anonymous fetch Homebrew would make, so there is
+          # no formula worth publishing yet. That is a state, not a build failure.
+          if [ "$(gh api "repos/${REPO}" --jq .private)" = "true" ]; then
+            echo "::warning::${REPO} is private, so brew cannot fetch the tarball. Skipping the tap."
+            exit 0
+          fi
+
           # Fetch to a file and prove it is a tarball. A bare `curl | sha256sum` hides a 404
           # behind the pipeline's exit status and publishes the hash of the error page.
           curl -sSfL "$URL" -o release.tar.gz
           file release.tar.gz | grep -q 'gzip compressed' || {
-            echo "::error::$URL did not return a tarball, is the repository private?"
+            echo "::error::$URL did not return a tarball"
             exit 1
           }
           SHA256=$(sha256sum release.tar.gz | awk '{print $1}')

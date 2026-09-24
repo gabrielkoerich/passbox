@@ -1,5 +1,6 @@
 mod broker;
 mod crypto;
+mod mcp;
 mod se;
 mod store;
 mod sync;
@@ -83,6 +84,8 @@ enum Command {
         #[arg(long)]
         enable: bool,
     },
+    /// Serve MCP over stdio, so an agent asks through tools rather than a shell
+    Mcp,
     /// Run git inside the store, for `passbox git init`, `remote add`, `log` and the rest
     Git {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
@@ -120,6 +123,7 @@ fn run() -> Result<()> {
         } => exec(&store, &envs, stdin.as_deref(), &command),
         Command::Audit { tail } => audit(&store, tail),
         Command::Sync { remote, enable } => run_sync(&store, remote.as_deref(), enable),
+        Command::Mcp => mcp::serve(store),
         Command::Git { args } => git(&store, &args),
         Command::Broker => broker::serve(store),
     }
@@ -204,11 +208,19 @@ fn agent() -> String {
     std::env::var("PASSBOX_AGENT").unwrap_or_else(|_| "passbox".to_string())
 }
 
+fn read_secret(store: &Store, name: &str, for_agent: bool) -> Result<String> {
+    read_secret_as(store, name, &agent(), for_agent)
+}
+
+pub fn agent_read_secret(store: &Store, name: &str, agent: &str) -> Result<String> {
+    read_secret_as(store, name, agent, true)
+}
+
 /// The broker owns windows and the audit log, so every read goes through it when it can.
 /// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
-fn read_secret(store: &Store, name: &str, for_agent: bool) -> Result<String> {
+fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Result<String> {
     if !headless() && store.has_se_wrap() {
-        return broker::request(store, name, &agent());
+        return broker::request(store, name, agent);
     }
     let key = unlock(store, &format!("release the password for {name}"))?;
     let (_, secret) = store
@@ -426,14 +438,54 @@ fn get(store: &Store, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Through the broker, so a second listing inside the window does not ask again
+pub fn agent_list_names(store: &Store, agent: &str) -> Result<Vec<String>> {
+    if !headless() && store.has_se_wrap() {
+        return broker::list(store, agent);
+    }
+    let key = unlock(store, "list your secret names")?;
+    store.names(&key)
+}
+
+/// Captures the child's output instead of inheriting, which is what a tool result needs
+pub fn run_child(
+    command: &[String],
+    env_var: Option<&str>,
+    value: &str,
+) -> Result<std::process::Output> {
+    let (program, args) = command.split_first().context("no command to run")?;
+    let mut child = std::process::Command::new(program);
+    child
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    match env_var {
+        Some(var) => {
+            child.env(var, value);
+            child.stdin(std::process::Stdio::null());
+        }
+        None => {
+            child.stdin(std::process::Stdio::piped());
+        }
+    }
+
+    let mut running = child
+        .spawn()
+        .with_context(|| format!("could not run {program}"))?;
+    if env_var.is_none() {
+        running
+            .stdin
+            .as_mut()
+            .expect("piped")
+            .write_all(value.as_bytes())?;
+        drop(running.stdin.take());
+    }
+    Ok(running.wait_with_output()?)
+}
+
 fn ls(store: &Store) -> Result<()> {
-    // Through the broker, so a second listing inside the window does not ask again
-    let names = if !headless() && store.has_se_wrap() {
-        broker::list(store, &agent())?
-    } else {
-        let key = unlock(store, "list your secret names")?;
-        store.names(&key)?
-    };
+    let names = agent_list_names(store, &agent())?;
     for name in names {
         println!("{name}");
     }

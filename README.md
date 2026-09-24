@@ -56,6 +56,27 @@ PASSBOX_AGENT=claude-code passbox exec --env GH_TOKEN=github/token -- gh pr list
 
 The prompt then reads `claude-code wants the password for github/token`.
 
+### Through MCP
+
+```sh
+claude mcp add passbox -- passbox mcp
+```
+
+The server exposes two tools, and neither returns a secret.
+
+| Tool | Returns |
+|---|---|
+| `list_secrets` | names only |
+| `run_with_secret` | the command's output, with the value scrubbed out of it |
+
+There is deliberately no `get_secret`. A tool result lands in the model's context,
+where it is logged and sent onward, so the tools run the command for the agent
+instead of handing it the value. If the command prints the secret anyway,
+passbox replaces it in the output before returning.
+
+The agent name in the prompt comes from the MCP handshake, so it is the client's
+own `clientInfo.name` rather than a guess up the process tree.
+
 ### Permission modes
 
 Every secret carries one.
