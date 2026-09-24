@@ -420,10 +420,23 @@ identity that is verified rather than shared, and an audit log. Once a
 Proton Bridge, with host and port already read from the environment. So the
 blocked job needs no capability work at all:
 
-- Point `PROTON_BRIDGE_HOST` at the Mac and expose only that port to the tailnet
-  with `tailscale serve --tcp`. No code changes.
-- Or run Proton Bridge on the Linux box, which has official builds, and the job
-  stops needing the Mac entirely.
+- Run Proton Bridge on the Linux box, which has official builds. It listens on
+  loopback there, the job talks to `127.0.0.1` exactly as it does now, and
+  nothing is exposed to any network. This is the one to prefer.
+- Or point `PROTON_BRIDGE_HOST` at the Mac and forward that port to the tailnet
+  with `tailscale serve --tcp`. No code changes, and a real cost, below.
+
+The bridge listens on `127.0.0.1:1143` and `127.0.0.1:1025`, verified
+2026-09-24. That is what makes the bridge password hardcoded in
+`proton_downloader.py` a hygiene problem rather than an exposure: it is useless
+to anything that cannot already run code on the Mac, and anything that can could
+read the source.
+
+Forwarding the port to the tailnet removes exactly that protection. The
+credential becomes usable by any tailnet node while sitting in git history as a
+default. Taking that option means rotating the bridge password first, moving it
+behind `CredentialProvider`, and restricting the port with a tailnet ACL to the
+one client that needs it.
 
 Only `mail_app_downloader.py`, which drives Mail.app through AppleScript, is
 genuinely Mac bound. Check whether Proton already covers the same mail before
