@@ -39,8 +39,32 @@ milliseconds, and the broker caches the map while it holds the key.
 ## One store key, several wraps
 
 One age x25519 key encrypts every secret. It is never written unwrapped. Two
-kinds of wrap open it: the recovery passphrase, and one Secure Enclave key per
-machine.
+kinds of wrap open it: one Secure Enclave key per machine, and a recovery
+passphrase that exists only once sync is on.
+
+## Sync is off, and the passphrase comes with it
+
+`init` writes only the Enclave wrap. A fresh store holds no file that an
+attacker could take away and grind at, because the only wrap is bound to one
+Secure Enclave.
+
+The passphrase wrap is created by `passbox sync --enable`, never before. This
+matters because the passphrase is the weakest link in the design, and syncing is
+the only thing that needs it: a second machine cannot open the copy any other
+way. Tying its existence to the feature that requires it means the weak link
+does not exist until the user has asked for it and been told the cost.
+
+Rejected: asking for a passphrase at `init`, which is what the first version did.
+It writes the one attackable file on day one, for a store that may never leave
+the Mac.
+
+Cost: a default store has no way back. Lose the Mac and the secrets are gone,
+which `init` says in as many words.
+
+git is kept separate from this. It backs up the encrypted secrets and excludes
+the Enclave wraps, so a git remote holds nothing that can open anything. That
+covers deleting a secret by accident, and deliberately does not cover losing the
+machine. Sync covers that, and charges a passphrase for it.
 
 Rejected: a Secure Enclave recipient per secret. It gives hardware enforcement on
 every read, prompts on every read, and turns key rotation into a rewrite of the

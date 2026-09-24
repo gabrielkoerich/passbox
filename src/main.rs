@@ -11,6 +11,7 @@ use std::io::{IsTerminal, Read, Write};
 use store::{DEFAULT_WINDOW_SECS, Mode, Secret, Store};
 
 const PASSPHRASE_ENV: &str = "PASSBOX_PASSPHRASE";
+const MIN_PASSPHRASE: usize = 12;
 
 #[derive(Parser)]
 #[command(
@@ -78,6 +79,9 @@ enum Command {
         /// Directory or rclone remote, default $PASSBOX_REMOTE or the iCloud Drive folder
         #[arg(long)]
         remote: Option<String>,
+        /// Create the recovery passphrase that syncing needs, turning sync on
+        #[arg(long)]
+        enable: bool,
     },
     /// Run git inside the store, for `passbox git init`, `remote add`, `log` and the rest
     Git {
@@ -115,17 +119,19 @@ fn run() -> Result<()> {
             command,
         } => exec(&store, &envs, stdin.as_deref(), &command),
         Command::Audit { tail } => audit(&store, tail),
-        Command::Sync { remote } => run_sync(&store, remote.as_deref()),
+        Command::Sync { remote, enable } => run_sync(&store, remote.as_deref(), enable),
         Command::Git { args } => git(&store, &args),
         Command::Broker => broker::serve(store),
     }
 }
 
-/// A socket cannot be committed, and the versions are this machine's own history
+/* git carries the encrypted secrets and nothing that opens them. The Enclave wraps are useless
+off the Mac that made them, so they stay out. The recovery wrap only exists once sync is on, and
+then it belongs in the backup, because without it the backup cannot be restored anywhere. */
 fn ensure_store_gitignore(store: &Store) -> Result<()> {
     let path = store.dir.join(".gitignore");
     if !path.exists() {
-        std::fs::write(&path, "broker.sock\nstore/.versions/\n")?;
+        std::fs::write(&path, "broker.sock\nstore/.versions/\nwraps/se-*.json\n")?;
     }
     Ok(())
 }
@@ -142,7 +148,18 @@ fn git(store: &Store, args: &[String]) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
+fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
+    if enable {
+        enable_sync(store)?;
+    // An empty directory is a machine joining, and the wrap it needs arrives with the pull
+    } else if store.is_initialised() && !store.has_recovery_wrap() {
+        bail!(
+            "sync is off. No other machine could open this store, because the key is held by \
+             this Mac's Secure Enclave alone. `passbox sync --enable` adds a recovery \
+             passphrase, which is what a second machine uses to open the copy."
+        );
+    }
+
     let remote = match remote {
         Some(given) => std::path::PathBuf::from(given),
         None => sync::default_remote()?,
@@ -261,28 +278,59 @@ fn audit(store: &Store, tail: usize) -> Result<()> {
 }
 
 fn init(store: &Store) -> Result<()> {
-    eprintln!("The recovery passphrase is the only way back if you lose this Mac.");
+    let key = store.init()?;
+    eprintln!("store ready at {}", store.dir.display());
+
+    // Without an Enclave there is nothing holding the key, so a passphrase is the only option
+    if headless() || !bind_machine(store, &key) {
+        new_passphrase(store, &key)?;
+    } else {
+        eprintln!();
+        eprintln!("This store opens on this Mac only. Lose it and the secrets are gone.");
+        eprintln!("`passbox sync --enable` adds a passphrase and a copy on another machine.");
+    }
+    Ok(())
+}
+
+fn enable_sync(store: &Store) -> Result<()> {
+    if store.has_recovery_wrap() {
+        eprintln!("sync is already on");
+        return Ok(());
+    }
+    eprintln!("Syncing puts a copy of this store where another machine can read it.");
+    eprintln!("That copy is opened by a passphrase, so it is the one an attacker would attack.");
+    let key = unlock(store, "passbox wants to turn on sync")?;
+    new_passphrase(store, &key)?;
+    eprintln!("sync is on, wraps/recovery.age now travels with the store");
+    Ok(())
+}
+
+/// Sync needs this: no other machine can open the store without it
+fn new_passphrase(store: &Store, key: &age::x25519::Identity) -> Result<()> {
     let pass = ask("recovery passphrase: ")?;
-    if pass.is_empty() {
-        bail!("refusing an empty recovery passphrase");
+    if pass.chars().count() < MIN_PASSPHRASE {
+        bail!("use at least {MIN_PASSPHRASE} characters, a copy of this leaves the Mac");
     }
     if !headless() && ask("again: ")? != pass {
         bail!("passphrases do not match");
     }
-    let key = store.init(SecretString::from(pass))?;
-    eprintln!("store ready at {}", store.dir.display());
-    bind_machine(store, &key);
-    Ok(())
+    store.create_recovery_wrap(key, SecretString::from(pass))
 }
 
-/// A store still works without the Enclave, on an older Mac or in CI, so this never fails the call
-fn bind_machine(store: &Store, key: &age::x25519::Identity) {
+/// True when the Enclave took the key. An older Mac or CI cannot, and falls back to a passphrase.
+fn bind_machine(store: &Store, key: &age::x25519::Identity) -> bool {
     if headless() {
-        return;
+        return false;
     }
     match store.create_se_wrap(key) {
-        Ok(()) => eprintln!("bound to this Mac, reads will ask for your fingerprint"),
-        Err(e) => eprintln!("no Secure Enclave here ({e:#}), reads will ask for the passphrase"),
+        Ok(()) => {
+            eprintln!("bound to this Mac, reads will ask for your fingerprint");
+            true
+        }
+        Err(e) => {
+            eprintln!("no Secure Enclave here ({e:#}), reads will ask for the passphrase");
+            false
+        }
     }
 }
 

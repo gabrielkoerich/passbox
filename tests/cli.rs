@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-const PASSPHRASE: &str = "hunter2";
+const PASSPHRASE: &str = "correct horse battery staple";
 
 struct Cli {
     dir: tempfile::TempDir,
@@ -299,6 +299,36 @@ fn a_secret_deleted_on_another_machine_can_still_be_restored() {
     one.run(&["restore", "github/token", "--index", "0"], None)
         .unwrap();
     assert_eq!(one.run(&["get", "github/token"], None).unwrap(), "ghp_abc");
+}
+
+/// Sync is off until asked for, so a fresh store holds nothing an offline attacker could grind
+#[test]
+fn sync_is_refused_until_it_is_enabled() {
+    let remote = tempfile::tempdir().unwrap();
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+
+    // The store this test builds is headless, so it already carries a recovery wrap
+    std::fs::remove_file(cli.path().join("wraps/recovery.age")).unwrap();
+
+    let mut cmd = cli.cmd(PASSPHRASE);
+    cmd.env("PASSBOX_REMOTE", remote.path());
+    let out = cmd.arg("sync").output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(), "sync ran with no recovery wrap");
+    assert!(err.contains("sync is off"), "{err}");
+    assert_eq!(std::fs::read_dir(remote.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    cli.run(&["git", "init"], None).unwrap();
+
+    let ignore = std::fs::read_to_string(cli.path().join(".gitignore")).unwrap();
+    assert!(ignore.contains("wraps/se-*.json"), "{ignore}");
 }
 
 #[test]

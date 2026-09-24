@@ -128,9 +128,9 @@ impl Store {
         self.se_wrap_path().exists()
     }
 
-    /// Generate the store key and write both wraps. The recipient stays in the clear so
-    /// writing a secret never needs an unlock.
-    pub fn init(&self, passphrase: SecretString) -> Result<x25519::Identity> {
+    /// Generate the store key and write no wrap. The recipient stays in the clear so writing a
+    /// secret never needs an unlock. The caller decides which wraps to add.
+    pub fn init(&self) -> Result<x25519::Identity> {
         if self.is_initialised() {
             bail!("{} is already initialised", self.dir.display());
         }
@@ -140,15 +140,32 @@ impl Store {
         private_dir(&self.wraps_dir())?;
 
         let key = x25519::Identity::generate();
-        let recipient = key.to_public();
+        write_private(
+            &self.recipient_path(),
+            key.to_public().to_string().as_bytes(),
+        )?;
+        Ok(key)
+    }
 
+    pub fn has_recovery_wrap(&self) -> bool {
+        self.recovery_path().exists()
+    }
+
+    /* The passphrase wrap is the only thing that opens the store away from this Mac, which makes
+    it both what syncing needs and the one file worth attacking in a synced copy. It is written
+    when the user asks for sync, never before. */
+    pub fn create_recovery_wrap(
+        &self,
+        key: &x25519::Identity,
+        passphrase: SecretString,
+    ) -> Result<()> {
+        let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
         let wrapped = crypto::encrypt(
-            secrecy::ExposeSecret::expose_secret(&key.to_string()).as_bytes(),
+            text.as_bytes(),
             &[Box::new(age::scrypt::Recipient::new(passphrase))],
         )?;
-        write_private(&self.recovery_path(), &wrapped)?;
-        write_private(&self.recipient_path(), recipient.to_string().as_bytes())?;
-        Ok(key)
+        text.zeroize();
+        write_private(&self.recovery_path(), &wrapped)
     }
 
     pub fn recipient(&self) -> Result<x25519::Recipient> {
@@ -399,8 +416,8 @@ mod tests {
             dir: tmp.path().to_path_buf(),
         };
         let pass = SecretString::from("hunter2".to_string());
-        store.init(pass.clone()).unwrap();
-        let key = store.unlock_with_passphrase(pass).unwrap();
+        let key = store.init().unwrap();
+        store.create_recovery_wrap(&key, pass).unwrap();
         (tmp, store, key)
     }
 
@@ -517,6 +534,6 @@ mod tests {
     #[test]
     fn init_refuses_twice() {
         let (_tmp, store, _key) = store();
-        assert!(store.init(SecretString::from("x".to_string())).is_err());
+        assert!(store.init().is_err());
     }
 }

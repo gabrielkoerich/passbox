@@ -157,7 +157,8 @@ mod tests {
             dir: dir.to_path_buf(),
         };
         let pass = SecretString::from("hunter2".to_string());
-        let key = store.init(pass).unwrap();
+        let key = store.init().unwrap();
+        store.create_recovery_wrap(&key, pass).unwrap();
         (store, key)
     }
 

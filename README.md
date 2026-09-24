@@ -17,9 +17,11 @@ brew install gabrielkoerich/tap/passbox
 passbox init
 ```
 
-`init` creates the store, asks for a recovery passphrase, and binds this Mac's
-Secure Enclave. Keep the passphrase somewhere safe. A Secure Enclave key cannot
-leave the Mac that made it, so the passphrase is the only way back.
+`init` binds the store to this Mac's Secure Enclave and asks for nothing else.
+There is no passphrase, so there is no file anyone can carry off and grind at.
+
+The cost is plain: the store opens on this Mac only. Lose it and the secrets are
+gone. Turning on sync is what adds a way back, and it is off until you ask.
 
 ## Use
 
@@ -76,11 +78,36 @@ passbox audit --tail 50
 
 Every decision is logged, encrypted, one record per line.
 
-## Sync
+## Backup, with no key anywhere
+
+git carries the encrypted secrets and nothing that opens them.
 
 ```sh
+passbox git init
+passbox git remote add origin git@github.com:you/passbox-store.git
+passbox git add -A && passbox git commit -m backup && passbox git push
+```
+
+The Secure Enclave wraps are excluded, so the remote holds opaque age files that
+only this Mac can read. That protects you from deleting a secret by accident. It
+does **not** protect you from losing the Mac, because nothing in the backup can
+open it. For that, turn on sync.
+
+## Sync
+
+Sync is off. Turning it on creates a recovery passphrase, because a second
+machine has no other way to open the copy.
+
+```sh
+passbox sync --enable
 passbox sync
 ```
+
+Understand what that passphrase is. It wraps the store key into
+`wraps/recovery.age`, which then travels with the store, so anyone who obtains
+the synced copy can attack it offline. It is the one file worth attacking.
+Use a long one. passbox asks for at least 12 characters and a diceware phrase is
+better.
 
 The default target is the iCloud Drive folder, which is an ordinary directory on
 macOS. No account, no rclone, no network code.
@@ -121,7 +148,7 @@ passbox restore github/token --index 0  # put the newest one back
   store/<random-id>.tomb    deletion marker
   store/.versions/<id>/     earlier versions, kept local
   wraps/recipient           the store public key, no secret in it
-  wraps/recovery.age        the store key under your recovery passphrase
+  wraps/recovery.age        the store key under your passphrase, only once sync is on
   wraps/se-<host>.json      the store key under that Mac's Secure Enclave
   audit-<host>.log          one encrypted record per line
   broker.sock               the approval socket
