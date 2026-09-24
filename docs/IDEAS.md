@@ -210,6 +210,33 @@ changes nothing in passbox.
 Nothing here wakes a sleeping Mac, and a host that cannot be reached cannot
 approve. The client needs a timeout and a plain message rather than a hang.
 
+## What each role needs from the network
+
+Measured on 2026-09-24 across two Macs on one tailnet.
+
+The client only makes outbound connections, so the sandboxed App Store Tailscale
+build is enough. It never creates a `utun` interface and nothing can connect to
+it, which does not matter for a client.
+
+The host has to accept inbound connections, so it needs the standalone Tailscale
+build, which does create a real interface, and it needs Remote Login enabled.
+
+| | Build | Interface | Accepts inbound |
+|---|---|---|---|
+| host | standalone | `utun` with a 100.x address | yes |
+| client | App Store is fine | none | no |
+
+Getting this backwards is easy and the symptom is misleading: `tailscale ping`
+succeeds while ssh to the same node times out, because the control plane can
+relay a ping to a node that has no interface to deliver TCP on.
+
+Traffic between two machines on the same LAN was relayed through a DERP server in
+another country at 30ms rather than going direct. Worth checking before blaming
+passbox for latency.
+
+Headscale, the open source control server, is worth a look later. It replaces the
+coordination server and leaves the rest of this unchanged.
+
 ## The broker has to outlive the request
 
 A request arriving over SSH cannot raise the prompt itself. Measured on
