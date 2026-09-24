@@ -215,8 +215,10 @@ approve. The client needs a timeout and a plain message rather than a hang.
 Measured on 2026-09-24 across two Macs on one tailnet.
 
 The client only makes outbound connections, so the sandboxed App Store Tailscale
-build is enough. It never creates a `utun` interface and nothing can connect to
-it, which does not matter for a client.
+build is enough. That build does create a `utun` interface and does answer
+`tailscale ping`, and it still does not deliver inbound TCP to services on the
+host, because it runs as a sandboxed network extension. None of that matters for
+a client.
 
 The host has to accept inbound connections, so it needs the standalone Tailscale
 build, which does create a real interface, and it needs Remote Login enabled.
@@ -226,9 +228,13 @@ build, which does create a real interface, and it needs Remote Login enabled.
 | host | standalone | `utun` with a 100.x address | yes |
 | client | App Store is fine | none | no |
 
-Getting this backwards is easy and the symptom is misleading: `tailscale ping`
-succeeds while ssh to the same node times out, because the control plane can
-relay a ping to a node that has no interface to deliver TCP on.
+Getting this backwards is easy and the symptom is misleading. Measured against
+the App Store build: `tailscale ping` answers, MagicDNS resolves, the interface
+holds the right address, `ShieldsUp` is false, sshd listens on `*:22`, and TCP to
+any port over the tailnet still times out while the same port is open on the LAN.
+Every check says reachable except the one that matters.
+
+Test reachability with `nc -z` against a port rather than with `tailscale ping`.
 
 Traffic between two machines on the same LAN was relayed through a DERP server in
 another country at 30ms rather than going direct. Worth checking before blaming
