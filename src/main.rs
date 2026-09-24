@@ -10,6 +10,7 @@ mod se;
 mod store;
 #[cfg(feature = "host")]
 mod sync;
+mod tree;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -580,10 +581,16 @@ pub fn run_child(
     Ok(running.wait_with_output()?)
 }
 
+/// A tree for a terminal, one name per line for anything reading the output
 fn ls(store: &Store) -> Result<()> {
     let names = agent_list_names(store, &agent())?;
-    for name in names {
-        println!("{name}");
+    let mut out = std::io::stdout();
+    if out.is_terminal() {
+        out.write_all(tree::render(&names, true).as_bytes())?;
+    } else {
+        for name in names {
+            writeln!(out, "{name}")?;
+        }
     }
     Ok(())
 }
