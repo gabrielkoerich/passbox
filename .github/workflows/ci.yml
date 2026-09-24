@@ -194,7 +194,9 @@ jobs:
 
           # Only the package version, which is the first version key in the manifest
           sed -i "0,/^version = /s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml
-          git add Cargo.toml
+          # The lock carries the package version too, and cargo rewrites it on the next build
+          sed -i "/^name = \"passbox\"$/{n;s/^version = .*/version = \"${VERSION#v}\"/}" Cargo.lock
+          git add Cargo.toml Cargo.lock
           # The first release computes the version the manifest already carries
           git diff --cached --quiet || git commit -m "chore: bump version to ${VERSION}"
 
