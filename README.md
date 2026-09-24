@@ -8,12 +8,9 @@ one child process rather than into the agent.
   <img src="docs/prompt.png" alt="Touch ID prompt naming the secret and the agent" width="340">
 </p>
 
-That prompt is the product. It names the secret and the agent, so approving is a
-decision rather than a reflex.
-
-Secrets are ordinary [age](https://age-encryption.org) files. The broker that
-decides who may open them is the part that matters. See [docs/DESIGN.md](docs/DESIGN.md)
-for why it is built this way and what it costs.
+Secrets are ordinary [age](https://age-encryption.org) files. The broker decides
+who may open them. See [docs/DESIGN.md](docs/DESIGN.md) for why it is built this
+way and what it costs.
 
 Runs with no Apple Developer Program membership.
 
@@ -266,9 +263,8 @@ passbox exists because of the first two rows. It is not a replacement for
 | Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on |
 | Reading the source | 721 lines of shell | 2,286 lines of Rust and Swift, plus a daemon |
 
-Use passbox for the secrets your agents touch, where a prompt naming the caller
-is the whole point. Keep pass for the ones you cannot afford to lose, until this
-has had outside eyes on it.
+Use passbox for the secrets your agents touch. Keep pass for the ones you cannot
+afford to lose, until this has had outside eyes on it.
 
 ## What this has and has not been checked against
 
