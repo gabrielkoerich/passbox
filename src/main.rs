@@ -1,6 +1,7 @@
 mod broker;
 mod crypto;
 mod mcp;
+mod project;
 mod se;
 mod store;
 mod sync;
@@ -135,7 +136,10 @@ then it belongs in the backup, because without it the backup cannot be restored 
 fn ensure_store_gitignore(store: &Store) -> Result<()> {
     let path = store.dir.join(".gitignore");
     if !path.exists() {
-        std::fs::write(&path, "broker.sock\nstore/.versions/\nwraps/se-*.json\n")?;
+        std::fs::write(
+            &path,
+            "broker.sock\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\n",
+        )?;
     }
     Ok(())
 }

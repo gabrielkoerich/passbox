@@ -16,10 +16,14 @@ pub fn default_remote() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join("Library/Mobile Documents/com~apple~CloudDocs/passbox"))
 }
 
-/// The socket is a live endpoint and the versions are this machine's own history
+/* The socket is a live endpoint and the versions are this machine's own history. Grants stay
+put too: one that travelled would let a machine you have not touched inherit an approval you
+gave here. */
 fn skip(relative: &Path) -> bool {
     let text = relative.to_string_lossy();
-    text == "broker.sock" || text.starts_with("store/.versions")
+    text == "broker.sock"
+        || text.starts_with("store/.versions")
+        || (text.starts_with("grants-") && text.ends_with(".age"))
 }
 
 fn walk(root: &Path, base: &Path, out: &mut BTreeMap<PathBuf, SystemTime>) -> Result<()> {
@@ -286,6 +290,31 @@ mod tests {
                 pulled: 0
             }
         );
+    }
+
+    /// An approval given on this Mac must not arrive on a machine you never touched
+    #[test]
+    fn grants_never_travel() {
+        let a = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        let (one, _key) = store(a.path());
+
+        let grant = crate::project::Grant {
+            dir: "/x".into(),
+            hash: "h".into(),
+            secrets: vec!["a/b".into()],
+            until: now() + 600,
+        };
+        crate::project::save(&one, &[grant]).unwrap();
+        sync(&one, remote.path()).unwrap();
+
+        let leaked: Vec<_> = fs::read_dir(remote.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("grants-"))
+            .collect();
+        assert!(leaked.is_empty(), "{leaked:?}");
     }
 
     #[test]

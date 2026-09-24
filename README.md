@@ -77,6 +77,28 @@ passbox replaces it in the output before returning.
 The agent name in the prompt comes from the MCP handshake, so it is the client's
 own `clientInfo.name` rather than a guess up the process tree.
 
+### Approving a project once
+
+A project declares what it needs in `.passbox.toml`:
+
+```toml
+secrets = ["github/token", "npm/token"]
+window_secs = 3600
+```
+
+The first time an agent working in that directory asks for one of them, passbox
+shows a single prompt covering the whole list, and does not ask again for the
+window. The default is an hour and the cap is twelve.
+
+**The file is a request, not a grant.** An agent can write one itself, so nothing
+is approved until you put your finger on the sensor. The approval is bound to the
+file's SHA-256: add a secret to the list and the hash changes, so it asks again.
+A secret set to `never` is refused no matter what the manifest says.
+
+The project is the caller's working directory, read from the kernel rather than
+taken from the request, so a caller cannot point at a manifest somewhere else.
+Grants live in `grants-<host>.age`, encrypted, and never sync.
+
 ### Permission modes
 
 Every secret carries one.

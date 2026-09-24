@@ -1,6 +1,7 @@
 //! Decides who may open a secret, holds the approval windows, and writes the audit log.
 
 use crate::crypto;
+use crate::project::{self, Grant};
 use crate::store::{self, DEFAULT_WINDOW_SECS, Mode, Store};
 use age::x25519;
 use anyhow::{Context, Result, anyhow, bail};
@@ -76,6 +77,7 @@ struct Broker {
     key: Option<x25519::Identity>,
     key_at: u64,
     approvals: HashMap<(String, String), u64>,
+    grants: Vec<Grant>,
 }
 
 impl Broker {
@@ -85,6 +87,7 @@ impl Broker {
             key: None,
             key_at: 0,
             approvals: HashMap::new(),
+            grants: Vec::new(),
         }
     }
 
@@ -103,14 +106,55 @@ impl Broker {
 
     fn ask(&mut self, reason: &str) -> Result<()> {
         let key = self.store.unlock_with_se(reason)?;
+        self.grants = project::load(&self.store, &key);
         self.key = Some(key);
         self.key_at = store::now();
         Ok(())
     }
 
-    fn handle(&mut self, request: &Request, caller: &str) -> Result<String> {
+    fn granted(&self, secret: &str, cwd: Option<&std::path::Path>) -> bool {
+        let Some(manifest) = cwd.and_then(project::find) else {
+            return false;
+        };
+        let now = store::now();
+        self.grants.iter().any(|g| g.covers(&manifest, secret, now))
+    }
+
+    /// One prompt covers the whole manifest, which is the point of declaring it up front
+    fn grant_manifest(&mut self, request: &Request, cwd: Option<&std::path::Path>) -> Result<bool> {
+        let Some(manifest) = cwd.and_then(project::find) else {
+            return Ok(false);
+        };
+        if !manifest.secrets.iter().any(|s| s == &request.name) {
+            return Ok(false);
+        }
+
+        self.ask(&format!(
+            "give {} access to {} secrets declared by {} for {} minutes",
+            request.agent,
+            manifest.secrets.len(),
+            manifest.dir.display(),
+            manifest.window_secs / 60
+        ))?;
+
+        self.grants.push(Grant {
+            dir: manifest.dir.to_string_lossy().to_string(),
+            hash: manifest.hash,
+            secrets: manifest.secrets,
+            until: store::now() + manifest.window_secs,
+        });
+        project::save(&self.store, &self.grants)?;
+        Ok(true)
+    }
+
+    fn handle(
+        &mut self,
+        request: &Request,
+        caller: &str,
+        cwd: Option<&std::path::Path>,
+    ) -> Result<String> {
         match request.op {
-            Op::Get => self.handle_get(request, caller),
+            Op::Get => self.handle_get(request, caller, cwd),
             Op::List => self.handle_list(request, caller),
         }
     }
@@ -143,7 +187,12 @@ impl Broker {
         Ok(self.store.names(&key)?.join("\n"))
     }
 
-    fn handle_get(&mut self, request: &Request, caller: &str) -> Result<String> {
+    fn handle_get(
+        &mut self,
+        request: &Request,
+        caller: &str,
+        cwd: Option<&std::path::Path>,
+    ) -> Result<String> {
         let approved = self
             .approvals
             .get(&(request.agent.clone(), request.name.clone()))
@@ -164,17 +213,26 @@ impl Broker {
         };
 
         let outcome = match decide(secret.mode, secret.window_secs, approved, store::now()) {
+            // A manifest never covers `never`, because Deny is not reached from here
             Decision::Deny => {
                 self.audit(&key, &request.agent, &request.name, "denied", caller)?;
                 bail!("{} is marked never, refusing", request.name);
             }
+            Decision::Prompt if self.granted(&request.name, cwd) => "project grant",
             Decision::Prompt => {
                 // The unlock a moment ago was itself the prompt, so do not ask twice for one read
                 if !asked {
-                    self.prompt(&request.agent, &request.name)?;
+                    if self.grant_manifest(request, cwd)? {
+                        "project grant"
+                    } else {
+                        self.prompt(&request.agent, &request.name)?;
+                        self.stamp(request);
+                        "approved"
+                    }
+                } else {
+                    self.stamp(request);
+                    "approved"
                 }
-                self.stamp(request);
-                "approved"
             }
             Decision::Allow if asked => {
                 self.stamp(request);
@@ -234,7 +292,9 @@ pub fn serve(store: Store) -> Result<()> {
         let mut stream = stream?;
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
 
-        let caller = caller_of(&stream);
+        let pid = peer_pid(&stream);
+        let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
+        let cwd = pid.and_then(caller_cwd);
         let mut line = String::new();
         if BufReader::new(stream.try_clone()?)
             .read_line(&mut line)
@@ -243,7 +303,7 @@ pub fn serve(store: Store) -> Result<()> {
             continue;
         }
         let response = match serde_json::from_str::<Request>(&line) {
-            Ok(request) => match broker.handle(&request, &caller) {
+            Ok(request) => match broker.handle(&request, &caller, cwd.as_deref()) {
                 Ok(value) => Response {
                     ok: true,
                     value: Some(value),
@@ -281,7 +341,7 @@ fn watchdog(socket: std::path::PathBuf) {
 }
 
 /// The peer pid comes from the kernel, so the caller cannot fake its own path
-fn caller_of(stream: &UnixStream) -> String {
+fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
     use std::os::unix::io::AsRawFd;
     // SOL_LOCAL and LOCAL_PEERPID, which libc does not expose on every release
     const SOL_LOCAL: libc::c_int = 0;
@@ -298,10 +358,21 @@ fn caller_of(stream: &UnixStream) -> String {
             &raw mut len,
         )
     };
-    if got != 0 || pid <= 0 {
-        return "unknown".to_string();
-    }
-    ancestry(pid)
+    (got == 0 && pid > 0).then_some(pid)
+}
+
+/* The project a grant belongs to is the caller's working directory, read from the kernel rather
+than taken from the request. A caller that could name its own directory could point at a manifest
+it wrote and approved somewhere else. */
+fn caller_cwd(pid: libc::pid_t) -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix('n'))
+        .map(std::path::PathBuf::from)
 }
 
 /// Walk up the process tree, because the caller is `passbox` and the agent is somewhere above it

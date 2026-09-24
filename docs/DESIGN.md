@@ -137,6 +137,29 @@ prompt on every read.
 `decide(mode, window, approved_at, now)` is a pure function with unit tests over
 every mode, window expiry, a zero window, and an approval stamped in the future.
 
+## Project manifests
+
+A project lists the secrets it needs in `.passbox.toml`, and one prompt approves
+the whole list for a window.
+
+The file cannot be the authority. An agent working in the directory can write it,
+so a manifest that granted access would let any agent grant itself anything. It
+is a request: nothing is approved without a fingerprint, and the approval is
+bound to the SHA-256 of the file. Editing the manifest changes the hash and
+voids the grant, which is what stops an agent quietly adding a line and widening
+its own access.
+
+The kernel supplies the directory, through the caller's pid and `lsof`. A caller
+that could name its own working directory could point at a manifest it had
+approved somewhere else.
+
+`never` is never covered, because the deny arm is reached before any manifest is
+consulted.
+
+Grants are written to `grants-<host>.age`, encrypted to the store key so a local
+process cannot forge one, and excluded from sync. A grant that travelled would
+let a machine you have never touched inherit an approval given here.
+
 ## Delivery
 
 `passbox exec` injects into one child. The agent composes the command and never
