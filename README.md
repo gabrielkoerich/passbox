@@ -4,6 +4,11 @@ A password store for machines that run agents. An agent asks for a secret, macOS
 raises a Touch ID prompt naming the agent and the secret, and the value goes into
 one child process rather than into the agent.
 
+<img src="docs/prompt.png" alt="Touch ID prompt naming the secret and the agent" width="340">
+
+That prompt is the product. It names the secret and the agent, so approving is a
+decision rather than a reflex.
+
 Secrets are ordinary [age](https://age-encryption.org) files. The broker that
 decides who may open them is the part that matters. See [docs/DESIGN.md](docs/DESIGN.md)
 for why it is built this way and what it costs.

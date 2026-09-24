@@ -35,7 +35,8 @@ fn helper() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
     let dir = PathBuf::from(home).join("Library/Caches/passbox");
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join("passbox-se");
+    // macOS titles the prompt with the binary name, so this file is what the user reads
+    let path = dir.join("passbox");
 
     // Comparing bytes is cheaper than versioning, and a changed helper replaces itself
     if std::fs::read(&path).ok().as_deref() != Some(HELPER) {
@@ -85,7 +86,9 @@ pub fn wrap(plaintext: &[u8]) -> Result<SeWrap> {
     })
 }
 
-/// Raise a Touch ID prompt worded by `reason`, then open the wrap.
+/* Raise a Touch ID prompt worded by `reason`, then open the wrap. macOS renders the dialog as
+"<binary> is trying to <reason>.", so `reason` has to be a verb phrase that finishes that
+sentence, such as "release the password for github/token to claude-code". */
 pub fn unwrap(wrap: &SeWrap, reason: &str) -> Result<Vec<u8>> {
     let request = serde_json::json!({
         "key_blob": wrap.key_blob,

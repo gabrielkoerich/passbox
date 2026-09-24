@@ -210,7 +210,7 @@ fn read_secret(store: &Store, name: &str, for_agent: bool) -> Result<String> {
     if !headless() && store.has_se_wrap() {
         return broker::request(store, name, &agent());
     }
-    let key = unlock(store, &format!("passbox wants the password for {name}"))?;
+    let key = unlock(store, &format!("release the password for {name}"))?;
     let (_, secret) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
@@ -264,7 +264,7 @@ fn audit(store: &Store, tail: usize) -> Result<()> {
         eprintln!("nothing released on this machine yet");
         return Ok(());
     }
-    let key = unlock(store, "passbox wants to read the audit log")?;
+    let key = unlock(store, "read the audit log")?;
     let text = std::fs::read_to_string(&path)?;
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
 
@@ -299,7 +299,7 @@ fn enable_sync(store: &Store) -> Result<()> {
     }
     eprintln!("Syncing puts a copy of this store where another machine can read it.");
     eprintln!("That copy is opened by a passphrase, so it is the one an attacker would attack.");
-    let key = unlock(store, "passbox wants to turn on sync")?;
+    let key = unlock(store, "turn on sync")?;
     new_passphrase(store, &key)?;
     eprintln!("sync is on, wraps/recovery.age now travels with the store");
     Ok(())
@@ -379,7 +379,7 @@ fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Re
     let existing = if store.ids()?.is_empty() {
         None
     } else {
-        let key = unlock(store, &format!("passbox wants to replace {name}"))?;
+        let key = unlock(store, &format!("replace {name}"))?;
         store
             .find(name, &key)?
             .map(|(id, s)| (id, s.created, s.mode, s.window_secs))
@@ -431,7 +431,7 @@ fn ls(store: &Store) -> Result<()> {
     let names = if !headless() && store.has_se_wrap() {
         broker::list(store, &agent())?
     } else {
-        let key = unlock(store, "passbox wants to list your secret names")?;
+        let key = unlock(store, "list your secret names")?;
         store.names(&key)?
     };
     for name in names {
@@ -441,7 +441,7 @@ fn ls(store: &Store) -> Result<()> {
 }
 
 fn rm(store: &Store, name: &str) -> Result<()> {
-    let key = unlock(store, &format!("passbox wants to delete {name}"))?;
+    let key = unlock(store, &format!("delete {name}"))?;
     let (id, _) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
@@ -452,10 +452,7 @@ fn rm(store: &Store, name: &str) -> Result<()> {
 }
 
 fn set_mode(store: &Store, name: &str, mode: Mode, window: Option<u64>) -> Result<()> {
-    let key = unlock(
-        store,
-        &format!("passbox wants to change the mode of {name}"),
-    )?;
+    let key = unlock(store, &format!("change the permission mode of {name}"))?;
     let recipient = store.recipient()?;
     let (id, mut secret) = store
         .find(name, &key)?
@@ -471,7 +468,7 @@ fn set_mode(store: &Store, name: &str, mode: Mode, window: Option<u64>) -> Resul
 }
 
 fn restore(store: &Store, name: &str, index: Option<usize>) -> Result<()> {
-    let key = unlock(store, &format!("passbox wants to restore {name}"))?;
+    let key = unlock(store, &format!("restore {name}"))?;
     let id = match store.find(name, &key)? {
         Some((id, _)) => id,
         None => find_deleted(store, name, &key)?,

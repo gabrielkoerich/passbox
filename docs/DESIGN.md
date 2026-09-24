@@ -86,6 +86,16 @@ string, so it shows the generic system prompt. passbox authenticates first, with
 `LAContext.evaluatePolicy` and its own `localizedReason`, then hands that
 authenticated context to the key operation. One prompt, our wording.
 
+macOS composes the dialog as `<binary> is trying to <reason>.`, so every reason
+is written as a verb phrase that finishes that sentence, and the helper is
+unpacked under the name `passbox` because the binary name is the title the reader
+sees. The result is `passbox is trying to release the password for github/token
+to claude-code.`
+
+Both of those came from photographing a live prompt. Reading the code had given
+`passbox-se is trying to claude-code wants the password for github/token.`, which
+is broken English in the one place the design depends on being read.
+
 The helper is Swift because CryptoKit's `SecureEnclave` is the only API that
 returns a usable key blob. It is compiled by `build.rs`, embedded in the binary,
 and unpacked to `~/Library/Caches/passbox` on first use, so `cargo install` and

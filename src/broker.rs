@@ -98,7 +98,7 @@ impl Broker {
 
     /// The Touch ID prompt is the approval, so a prompt and an unlock are the same act
     fn prompt(&mut self, agent: &str, secret: &str) -> Result<()> {
-        self.ask(&format!("{agent} wants the password for {secret}"))
+        self.ask(&format!("release the password for {secret} to {agent}"))
     }
 
     fn ask(&mut self, reason: &str) -> Result<()> {
@@ -120,7 +120,7 @@ impl Broker {
     fn handle_list(&mut self, request: &Request, caller: &str) -> Result<String> {
         let slot = (request.agent.clone(), LIST_SLOT.to_string());
         let approved = self.approvals.get(&slot).copied();
-        let reason = format!("{} wants to list your secret names", request.agent);
+        let reason = format!("list your secret names for {}", request.agent);
 
         let mut asked = false;
         if self.cached_key().is_none() {
