@@ -1,29 +1,46 @@
 class Passbox < Formula
   desc "Password store that asks for a fingerprint before an agent reads a secret"
   homepage "https://github.com/gabrielkoerich/passbox"
-  url "https://github.com/gabrielkoerich/passbox/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 ""
-  head "https://github.com/gabrielkoerich/passbox.git", branch: "main"
+  version "0.0.0"
   license "MIT"
 
-  depends_on "rust" => :build
-  depends_on :macos
-
-  # build.rs needs swiftc, which ships with the Command Line Tools that Homebrew already
-  # requires. `depends_on xcode: :build` would demand a full Xcode.app install instead.
-
-  def install
-    system "cargo", "install", *std_cargo_args
+  on_macos do
+    on_arm do
+      url "URL_MACOS_ARM"
+      sha256 "SHA_MACOS_ARM"
+    end
+    on_intel do
+      url "URL_MACOS_INTEL"
+      sha256 "SHA_MACOS_INTEL"
+    end
   end
 
-  # rclone is deliberately not a dependency. Syncing to a directory, which includes the
-  # iCloud Drive folder used by default, is a plain file copy and needs nothing installed.
+  # Linux builds without the host feature, so it carries no Enclave and no broker server
+  on_linux do
+    url "URL_LINUX"
+    sha256 "SHA_LINUX"
+  end
+
+  # Source builds stay available for anyone who would rather compile what they can read
+  head do
+    url "https://github.com/gabrielkoerich/passbox.git", branch: "main"
+    depends_on "rust" => :build
+  end
+
+  def install
+    if build.head?
+      system "cargo", "install", *std_cargo_args
+    else
+      bin.install "passbox"
+    end
+  end
+
   def caveats
     <<~EOS
-      Run `passbox init` to create the store at ~/.passbox. It binds to this Mac's
-      Secure Enclave and asks for nothing else.
+      Run `passbox init` to create the store at ~/.passbox. On a Mac it binds to
+      the Secure Enclave and asks for nothing else.
 
-      The store opens on this Mac only. Lose the Mac and the secrets are gone.
+      The store opens on that Mac only. Lose it and the secrets are gone.
       `passbox sync --enable` adds a recovery passphrase and a copy elsewhere.
 
       Install rclone only if you point PASSBOX_REMOTE at a cloud remote such as
