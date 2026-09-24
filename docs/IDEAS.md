@@ -175,6 +175,27 @@ bound to the Secure Enclave and reported "reads will ask for your fingerprint",
 on a machine whose sensor is sealed inside a shut lid, leaving a store that
 nothing could open and no recovery wrap to fall back to.
 
+## Finding the host
+
+passbox should not resolve addresses. A client stores an ssh destination and
+lets ssh do the rest, because `ssh_config` already handles aliases, jump hosts,
+`ProxyCommand`, Bonjour names and Tailscale names.
+
+| Addressing | Reaches the host |
+|---|---|
+| a LAN address such as `192.168.1.253` | on that network, until DHCP moves it |
+| `m4.local` | on the same network, with no configuration |
+| a `Host m4` block in `~/.ssh/config` | wherever it is configured to |
+| Tailscale MagicDNS | anywhere, and it carries node identity |
+
+So the client config is one line naming a destination. Tailscale earns its place
+by making that name resolve from a datacentre as easily as from the next room,
+with no port forwarding, and by adding a second verifiable identity beside the
+ssh key.
+
+Nothing here wakes a sleeping Mac, and a host that cannot be reached cannot
+approve. The client needs a timeout and a plain message rather than a hang.
+
 ## The broker has to outlive the request
 
 A request arriving over SSH cannot raise the prompt itself. Measured on
