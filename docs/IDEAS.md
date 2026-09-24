@@ -362,3 +362,82 @@ the same prompt naming the caller and the capability.
 
 A capability provider never needs the store key, so it is a subcommand extension
 rather than a backend plugin, and it inherits the broker's policy unchanged.
+
+
+# The real driver: moving orch off the Mac
+
+Gabriel runs `orch` on the Mac, scheduling agent jobs for `bean`, his finance and
+notes project. He wants that compute on a Linux box or the m1 server, while some
+of the data stays on the Mac. This is the requirement the remote design exists to
+serve, so it should be measured against these jobs rather than invented.
+
+## What is actually pinned to the Mac
+
+Of 23 scheduled jobs in `bean/prompts/jobs`, measured 2026-09-24:
+
+| Capability | Jobs blocked |
+|---|---|
+| Things | 9 |
+| Calendar | 5, all overlapping the Things set |
+| Mail or Proton | 1, `daily-bean-close` |
+| `pass` | 1, `daily-overnight-task-scanner` |
+
+Twelve jobs have no Mac dependency at all. They are the quant and market ones,
+which are also the jobs that most want a machine that never sleeps.
+
+Eleven remain, and **four capabilities unlock all of them**. That is a far
+smaller surface than exposing a Mac to the network.
+
+## bean already has both seams
+
+Two abstractions exist, so passbox plugs in rather than replacing anything.
+
+`packages/credentials/provider.py` defines `CredentialProvider` with `get`,
+`get_fields` and `is_available`, and seven backends implement it. A
+`PassboxProvider` is a new file, not a migration.
+
+`packages/importers/downloader/__init__.py` defines a `Downloader` protocol with
+four implementations.
+
+## pass-bridge is the broker without the approval
+
+`packages/credentials/pass_bridge.py` already serves an allowlisted set of `pass`
+secrets over localhost HTTP to a container, with a bearer token, and never logs
+values. The instinct matches passbox: a host side daemon, an allowlist, a network
+boundary.
+
+Its own docstring states the limit plainly, that anything able to read the token
+can already read `pass`. So it adds a boundary and no approval. Any client
+holding the token reads those secrets forever and silently.
+
+passbox adds what it deliberately left out: a human gate per secret, a caller
+identity that is verified rather than shared, and an audit log. Once a
+`PassboxProvider` is proven, `pass_bridge.py` and `http_pass.py` can go.
+
+## The mail dependency is smaller than it looks
+
+`ProtonDownloader` is 45 lines and is plain IMAP against `127.0.0.1:1143`, the
+Proton Bridge, with host and port already read from the environment. So the
+blocked job needs no capability work at all:
+
+- Point `PROTON_BRIDGE_HOST` at the Mac and expose only that port to the tailnet
+  with `tailscale serve --tcp`. No code changes.
+- Or run Proton Bridge on the Linux box, which has official builds, and the job
+  stops needing the Mac entirely.
+
+Only `mail_app_downloader.py`, which drives Mail.app through AppleScript, is
+genuinely Mac bound. Check whether Proton already covers the same mail before
+building a capability for it.
+
+## The order to do this in
+
+1. Move the twelve portable jobs. No new code, and it proves the deployment.
+2. Mail, by pointing `PROTON_BRIDGE_HOST` over the tailnet, or by running the
+   bridge on Linux. No new code.
+3. `pass` to passbox, with a `PassboxProvider` behind the existing ABC. This is
+   the first step that needs passbox at all, and it also retires `pass_bridge`.
+4. Things and Calendar as read capabilities, `things.today` and
+   `calendar.agenda`. This is the only genuinely new build, and it unblocks nine.
+
+Three of those four steps need no capability system. Build it last, for the case
+that actually requires it.
