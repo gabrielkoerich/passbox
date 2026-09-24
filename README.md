@@ -4,7 +4,9 @@ A password store for machines that run agents. An agent asks for a secret, macOS
 raises a Touch ID prompt naming the agent and the secret, and the value goes into
 one child process rather than into the agent.
 
-<img src="docs/prompt.png" alt="Touch ID prompt naming the secret and the agent" width="340">
+<p align="center">
+  <img src="docs/prompt.png" alt="Touch ID prompt naming the secret and the agent" width="340">
+</p>
 
 That prompt is the product. It names the secret and the agent, so approving is a
 decision rather than a reflex.
