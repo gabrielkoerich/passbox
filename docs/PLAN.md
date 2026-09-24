@@ -80,8 +80,8 @@ twenty three jobs moved.
 
 Prove the chain locally before adding the network.
 
-1. **`passbox import-pass <entry>`**, decrypting through GPG and re-encrypting to
-   the store key. Needed before anything real can move.
+1. ~~**`passbox import-pass <entry>`**, decrypting through GPG and re-encrypting
+   to the store key.~~ Built, and the `bean` namespace is imported, 21 entries.
 2. **`PassboxProvider`** in `bean/packages/credentials/`, implementing the
    existing `CredentialProvider` ABC: `get`, `get_fields`, `is_available`.
    `test_credentials.py` already exists to cover it.
@@ -128,40 +128,48 @@ Nine jobs need these, and they are the only ones needing anything new.
 
 Done when the nine run on the client. That is all twenty three moved.
 
-## Shipping binaries
+## Shipping binaries, done
 
-`cargo install` from source costs one to three minutes on every install and
-upgrade, and requires Rust and the Command Line Tools on the user's machine. The
-Swift helper is already embedded in the Rust binary, so a prebuilt artefact
-carries it and neither is needed.
+Shipped in v0.9.0. `cargo install` cost one to three minutes on every install and
+upgrade and needed Rust and the Command Line Tools. The release workflow now
+builds three targets and the formula picks between them.
 
-macOS ships as **one universal binary**, arm64 and x86_64 joined with `lipo`,
-rather than two downloads. `build.rs` has to pass the target architecture to
-`swiftc` for this to cross compile.
+It is **three separate binaries**, not one universal one. An earlier draft here
+planned arm64 and x86_64 joined with `lipo`, which would have meant teaching
+`build.rs` to pass a target architecture to `swiftc`. Three targets were already
+needed for Linux, so a fourth matrix entry cost less than cross compiling Swift.
 
-Keep source builds working. For a tool holding passwords, compiling what you can
-read is a fair position, and `brew install --build-from-source` already covers it
-once a `head` block is kept in the formula.
+| Target | Build |
+|---|---|
+| `aarch64-apple-darwin` | host |
+| `x86_64-apple-darwin` | host |
+| `x86_64-unknown-linux-gnu` | client |
 
-Check Gatekeeper rather than assume it. The binary is ad-hoc signed with no
-Developer ID, so a downloaded archive carries a quarantine attribute. Homebrew
-normally strips it, which is exactly the kind of thing that works locally and
-fails for a stranger.
+Source builds still work, through the `head` block in the formula. For a tool
+holding passwords, compiling what you can read is a fair position.
+
+Still unchecked: Gatekeeper. The binary is ad-hoc signed with no Developer ID, so
+a downloaded archive carries a quarantine attribute. Homebrew normally strips it,
+which is the kind of thing that works locally and fails for a stranger.
 
 ## Linux is a client only
 
-Decided 2026-09-24. A Linux build never holds the Enclave, the store, the broker
-server or the crypto, because the host returns values and the client only asks.
-That leaves the request path, `exec` injection and the MCP server.
+Decided 2026-09-24. A Linux build never holds the Enclave, the broker server or
+the Enclave wraps, because the host returns values and the client only asks.
 
-So the split is `cfg(target_os)`, with no cargo features to combine wrongly.
-macOS compiles host and client, Linux compiles client alone. The pieces that are
-macOS bound today are `se.rs`, the Enclave functions in `store.rs`, and the
-broker's peer identification through `LOCAL_PEERPID` and `lsof`, all of which are
-host side anyway.
+The split is a cargo feature, `host`, on by default. An earlier draft here chose
+`cfg(target_os)` instead. The feature won because the client build then has to be
+compilable on macOS, which is the only way CI can prove it still builds without
+running a Linux job for every commit.
 
-This lands with Phase 4, and it is on the critical path only if a secret using
-job runs on the Linux box. If everything Mac adjacent goes to m1-max, it waits.
+What is host gated today: `se.rs`, the Enclave functions in `store.rs`, the broker
+server, and the `sync`, `audit`, `import-pass`, `machine add` and `yubikey add`
+verbs.
+
+**What a Linux build does today is less than the name suggests.** It opens the
+store with a passphrase, because the "ask the host" path is Phase 4 and is not
+built. So a Linux box can hold a synced copy and read from it with a passphrase,
+which is not the same as asking the Mac and having a human approve there.
 
 ## What is deliberately not here
 

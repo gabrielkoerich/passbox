@@ -1,23 +1,32 @@
 # Ideas for later
 
-None of this is built, and none of it is committed to. It is written down so the
+Little of this is built, and none of it is committed to. It is written down so the
 reasoning survives, and so a later session starts from the argument rather than
-from scratch.
+from scratch. Where something here has since shipped, the section says so.
 
 Two threads: where a plugin seam is worth opening, and asking another machine
 for something only that machine can do.
 
 ## The measurement first
 
-| Module | Lines | Non-test |
+Non-test lines, measured 2026-09-24 at v0.13.1. Tests are excluded because a
+module does not become harder to move by being well tested.
+
+| Module | Lines | What it is |
 |---|---|---|
-| `store.rs` | 664 | the file format and versions |
-| `main.rs` | 627 | the CLI |
-| `broker.rs` | 542 | approvals, windows, audit |
-| `sync.rs` | 346 | **152** |
-| `project.rs` | 250 | manifests and grants |
-| `mcp.rs` | 222 | the MCP server |
-| `se.rs` | 150 | the Enclave helper |
+| `main.rs` | 863 | the CLI |
+| `broker.rs` | 585 | approvals, windows, audit |
+| `store.rs` | 512 | the file format and versions |
+| `sync.rs` | 197 | the union copy |
+| `mcp.rs` | 181 | the MCP server |
+| `se.rs` | 125 | the Enclave helper |
+| `yubikey.rs` | 124 | the token wrap |
+| `import.rs` | 124 | reading a `pass` store |
+| `project.rs` | 109 | manifests and grants |
+| `crypto.rs` | 55 | encrypt and decrypt |
+| `tree.rs` | 47 | rendering `ls` |
+
+2,922 lines, plus 441 of integration tests.
 
 ## Two different things are called plugins
 
@@ -72,11 +81,12 @@ someone can check by reading the dependency list rather than the code.
 
 | Never needs the key | Size |
 |---|---|
-| `sync.rs` | 346 |
-| `mcp.rs`, which asks the broker like any agent | 222 |
+| `sync.rs` | 197 |
+| `mcp.rs`, which asks the broker like any agent | 181 |
+| `tree.rs`, which renders names it is handed | 47 |
 | the `git` passthrough | about 20 |
 
-That is roughly 590 of 2,883 lines, and none of it ever holds a secret.
+That is roughly 445 of 2,922 lines, and none of it ever holds a secret.
 
 ## Sync moves out whole, rather than behind an interface
 
@@ -103,8 +113,12 @@ Two implementations exist and two more are planned:
 |---|---|---|
 | macOS | Secure Enclave blob | Touch ID |
 | any | scrypt passphrase | typing it |
-| planned, Linux | YubiKey | a touch on the key |
+| any, shipped v0.11.0 | YubiKey | a touch on the key |
 | planned, servers | asks another machine | Touch ID over there |
+
+The YubiKey wrap turned out not to be Linux specific, which is how this table
+first listed it. It is a recovery and sync wrap on any platform, and it does not
+replace Touch ID for day to day reads.
 
 This is already an interface in everything but name. `Store::unlock_with_se` and
 `Store::unlock_with_passphrase` return the same type and `unlock` in `main.rs`
@@ -115,13 +129,18 @@ Four implementations of one operation is where an interface earns its place.
 
 ## Build the third one first
 
-Do not design the plugin interface before writing the YubiKey path as concrete
-code. An interface drawn from two cases tends to fit neither the third nor the
-fourth, and remote approval is the one most likely to break assumptions, since
-it is the only approver that is not a local function call.
+Do not design the plugin interface before writing each path as concrete code. An
+interface drawn from two cases tends to fit neither the third nor the fourth, and
+remote approval is the one most likely to break assumptions, since it is the only
+approver that is not a local function call.
 
-Order: YubiKey concretely, then remote approval concretely, then extract
-whatever the three actually share.
+Order: YubiKey concretely, then remote approval concretely, then extract whatever
+the three actually share.
+
+The YubiKey half shipped in v0.11.0 and the advice held. It needed things a
+two-case interface would not have exposed: several recipients on one wrap, a
+check of the PIV applet before provisioning a slot, and an offer to install the
+age plugin. Remote approval is still unwritten, so the extraction still waits.
 
 ## When it is time, use executables
 
