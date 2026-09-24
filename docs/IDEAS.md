@@ -251,6 +251,47 @@ anybody anything.
 
 This is the one hard constraint the remote design adds.
 
+## Reaching the host without a shell
+
+Remote Login is the wrong tool. It grants a shell to anything holding a key, for
+a design that needs one socket.
+
+Two narrower options exist, both confirmed present on the standalone macOS build
+on 2026-09-24:
+
+- `tailscale serve --tcp=PORT` forwards raw TCP from the tailnet to a local port.
+- The broker binds directly to the tailnet address, so only tailnet peers and
+  local processes can reach it.
+
+Rejected: `tailscale set --ssh`. It is keyless and gated by tailnet policy, and
+it still hands out a shell.
+
+One caveat for either. The broker's unix socket is 0600, so only this user can
+reach it. A TCP port on loopback has no such protection and any local user could
+connect. Binding to the tailnet address rather than loopback keeps that narrower.
+
+## Tailscale whois makes the caller verifiable
+
+This is the part worth building for.
+
+`tailscale whois <peer address>` returns the machine name and the user of the
+connecting node, authenticated by the control plane rather than claimed by the
+caller:
+
+```
+Machine:  m1-max.tail342cb6.ts.net
+User:     whkg24mbff@privaterelay.appleid.com
+```
+
+Everywhere else in passbox the agent name is self declared and unverifiable,
+which is why per agent policy was deferred. A remote caller arriving over the
+tailnet can be identified for real, so the prompt can name a machine the host has
+actually authenticated, and policy per machine becomes enforceable rather than
+advisory.
+
+Local callers still declare their own name. The asymmetry is worth stating in any
+prompt that mixes the two.
+
 ## SSH already carries an identity
 
 The agent name in a prompt is self declared and unverifiable. A client connecting
