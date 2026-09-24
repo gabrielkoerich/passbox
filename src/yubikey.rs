@@ -116,10 +116,13 @@ fn check_management_key(info: &str) -> Result<()> {
     if algorithm.eq_ignore_ascii_case("TDES") {
         return Ok(());
     }
+    const DEFAULT_TDES: &str = "010203040506070801020304050607080102030405060708";
     bail!(
         "the PIV management key is {algorithm}, and {PLUGIN} can only use TDES.\n\
-         Change it, which leaves your OpenPGP keys and any PIV slot untouched:\n\
-         \n    ykman piv access change-management-key -a TDES --protect\n"
+         Firmware 5.7 sets {algorithm} on a new token and on a factory reset, so this\n\
+         is the state a new YubiKey arrives in. Change it, which touches the PIV\n\
+         applet only and leaves OpenPGP keys alone:\n\
+         \n    ykman piv access change-management-key -a tdes -n {DEFAULT_TDES}\n"
     )
 }
 
@@ -177,7 +180,7 @@ mod tests {
     fn an_aes_management_key_is_refused_with_the_fix() {
         let err = check_management_key(AES_INFO).unwrap_err().to_string();
         assert!(err.contains("AES192"), "{err}");
-        assert!(err.contains("change-management-key -a TDES"), "{err}");
+        assert!(err.contains("change-management-key -a tdes"), "{err}");
     }
 
     #[test]
