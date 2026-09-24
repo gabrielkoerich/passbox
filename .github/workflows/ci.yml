@@ -11,7 +11,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Format
         run: cargo fmt --check
@@ -19,7 +19,7 @@ jobs:
   gitleaks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -38,7 +38,7 @@ jobs:
   client-build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
       - name: Clippy, client only
         run: cargo clippy --no-default-features -- -D warnings
@@ -48,7 +48,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: Swatinem/rust-cache@v2
 
@@ -95,7 +95,7 @@ jobs:
             features: "--no-default-features"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
@@ -110,7 +110,7 @@ jobs:
           cargo build --release --locked --target "$TARGET" $FEATURES
           tar -czf "passbox-$TARGET.tar.gz" -C "target/$TARGET/release" passbox
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: passbox-${{ matrix.target }}
           path: passbox-${{ matrix.target }}.tar.gz
@@ -125,7 +125,7 @@ jobs:
       group: release
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -258,6 +258,13 @@ jobs:
             echo "CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Collect the built binaries
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
       - name: Create tag
         if: steps.check.outputs.skip == 'false'
         env:
@@ -277,13 +284,6 @@ jobs:
 
           git tag -a "$VERSION" -m "$VERSION"
           git push origin main "$VERSION"
-
-      - name: Collect the built binaries
-        if: steps.check.outputs.skip == 'false'
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
 
       - name: Create release with the binaries attached
         if: steps.check.outputs.skip == 'false'
