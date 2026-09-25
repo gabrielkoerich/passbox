@@ -210,12 +210,46 @@ Cost: the winner is chosen by file modification time, so a tool that rewrites
 mtimes can pick the wrong one. The loser is still in `.versions`.
 Cost: a delete racing an edit can resurrect a secret.
 
+## Listing does not unlock the store
+
+Names live inside the ciphertext, so `ls` decrypted every entry to read them. That meant a
+prompt, and a store key left warm in the broker for five minutes afterwards: the largest
+privilege there is, spent on the smallest question.
+
+`~/.passbox/names` is a plaintext list, kept in step as the store changes. `ls` reads it and
+needs no key. `get` is untouched and still does.
+
+Cost: that one file names what you hold. It is local only, `0600`, skipped by sync and ignored
+by a git store, so a copy elsewhere still says nothing. Someone with this disk but not the
+Enclave learns what you have, not what it is. That is a real loss against the old behaviour and
+it is the price of not escalating to the whole store to answer "what do I have".
+
+A pull clears it, because a sync can bring names this machine has never decrypted. The next `ls`
+rebuilds it with one prompt.
+
+Rejected: an encrypted index. It would need the key to read, which is the thing being avoided.
+
+## Fields are a read-time parse
+
+An entry holds a first line and then `key: value` lines, which is what `pass` uses and what
+`import-pass` preserves. `--field` parses that on read.
+
+Rejected: a structured payload with typed fields. It would change the file format, need a
+migration for every entry already imported, and buy nothing the convention does not already
+carry. The parse is fifteen lines and works on stores written before it existed.
+
 ## Known limits
 
 - Lose the Mac and the recovery passphrase and the store is gone.
 - The file count is not the secret count, because tombstones linger for 90 days.
 - `PASSBOX_PASSPHRASE` turns off the Enclave path. It exists for CI and headless
   use, and it makes the passphrase the only gate.
+- A released binary reports the previous version. The release job builds the artefacts
+  before the commit that bumps `Cargo.toml`, so `passbox --version` lags one release.
+  The code is right, the number is not.
+- A lease keeps one decrypted value in broker memory for its duration, and anything
+  able to reach the socket as you can reads it without a prompt. That is the cost of
+  running unattended, and why a lease is per secret rather than per store.
 - Linux builds the client half only, behind the `host` cargo feature being off.
   It has no Enclave, no broker server and no `sync`, so it opens the store with a
   passphrase. Asking a Mac to approve a read is designed, not built.
