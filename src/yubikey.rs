@@ -126,6 +126,51 @@ fn check_management_key(info: &str) -> Result<()> {
     )
 }
 
+/* GPG's scdaemon opens the card exclusively and holds it, so it lands between the plugin's key
+generation and its certificate write and the write comes back as an authentication error. The
+card is released when scdaemon stops, and gpg-agent starts it again the next time GPG wants it. */
+pub fn scdaemon_is_running() -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-x", "scdaemon"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Stopping another program's daemon is not something to do quietly, so it is offered
+pub fn offer_to_stop_scdaemon() -> Result<()> {
+    if !scdaemon_is_running() {
+        return Ok(());
+    }
+
+    eprintln!("GPG's scdaemon is running and is holding the smart card.");
+    eprintln!("It takes the card back mid-generation, and the plugin fails with");
+    eprintln!("an authentication error that names neither the cause nor the fix.");
+    eprintln!("Stopping it frees the card. GPG starts it again on its next use,");
+    eprintln!("and your OpenPGP keys and PIN are untouched either way.");
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        bail!("stop it with `gpgconf --kill scdaemon` and run this again");
+    }
+    eprint!("Stop scdaemon for this step? [y/N] ");
+
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .context("could not read the answer")?;
+    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+        bail!("stop it with `gpgconf --kill scdaemon` and run this again");
+    }
+
+    let status = std::process::Command::new("gpgconf")
+        .args(["--kill", "scdaemon"])
+        .status()
+        .context("could not run gpgconf")?;
+    if !status.success() || scdaemon_is_running() {
+        bail!("scdaemon is still running, stop it with `gpgconf --kill scdaemon`");
+    }
+    Ok(())
+}
+
 /// Recipients already provisioned on whatever token is plugged in
 pub fn recipients() -> Result<Vec<String>> {
     let out = std::process::Command::new(PLUGIN)

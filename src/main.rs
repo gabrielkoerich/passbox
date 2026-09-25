@@ -477,6 +477,7 @@ fn enable_with_yubikey(store: &Store) -> Result<()> {
         if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
             bail!("run `age-plugin-yubikey --generate` when ready, then try again");
         }
+        yubikey::offer_to_stop_scdaemon()?;
         yubikey::generate()?;
         found = yubikey::recipients()?;
     }
