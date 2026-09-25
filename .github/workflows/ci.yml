@@ -211,8 +211,18 @@ jobs:
         run: |
           # An empty version silently writes `version = ""`, which fails much further along
           [ -n "$VERSION" ] || { echo "::error::the version job produced no version"; exit 1; }
-          sed -i "0,/^version = /s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml
-          sed -i "/^name = \"passbox\"$/{n;s/^version = .*/version = \"${VERSION#v}\"/}" Cargo.lock
+          # python rather than sed, because BSD `sed -i` takes a backup suffix and GNU does not
+          python3 - "${VERSION#v}" <<'PY'
+          import re, sys
+          v = sys.argv[1]
+          t = open("Cargo.toml").read()
+          t = re.sub(r'^version = .*$', f'version = "{v}"', t, count=1, flags=re.M)
+          open("Cargo.toml", "w").write(t)
+          l = open("Cargo.lock").read()
+          l = re.sub(r'(^name = "passbox"\n)version = .*$',
+                     lambda m: m.group(1) + f'version = "{v}"', l, count=1, flags=re.M)
+          open("Cargo.lock", "w").write(l)
+          PY
           grep -m1 '^version' Cargo.toml
 
       - name: Build
