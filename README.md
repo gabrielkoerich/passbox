@@ -407,6 +407,15 @@ as you set, and asking for anything else still needs a fingerprint.
 passbox mode trade/signing-key window --lease 86400
 ```
 
+A namespace works too, and costs one fingerprint rather than one per secret:
+
+```bash
+passbox mode bean window --lease 86400      # everything under bean/
+```
+
+A lease is keyed on the secret, not on the agent that asked, so one approval covers every
+program that reads it. Without a lease, two agents reading the same secret prompt twice.
+
 The lease holds the value, not the store key. That is the whole difference. The store key opens
 every secret, so the broker drops it after five minutes; a lease covers the secret it was
 approved for and nothing else. A broker holding a day-long lease on one key cannot be talked

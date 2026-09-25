@@ -809,6 +809,8 @@ fn rm(store: &Store, name: &str) -> Result<()> {
     Ok(())
 }
 
+/* A name, or a namespace. Setting a lease one secret at a time costs a fingerprint each, which
+for a project with twenty entries is twenty prompts to do one thing. One unlock covers the lot. */
 fn set_mode(
     store: &Store,
     name: &str,
@@ -818,23 +820,34 @@ fn set_mode(
 ) -> Result<()> {
     let key = unlock(store, &format!("change the permission mode of {name}"))?;
     let recipient = store.recipient()?;
-    let (id, mut secret) = store
-        .find(name, &key)?
-        .with_context(|| format!("no secret named {name}"))?;
-    secret.mode = mode;
-    if let Some(w) = window {
-        secret.window_secs = w;
+
+    let matched = import::select(&store.names(&key)?, Some(name));
+    if matched.is_empty() {
+        bail!("no secret named {name}, and nothing under {name}/");
     }
-    if let Some(l) = lease {
-        secret.lease_secs = l;
+
+    for each in &matched {
+        let (id, mut secret) = store
+            .find(each, &key)?
+            .with_context(|| format!("no secret named {each}"))?;
+        secret.mode = mode;
+        if let Some(w) = window {
+            secret.window_secs = w;
+        }
+        if let Some(l) = lease {
+            secret.lease_secs = l;
+        }
+        secret.updated = store::now();
+        store.put(&id, &secret, &recipient)?;
+        eprintln!("{each} is now {mode}");
     }
-    secret.updated = store::now();
-    store.put(&id, &secret, &recipient)?;
-    eprintln!("{name} is now {mode}");
-    if secret.lease_secs > 0 {
+
+    if let Some(l) = lease
+        && l > 0
+    {
         eprintln!(
-            "one approval then holds {name} for {}s, and no other secret",
-            secret.lease_secs
+            "one approval each then holds {} secret(s) for {l}s, and nothing else",
+            matched.len()
         );
     }
     Ok(())
