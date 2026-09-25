@@ -77,53 +77,19 @@ jobs:
           codesign -dvvv target/debug/passbox 2>&1 | tee sig.txt
           grep -q "Signature=adhoc" sig.txt
 
-  # CI pays the build cost once so nobody installing has to. Public repos get free minutes.
-  binaries:
+  # The version has to be known before the binaries build, or every release ships a
+  # binary stamped with the previous number.
+  version:
     needs: [lint, gitleaks, test-macos, client-build]
     if: github.ref == 'refs/heads/main'
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            features: ""
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            features: ""
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            features: "--no-default-features"
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Build
-        env:
-          TARGET: ${{ matrix.target }}
-          FEATURES: ${{ matrix.features }}
-        run: |
-          rustup target add "$TARGET"
-          # shellcheck disable=SC2086
-          cargo build --release --locked --target "$TARGET" $FEATURES
-          tar -czf "passbox-$TARGET.tar.gz" -C "target/$TARGET/release" passbox
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: passbox-${{ matrix.target }}
-          path: passbox-${{ matrix.target }}.tar.gz
-          retention-days: 1
-
-  release:
-    needs: [lint, gitleaks, test-macos, client-build, binaries]
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # Two pushes close together raced and both computed the same next tag. Queue instead.
     concurrency:
       group: release
       cancel-in-progress: false
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.check.outputs.skip }}
+      last_tag: ${{ steps.check.outputs.last_tag }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -162,10 +128,10 @@ jobs:
           fi
 
       - name: Determine version bump from conventional commits
-        if: steps.check.outputs.skip == 'false'
+        if: needs.version.outputs.skip == 'false'
         id: version
         env:
-          LAST_TAG: ${{ steps.check.outputs.last_tag }}
+          LAST_TAG: ${{ needs.version.outputs.last_tag }}
         run: |
           if [ -n "$LAST_TAG" ]; then
             COMMITS=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s")
@@ -214,12 +180,73 @@ jobs:
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $NEW_VERSION (${BUMP} bump)"
 
+  # CI pays the build cost once so nobody installing has to. Public repos get free minutes.
+  binaries:
+    needs: [lint, gitleaks, test-macos, client-build, version]
+    if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            features: ""
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            features: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            features: "--no-default-features"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Stamped before the build, so `passbox --version` is the version it ships as
+      - name: Stamp the version
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          sed -i "0,/^version = /s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml
+          sed -i "/^name = \"passbox\"$/{n;s/^version = .*/version = \"${VERSION#v}\"/}" Cargo.lock
+          grep -m1 '^version' Cargo.toml
+
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          FEATURES: ${{ matrix.features }}
+        run: |
+          rustup target add "$TARGET"
+          # shellcheck disable=SC2086
+          cargo build --release --locked --target "$TARGET" $FEATURES
+          tar -czf "passbox-$TARGET.tar.gz" -C "target/$TARGET/release" passbox
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: passbox-${{ matrix.target }}
+          path: passbox-${{ matrix.target }}.tar.gz
+          retention-days: 1
+
+  release:
+    needs: [lint, gitleaks, test-macos, client-build, version, binaries]
+    if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    # Two pushes close together raced and both computed the same next tag. Queue instead.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
       - name: Generate changelog
-        if: steps.check.outputs.skip == 'false'
+        if: needs.version.outputs.skip == 'false'
         id: changelog
         env:
-          LAST_TAG: ${{ steps.check.outputs.last_tag }}
-          VERSION: ${{ steps.version.outputs.version }}
+          LAST_TAG: ${{ needs.version.outputs.last_tag }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           if [ -n "$LAST_TAG" ]; then
             RAW=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s|%h")
@@ -259,17 +286,18 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Collect the built binaries
-        if: steps.check.outputs.skip == 'false'
+        if: needs.version.outputs.skip == 'false'
         uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
 
       - name: Create tag
-        if: steps.check.outputs.skip == 'false'
+        id: tag
+        if: needs.version.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -284,12 +312,13 @@ jobs:
 
           git tag -a "$VERSION" -m "$VERSION"
           git push origin main "$VERSION"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Create release with the binaries attached
-        if: steps.check.outputs.skip == 'false'
+        if: needs.version.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
           # Through the environment, since the body is built from commit subjects
           CHANGELOG: ${{ steps.changelog.outputs.body }}
         run: |
@@ -297,10 +326,10 @@ jobs:
           gh release create "$VERSION" --title "$VERSION" --notes "$CHANGELOG" artifacts/*.tar.gz
 
       - name: Update Homebrew formula
-        if: steps.check.outputs.skip == 'false'
+        if: needs.version.outputs.skip == 'false'
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -342,3 +371,17 @@ jobs:
           fi
           git -C tap-repo commit -m "chore: update passbox formula for ${VERSION}"
           git -C tap-repo push origin main
+
+      # A tag with no release behind it is worse than no tag: `git describe` sees it, so every
+      # later run computes a version already taken and the release line stalls until it is cut
+      # away by hand. That happened once, so failing now takes the tag back with it.
+      - name: Take the tag back if the release did not finish
+        if: failure() && steps.tag.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          echo "release failed after tagging, removing $VERSION"
+          gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
+          git push origin ":refs/tags/$VERSION" 2>/dev/null || true
+          git tag -d "$VERSION" 2>/dev/null || true

@@ -238,15 +238,22 @@ Rejected: a structured payload with typed fields. It would change the file forma
 migration for every entry already imported, and buy nothing the convention does not already
 carry. The parse is fifteen lines and works on stores written before it existed.
 
+## Releasing
+
+The version is computed in its own job before anything is built, because the binaries have to be
+stamped with the version they ship as. An earlier layout built first and bumped after, so every
+release carried a binary reporting the previous number.
+
+A failure after the tag is pushed takes the tag back with it. A tag with no release behind it is
+worse than no tag: `git describe` finds it, so every later run computes a version already taken
+and the release line stalls until someone cuts it away by hand.
+
 ## Known limits
 
 - Lose the Mac and the recovery passphrase and the store is gone.
 - The file count is not the secret count, because tombstones linger for 90 days.
 - `PASSBOX_PASSPHRASE` turns off the Enclave path. It exists for CI and headless
   use, and it makes the passphrase the only gate.
-- A released binary reports the previous version. The release job builds the artefacts
-  before the commit that bumps `Cargo.toml`, so `passbox --version` lags one release.
-  The code is right, the number is not.
 - A lease keeps one decrypted value in broker memory for its duration, and anything
   able to reach the socket as you can reads it without a prompt. That is the cost of
   running unattended, and why a lease is per secret rather than per store.
