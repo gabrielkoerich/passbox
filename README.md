@@ -369,6 +369,12 @@ cargo test -- --ignored   # the Secure Enclave round trip, needs a finger
 
 `build.rs` compiles the Swift helper with `swiftc` from the Command Line Tools.
 
+## Using it from a program
+
+[`examples/python`](examples/python) is a small client over the CLI, with a runnable
+self-check. The same shape works in any language: shell out to `passbox exec` to hand
+a secret to a child process, or `passbox get` when a library needs the value itself.
+
 ## Compared with pass
 
 passbox exists because of the first two rows. It is not a replacement for
