@@ -49,16 +49,7 @@ fn walk(root: &Path, at: &Path, out: &mut Vec<String>) -> Result<()> {
 }
 
 /// No prefix takes everything. A prefix takes that entry, or the namespace under it.
-pub fn select(all: &[String], prefix: Option<&str>) -> Vec<String> {
-    let Some(prefix) = prefix else {
-        return all.to_vec();
-    };
-    let namespace = format!("{}/", prefix.trim_end_matches('/'));
-    all.iter()
-        .filter(|name| *name == prefix || name.starts_with(&namespace))
-        .cloned()
-        .collect()
-}
+pub use crate::store::select;
 
 /* The whole body is kept, not just the first line. pass entries commonly carry `key: value` lines
 under the password, and bean's `get_fields` reads them, so trimming to line one would lose data. */

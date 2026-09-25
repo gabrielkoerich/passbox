@@ -414,7 +414,14 @@ value. A token is narrower: one approval mints a bearer token that opens **only 
 was granted**, for whoever holds it, until it lapses.
 
 ```bash
-export PASSBOX_TOKEN=$(passbox grant bean --for 3600)
+export PASSBOX_TOKEN=$(passbox grant bean/hl-mainnet-pk personal/github --for 3600)
+```
+
+Names and namespaces mix freely, so a job asks for what it needs and gets nothing else:
+
+```bash
+passbox grant bean --for 3600                       # a whole namespace
+passbox grant bean/hl-mainnet-pk r2/storage         # two of them, from different places
 ```
 
 One fingerprint. The token goes to stdout and the covered names to stderr, so the command above

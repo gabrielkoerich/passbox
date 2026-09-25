@@ -55,8 +55,9 @@ enum Command {
     },
     /// Approve a secret or a namespace once, and print a token that opens only those
     Grant {
-        /// A name, or a namespace such as `bean`
-        name: String,
+        /// Names or namespaces, such as `bean/hl-mainnet-pk personal/github` or `bean`
+        #[arg(required = true)]
+        names: Vec<String>,
         /// Seconds the token stays valid, capped at 24 hours
         #[arg(long, default_value_t = 3600)]
         r#for: u64,
@@ -157,7 +158,7 @@ fn run() -> Result<()> {
         Command::Init => init(&store),
         Command::Add { name, mode, window } => add(&store, &name, mode, window),
         Command::Get { name, field } => get(&store, &name, field.as_deref()),
-        Command::Grant { name, r#for } => grant(&store, &name, r#for),
+        Command::Grant { names, r#for } => grant(&store, &names, r#for),
         Command::Ls => ls(&store),
         Command::Rm { name } => rm(&store, &name),
         Command::Mode {
@@ -787,12 +788,12 @@ pub fn run_child(
 /// A tree for a terminal, one name per line for anything reading the output
 /* The token goes to stdout and the rest to stderr, so `TOKEN=$(passbox grant bean)` picks up
 the token alone while a person still sees what it covers. */
-fn grant(store: &Store, name: &str, ttl: u64) -> Result<()> {
+fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
     // A token lives in the broker, and a passphrase store reads without one at all
     if headless() || !store.has_se_wrap() {
         bail!("a token needs the broker, which this store does not use");
     }
-    let answer = broker::grant(store, name, &agent(), ttl)?;
+    let answer = broker::grant(store, names, &agent(), ttl)?;
     let mut lines = answer.lines();
     let token = lines.next().context("the broker returned no token")?;
     let covered: Vec<&str> = lines.collect();
@@ -853,7 +854,7 @@ fn set_mode(
     let key = unlock(store, &format!("change the permission mode of {name}"))?;
     let recipient = store.recipient()?;
 
-    let matched = import::select(&store.names(&key)?, Some(name));
+    let matched = store::select(&store.names(&key)?, Some(name));
     if matched.is_empty() {
         bail!("no secret named {name}, and nothing under {name}/");
     }

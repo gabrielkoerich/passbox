@@ -25,10 +25,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const KEY_TTL_SECS: u64 = 300;
 /* A ceiling on how long one approval can carry. Without it a caller names its own expiry and
 a token becomes a password that never lapses, which is the thing this exists to avoid. */
+#[cfg(feature = "host")]
 const MAX_GRANT_SECS: u64 = 86_400;
 #[cfg(feature = "host")]
 static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "host")]
 /* Split out so the scoping rules can be tested without a store, a socket or a finger:
 an unknown token opens nothing, a known one opens only what it was granted, and neither
 opens anything once it has lapsed. */
@@ -45,6 +47,7 @@ fn token_lookup(
 }
 
 /// What one token opens: the values it was granted, and when it stops working
+#[cfg(feature = "host")]
 struct TokenGrant {
     values: HashMap<String, String>,
     expires: u64,
@@ -73,6 +76,9 @@ pub struct Request {
     /// Seconds a minted token stays valid
     #[serde(default)]
     pub ttl: u64,
+    /// Names or namespaces a Grant covers. A job rarely wants exactly one namespace
+    #[serde(default)]
+    pub names: Vec<String>,
 }
 
 #[cfg(feature = "host")]
@@ -267,18 +273,26 @@ impl Broker {
             eprintln!("capped {asked}s at {MAX_GRANT_SECS}s");
         }
 
-        let reason = format!("grant {} to {} for {ttl}s", request.name, request.agent);
+        let reason = format!(
+            "grant {} to {} for {ttl}s",
+            request.names.join(", "),
+            request.agent
+        );
         self.ask(&reason)?;
         let key = self.key.clone().expect("just unlocked");
 
-        let wanted = crate::import::select(&self.store.names(&key)?, Some(&request.name));
-        if wanted.is_empty() {
-            bail!(
-                "no secret named {}, and nothing under {}/",
-                request.name,
-                request.name
-            );
+        // Each pattern is a name or a namespace, and the token covers the union of them
+        let all = self.store.names(&key)?;
+        let mut wanted: Vec<String> = Vec::new();
+        for pattern in &request.names {
+            let matched = store::select(&all, Some(pattern));
+            if matched.is_empty() {
+                bail!("no secret named {pattern}, and nothing under {pattern}/");
+            }
+            wanted.extend(matched);
         }
+        wanted.sort();
+        wanted.dedup();
 
         let mut values = HashMap::new();
         for name in &wanted {
@@ -292,7 +306,10 @@ impl Broker {
             values.insert(name.clone(), secret.value.clone());
         }
         if values.is_empty() {
-            bail!("{} matched only secrets marked never", request.name);
+            bail!(
+                "{} matched only secrets marked never",
+                request.names.join(", ")
+            );
         }
 
         let token = store::new_id() + &store::new_id();
@@ -595,6 +612,7 @@ pub fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
             op: Op::Get,
             token: std::env::var("PASSBOX_TOKEN").unwrap_or_default(),
             ttl: 0,
+            names: Vec::new(),
         },
     )
 }
@@ -609,21 +627,23 @@ pub fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
             op: Op::List,
             token: String::new(),
             ttl: 0,
+            names: Vec::new(),
         },
     )?;
     Ok(names.lines().map(str::to_string).collect())
 }
 
 /// Approve once and get a token back, with the names it covers listed after it
-pub fn grant(store: &Store, name: &str, agent: &str, ttl: u64) -> Result<String> {
+pub fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<String> {
     ask_broker(
         store,
         Request {
-            name: name.to_string(),
+            name: String::new(),
             agent: agent.to_string(),
             op: Op::Grant,
             token: String::new(),
             ttl,
+            names: names.to_vec(),
         },
     )
 }

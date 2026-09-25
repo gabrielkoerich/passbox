@@ -83,6 +83,19 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/* A name, or everything under a namespace. The trailing slash is what stops `bean` dragging
+in `beanstalk`. Lives here rather than in `import` because the client build has no `import`. */
+pub fn select(all: &[String], prefix: Option<&str>) -> Vec<String> {
+    let Some(prefix) = prefix else {
+        return all.to_vec();
+    };
+    let namespace = format!("{}/", prefix.trim_end_matches('/'));
+    all.iter()
+        .filter(|name| *name == prefix || name.starts_with(&namespace))
+        .cloned()
+        .collect()
+}
+
 pub fn new_id() -> String {
     let bytes: [u8; 16] = rand::random();
     hex::encode(bytes)
