@@ -407,6 +407,31 @@ as you set, and asking for anything else still needs a fingerprint.
 passbox mode trade/signing-key window --lease 86400
 ```
 
+### A token, for a job that should not get everything
+
+A lease is keyed on the secret, so for its life anything that reaches the socket gets that
+value. A token is narrower: one approval mints a bearer token that opens **only the secrets it
+was granted**, for whoever holds it, until it lapses.
+
+```bash
+export PASSBOX_TOKEN=$(passbox grant bean --for 3600)
+```
+
+One fingerprint. The token goes to stdout and the covered names to stderr, so the command above
+captures the token alone. Every read that presents it is audited as `by token`.
+
+| | Lease | Token |
+|---|---|---|
+| Who gets it | anything on the socket | whoever holds the token |
+| Covers | one secret | the names granted, and no others |
+| Ends | when it lapses | when it lapses, or the broker restarts |
+| Ceiling | none | 24 hours |
+
+Prefer a token. The lease is the blunter instrument, and it is kept because it needs nothing
+passed along to a child.
+
+Both need the broker, so a passphrase-only store has neither: it reads without a prompt anyway.
+
 A namespace works too, and costs one fingerprint rather than one per secret:
 
 ```bash

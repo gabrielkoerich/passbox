@@ -23,8 +23,32 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// The store key leaves memory after this long with no traffic
 #[cfg(feature = "host")]
 const KEY_TTL_SECS: u64 = 300;
+/* A ceiling on how long one approval can carry. Without it a caller names its own expiry and
+a token becomes a password that never lapses, which is the thing this exists to avoid. */
+const MAX_GRANT_SECS: u64 = 86_400;
 #[cfg(feature = "host")]
 static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
+
+/* Split out so the scoping rules can be tested without a store, a socket or a finger:
+an unknown token opens nothing, a known one opens only what it was granted, and neither
+opens anything once it has lapsed. */
+fn token_lookup(
+    tokens: &HashMap<String, TokenGrant>,
+    token: &str,
+    name: &str,
+    now: u64,
+) -> Option<String> {
+    let grant = tokens.get(token)?;
+    (now < grant.expires)
+        .then(|| grant.values.get(name).cloned())
+        .flatten()
+}
+
+/// What one token opens: the values it was granted, and when it stops working
+struct TokenGrant {
+    values: HashMap<String, String>,
+    expires: u64,
+}
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -32,6 +56,8 @@ pub enum Op {
     #[default]
     Get,
     List,
+    /// Approve a set of secrets once and hand back a token that opens only those
+    Grant,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -41,6 +67,12 @@ pub struct Request {
     pub agent: String,
     #[serde(default)]
     pub op: Op,
+    /// Presented on a read to skip the prompt, and minted by a Grant
+    #[serde(default)]
+    pub token: String,
+    /// Seconds a minted token stays valid
+    #[serde(default)]
+    pub ttl: u64,
 }
 
 #[cfg(feature = "host")]
@@ -95,6 +127,10 @@ struct Broker {
     the key opens everything and so is dropped quickly, while a lease covers the one secret it
     was approved for. Asking for anything else finds no lease and needs a fingerprint. */
     leases: HashMap<String, (String, u64)>,
+    /* A token opens the secrets it was granted and nothing else, for whoever holds it.
+    The lease beside it is weaker: it is keyed on the secret, so for its life anything that
+    reaches the socket gets that value. A token narrows that to one holder, and can be torn up. */
+    tokens: HashMap<String, TokenGrant>,
     key_at: u64,
     approvals: HashMap<(String, String), u64>,
     #[cfg(feature = "host")]
@@ -109,6 +145,7 @@ impl Broker {
             key: None,
             key_at: 0,
             leases: HashMap::new(),
+            tokens: HashMap::new(),
             approvals: HashMap::new(),
             #[cfg(feature = "host")]
             grants: Vec::new(),
@@ -185,6 +222,7 @@ impl Broker {
         match request.op {
             Op::Get => self.handle_get(request, caller, cwd),
             Op::List => self.handle_list(request, caller),
+            Op::Grant => self.handle_grant(request, caller),
         }
     }
 
@@ -216,6 +254,69 @@ impl Broker {
         Ok(self.store.names(&key)?.join("\n"))
     }
 
+    /* One approval covers a name or a whole namespace, and yields a token that opens exactly
+    those. Asking for twenty secrets one at a time is twenty prompts to do one thing. */
+    fn handle_grant(&mut self, request: &Request, caller: &str) -> Result<String> {
+        let asked = if request.ttl == 0 {
+            DEFAULT_WINDOW_SECS
+        } else {
+            request.ttl
+        };
+        let ttl = asked.min(MAX_GRANT_SECS);
+        if ttl < asked {
+            eprintln!("capped {asked}s at {MAX_GRANT_SECS}s");
+        }
+
+        let reason = format!("grant {} to {} for {ttl}s", request.name, request.agent);
+        self.ask(&reason)?;
+        let key = self.key.clone().expect("just unlocked");
+
+        let wanted = crate::import::select(&self.store.names(&key)?, Some(&request.name));
+        if wanted.is_empty() {
+            bail!(
+                "no secret named {}, and nothing under {}/",
+                request.name,
+                request.name
+            );
+        }
+
+        let mut values = HashMap::new();
+        for name in &wanted {
+            let Some((_, secret)) = self.store.find(name, &key)? else {
+                continue;
+            };
+            // `never` is never released to anything holding a token either
+            if secret.mode == Mode::Never {
+                continue;
+            }
+            values.insert(name.clone(), secret.value.clone());
+        }
+        if values.is_empty() {
+            bail!("{} matched only secrets marked never", request.name);
+        }
+
+        let token = store::new_id() + &store::new_id();
+        let granted: Vec<String> = values.keys().cloned().collect();
+        self.tokens.insert(
+            token.clone(),
+            TokenGrant {
+                values,
+                expires: store::now() + ttl,
+            },
+        );
+        for name in &granted {
+            self.audit(&key, &request.agent, name, "granted", caller)?;
+        }
+        Ok(format!("{token}\n{}", granted.join("\n")))
+    }
+
+    /// A token answers only for what it was granted, and only until it expires
+    fn value_for_token(&mut self, token: &str, name: &str) -> Option<String> {
+        let now = store::now();
+        self.tokens.retain(|_, g| now < g.expires);
+        token_lookup(&self.tokens, token, name, now)
+    }
+
     fn handle_get(
         &mut self,
         request: &Request,
@@ -226,6 +327,14 @@ impl Broker {
             .approvals
             .get(&(request.agent.clone(), request.name.clone()))
             .copied();
+
+        // A token is the narrowest thing that can answer, so it is tried first
+        if !request.token.is_empty()
+            && let Some(value) = self.value_for_token(&request.token, &request.name)
+        {
+            self.audit_by(&request.agent, &request.name, "by token", caller)?;
+            return Ok(value);
+        }
 
         // Before the key, because a live lease is exactly the case where there is no key to use
         if let Some((value, until)) = self.leases.get(&request.name)
@@ -303,8 +412,12 @@ impl Broker {
     /* A leased read has no key by design, and the audit line only ever needed the public half,
     so the record is written to the store's recipient instead. The lease stays auditable. */
     fn audit_leased(&self, agent: &str, secret: &str, caller: &str) -> Result<()> {
+        self.audit_by(agent, secret, "within lease", caller)
+    }
+
+    fn audit_by(&self, agent: &str, secret: &str, decision: &str, caller: &str) -> Result<()> {
         let to = self.store.recipient()?;
-        self.audit_to(&to, agent, secret, "within lease", caller)
+        self.audit_to(&to, agent, secret, decision, caller)
     }
 
     fn audit(
@@ -480,6 +593,8 @@ pub fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
             name: name.to_string(),
             agent: agent.to_string(),
             op: Op::Get,
+            token: std::env::var("PASSBOX_TOKEN").unwrap_or_default(),
+            ttl: 0,
         },
     )
 }
@@ -492,9 +607,25 @@ pub fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
             name: String::new(),
             agent: agent.to_string(),
             op: Op::List,
+            token: String::new(),
+            ttl: 0,
         },
     )?;
     Ok(names.lines().map(str::to_string).collect())
+}
+
+/// Approve once and get a token back, with the names it covers listed after it
+pub fn grant(store: &Store, name: &str, agent: &str, ttl: u64) -> Result<String> {
+    ask_broker(
+        store,
+        Request {
+            name: name.to_string(),
+            agent: agent.to_string(),
+            op: Op::Grant,
+            token: String::new(),
+            ttl,
+        },
+    )
 }
 
 /// Ask a running broker, starting one if the socket is dead.
@@ -579,6 +710,49 @@ mod tests {
 
     /* The point of a lease is that it covers one secret and not the store. These assert the
     shape of that: a live lease answers without a key, and only for the name it was taken on. */
+    fn grant_of(pairs: &[(&str, &str)], expires: u64) -> TokenGrant {
+        TokenGrant {
+            values: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            expires,
+        }
+    }
+
+    #[test]
+    fn a_token_opens_only_what_it_was_granted() {
+        let mut tokens = HashMap::new();
+        tokens.insert("tok".to_string(), grant_of(&[("bean/pk", "value")], 2_000));
+        assert_eq!(
+            token_lookup(&tokens, "tok", "bean/pk", 1_000).as_deref(),
+            Some("value")
+        );
+        assert!(token_lookup(&tokens, "tok", "personal/github", 1_000).is_none());
+    }
+
+    #[test]
+    fn an_unknown_token_opens_nothing() {
+        let mut tokens = HashMap::new();
+        tokens.insert("tok".to_string(), grant_of(&[("bean/pk", "v")], 2_000));
+        assert!(token_lookup(&tokens, "guessed", "bean/pk", 1_000).is_none());
+    }
+
+    #[test]
+    fn a_lapsed_token_opens_nothing() {
+        let mut tokens = HashMap::new();
+        tokens.insert("tok".to_string(), grant_of(&[("bean/pk", "v")], 2_000));
+        assert!(token_lookup(&tokens, "tok", "bean/pk", 2_000).is_none());
+        assert!(token_lookup(&tokens, "tok", "bean/pk", 9_999).is_none());
+    }
+
+    #[test]
+    fn a_grant_is_capped_at_a_day() {
+        let asked: u64 = 7 * 86_400;
+        assert_eq!(asked.min(MAX_GRANT_SECS), MAX_GRANT_SECS);
+        assert_eq!(600u64.min(MAX_GRANT_SECS), 600);
+    }
+
     #[test]
     fn a_lease_outlives_the_store_key() {
         let mut leases: HashMap<String, (String, u64)> = HashMap::new();

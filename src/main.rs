@@ -53,6 +53,14 @@ enum Command {
         #[arg(long)]
         field: Option<String>,
     },
+    /// Approve a secret or a namespace once, and print a token that opens only those
+    Grant {
+        /// A name, or a namespace such as `bean`
+        name: String,
+        /// Seconds the token stays valid, capped at 24 hours
+        #[arg(long, default_value_t = 3600)]
+        r#for: u64,
+    },
     /// List secret names
     Ls,
     /// Delete a secret, leaving a tombstone so the delete survives a sync
@@ -149,6 +157,7 @@ fn run() -> Result<()> {
         Command::Init => init(&store),
         Command::Add { name, mode, window } => add(&store, &name, mode, window),
         Command::Get { name, field } => get(&store, &name, field.as_deref()),
+        Command::Grant { name, r#for } => grant(&store, &name, r#for),
         Command::Ls => ls(&store),
         Command::Rm { name } => rm(&store, &name),
         Command::Mode {
@@ -776,6 +785,29 @@ pub fn run_child(
 }
 
 /// A tree for a terminal, one name per line for anything reading the output
+/* The token goes to stdout and the rest to stderr, so `TOKEN=$(passbox grant bean)` picks up
+the token alone while a person still sees what it covers. */
+fn grant(store: &Store, name: &str, ttl: u64) -> Result<()> {
+    // A token lives in the broker, and a passphrase store reads without one at all
+    if headless() || !store.has_se_wrap() {
+        bail!("a token needs the broker, which this store does not use");
+    }
+    let answer = broker::grant(store, name, &agent(), ttl)?;
+    let mut lines = answer.lines();
+    let token = lines.next().context("the broker returned no token")?;
+    let covered: Vec<&str> = lines.collect();
+
+    println!("{token}");
+    eprintln!("opens {} secret(s) for {ttl}s:", covered.len());
+    for name in &covered {
+        eprintln!("  {name}");
+    }
+    eprintln!();
+    eprintln!("pass it back with PASSBOX_TOKEN, and it stops working when it lapses:");
+    eprintln!("  export PASSBOX_TOKEN={token}");
+    Ok(())
+}
+
 fn ls(store: &Store) -> Result<()> {
     // The index answers without the key. Absent, one prompt builds it and later runs are free
     let names = match store.index_read() {
