@@ -59,6 +59,12 @@ pub struct Secret {
     pub name: String,
     pub mode: Mode,
     pub window_secs: u64,
+    /* How long the broker may keep THIS value after one approval. A window still asks for a
+    fingerprint when it lapses, which no unattended job can answer. A lease holds the one value
+    instead of the store key, so the job keeps running and the approval it got extends to that
+    secret alone. Zero, the default, means no lease. */
+    #[serde(default)]
+    pub lease_secs: u64,
     pub value: String,
     pub created: u64,
     pub updated: u64,
@@ -532,6 +538,7 @@ mod tests {
             name: name.to_string(),
             mode: Mode::Window,
             window_secs: DEFAULT_WINDOW_SECS,
+            lease_secs: 0,
             value: value.to_string(),
             created: now(),
             updated: now(),

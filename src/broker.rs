@@ -91,6 +91,10 @@ struct AuditRecord<'a> {
 struct Broker {
     store: Store,
     key: Option<x25519::Identity>,
+    /* One secret's value, held past the store key's life. This is the whole point of a lease:
+    the key opens everything and so is dropped quickly, while a lease covers the one secret it
+    was approved for. Asking for anything else finds no lease and needs a fingerprint. */
+    leases: HashMap<String, (String, u64)>,
     key_at: u64,
     approvals: HashMap<(String, String), u64>,
     #[cfg(feature = "host")]
@@ -104,6 +108,7 @@ impl Broker {
             store,
             key: None,
             key_at: 0,
+            leases: HashMap::new(),
             approvals: HashMap::new(),
             #[cfg(feature = "host")]
             grants: Vec::new(),
@@ -222,6 +227,16 @@ impl Broker {
             .get(&(request.agent.clone(), request.name.clone()))
             .copied();
 
+        // Before the key, because a live lease is exactly the case where there is no key to use
+        if let Some((value, until)) = self.leases.get(&request.name)
+            && store::now() < *until
+        {
+            let value = value.clone();
+            self.audit_leased(&request.agent, &request.name, caller)?;
+            return Ok(value);
+        }
+        self.leases.retain(|_, (_, until)| store::now() < *until);
+
         // Reading the policy needs the key, so a cold broker asks before it can decide
         let mut asked = false;
         if self.cached_key().is_none() {
@@ -271,6 +286,12 @@ impl Broker {
             Decision::Allow => "within window",
         };
         self.audit(&key, &request.agent, &request.name, outcome, caller)?;
+        if secret.lease_secs > 0 {
+            self.leases.insert(
+                request.name.clone(),
+                (secret.value.clone(), store::now() + secret.lease_secs),
+            );
+        }
         Ok(secret.value.clone())
     }
 
@@ -279,9 +300,27 @@ impl Broker {
             .insert((request.agent.clone(), request.name.clone()), store::now());
     }
 
+    /* A leased read has no key by design, and the audit line only ever needed the public half,
+    so the record is written to the store's recipient instead. The lease stays auditable. */
+    fn audit_leased(&self, agent: &str, secret: &str, caller: &str) -> Result<()> {
+        let to = self.store.recipient()?;
+        self.audit_to(&to, agent, secret, "within lease", caller)
+    }
+
     fn audit(
         &self,
         key: &x25519::Identity,
+        agent: &str,
+        secret: &str,
+        decision: &str,
+        caller: &str,
+    ) -> Result<()> {
+        self.audit_to(&key.to_public(), agent, secret, decision, caller)
+    }
+
+    fn audit_to(
+        &self,
+        to: &x25519::Recipient,
         agent: &str,
         secret: &str,
         decision: &str,
@@ -294,7 +333,7 @@ impl Broker {
             decision,
             caller,
         };
-        let line = crypto::encrypt_line(&serde_json::to_vec(&record)?, &key.to_public())?;
+        let line = crypto::encrypt_line(&serde_json::to_vec(&record)?, to)?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -536,6 +575,42 @@ mod tests {
             decide(Mode::Always, WINDOW, Some(999), 1000),
             Decision::Prompt
         );
+    }
+
+    /* The point of a lease is that it covers one secret and not the store. These assert the
+    shape of that: a live lease answers without a key, and only for the name it was taken on. */
+    #[test]
+    fn a_lease_outlives_the_store_key() {
+        let mut leases: HashMap<String, (String, u64)> = HashMap::new();
+        leases.insert("trade/pk".into(), ("value".into(), 2_000));
+        let now = 1_500; // past KEY_TTL_SECS, so no key would be cached
+        assert!(now > KEY_TTL_SECS);
+        assert!(
+            leases
+                .get("trade/pk")
+                .is_some_and(|(_, until)| now < *until)
+        );
+    }
+
+    #[test]
+    fn a_lease_does_not_cover_another_secret() {
+        let mut leases: HashMap<String, (String, u64)> = HashMap::new();
+        leases.insert("trade/pk".into(), ("value".into(), 2_000));
+        assert!(!leases.contains_key("personal/github"));
+    }
+
+    #[test]
+    fn an_expired_lease_stops_answering() {
+        let mut leases: HashMap<String, (String, u64)> = HashMap::new();
+        leases.insert("trade/pk".into(), ("value".into(), 2_000));
+        let now = 2_001;
+        assert!(
+            leases
+                .get("trade/pk")
+                .is_none_or(|(_, until)| now >= *until)
+        );
+        leases.retain(|_, (_, until)| now < *until);
+        assert!(leases.is_empty());
     }
 
     #[test]

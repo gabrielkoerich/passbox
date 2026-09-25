@@ -218,6 +218,7 @@ mod tests {
             name: name.to_string(),
             mode: Mode::Window,
             window_secs: DEFAULT_WINDOW_SECS,
+            lease_secs: 0,
             value: value.to_string(),
             created: now(),
             updated: now(),

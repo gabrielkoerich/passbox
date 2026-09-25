@@ -369,6 +369,34 @@ cargo test -- --ignored   # the Secure Enclave round trip, needs a finger
 
 `build.rs` compiles the Swift helper with `swiftc` from the Command Line Tools.
 
+## A job that runs unattended
+
+A window asks for a fingerprint when it lapses, which nothing running at 3am can answer. A
+**lease** is the answer to that: one approval, then the broker keeps that one value for as long
+as you set, and asking for anything else still needs a fingerprint.
+
+```bash
+passbox mode trade/signing-key window --lease 86400
+```
+
+The lease holds the value, not the store key. That is the whole difference. The store key opens
+every secret, so the broker drops it after five minutes; a lease covers the secret it was
+approved for and nothing else. A broker holding a day-long lease on one key cannot be talked
+into handing over a second one.
+
+| | Window | Lease |
+|---|---|---|
+| Covers | one agent and one secret | one secret |
+| When it lapses | prompts again | prompts again |
+| Survives the store key expiring | no | yes |
+| Good for | you, at the keyboard | a daemon, unattended |
+
+Leased reads are still audited, and `passbox audit` shows them as `within lease`.
+
+The honest limit: for the lease's duration that value sits in broker memory, and anything able
+to reach the socket as you can read it without a prompt. That is the cost of unattended access,
+and it is why the lease is per secret rather than per store.
+
 ## Using it from a program
 
 [`examples/python`](examples/python) is a small client over the CLI, with a runnable
