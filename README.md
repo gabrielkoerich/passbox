@@ -369,6 +369,34 @@ cargo test -- --ignored   # the Secure Enclave round trip, needs a finger
 
 `build.rs` compiles the Swift helper with `swiftc` from the Command Line Tools.
 
+## Listing names without unlocking
+
+`ls` used to decrypt every entry to learn the names, which meant a prompt and a store key warm
+in the broker afterwards. That is the largest privilege there is for the smallest question.
+
+A plaintext list of names now lives at `~/.passbox/names`, written as the store changes, so `ls`
+answers with no key and no prompt. `get` is unaffected and still needs one.
+
+The cost, stated plainly: that one file names what you hold. It never leaves the machine. Sync
+skips it, a store that is a git repo ignores it, and it is `0600`, so a copy elsewhere still says
+nothing about you. Someone with this disk but not the Enclave learns what you have, not what it
+is.
+
+A sync that pulls deletes the list, because a pull can bring names this machine has never
+decrypted. The next `ls` rebuilds it with one prompt.
+
+## Fields in one entry
+
+An entry can hold more than a password. The first line is the secret, later `key: value` lines
+are fields, which is the layout `pass` uses and `import-pass` keeps.
+
+```bash
+passbox get db/prod                  # the whole thing
+passbox get db/prod --field username # just that one
+```
+
+Reading one field hands a caller the password without the note beside it.
+
 ## A job that runs unattended
 
 A window asks for a fingerprint when it lapses, which nothing running at 3am can answer. A

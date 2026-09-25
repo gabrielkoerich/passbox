@@ -67,6 +67,7 @@ fn skip(relative: &Path) -> bool {
     let text = relative.to_string_lossy();
     text == "broker.sock"
         || text == "remote"
+        || text == "names"
         || text.starts_with("store/.versions")
         || (text.starts_with("grants-") && text.ends_with(".age"))
 }
@@ -155,6 +156,10 @@ pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
             }
             _ => {}
         }
+    }
+    // A pull can bring names this machine has never decrypted, so the list is no longer true
+    if report.pulled > 0 {
+        store.index_clear()?;
     }
     Ok(report)
 }

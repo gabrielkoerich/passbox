@@ -192,7 +192,7 @@ fn ensure_store_gitignore(store: &Store) -> Result<()> {
     if !path.exists() {
         std::fs::write(
             &path,
-            "broker.sock\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\n",
+            "broker.sock\nnames\nremote\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\n",
         )?;
     }
     Ok(())
@@ -777,7 +777,15 @@ pub fn run_child(
 
 /// A tree for a terminal, one name per line for anything reading the output
 fn ls(store: &Store) -> Result<()> {
-    let names = agent_list_names(store, &agent())?;
+    // The index answers without the key. Absent, one prompt builds it and later runs are free
+    let names = match store.index_read() {
+        Some(names) => names,
+        None => {
+            let names = agent_list_names(store, &agent())?;
+            store.index_write(&names)?;
+            names
+        }
+    };
     let mut out = std::io::stdout();
     if out.is_terminal() {
         out.write_all(tree::render(&names, true).as_bytes())?;
@@ -795,6 +803,7 @@ fn rm(store: &Store, name: &str) -> Result<()> {
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
     store.delete(&id)?;
+    store.index_remove(name)?;
     store.prune_tombs()?;
     eprintln!("deleted {name}, recoverable with `passbox restore {name}`");
     Ok(())
