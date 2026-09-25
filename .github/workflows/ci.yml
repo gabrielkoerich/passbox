@@ -128,10 +128,11 @@ jobs:
           fi
 
       - name: Determine version bump from conventional commits
-        if: needs.version.outputs.skip == 'false'
+        # Inside this job the answer comes from the step above, not from the job's own output
+        if: steps.check.outputs.skip == 'false'
         id: version
         env:
-          LAST_TAG: ${{ needs.version.outputs.last_tag }}
+          LAST_TAG: ${{ steps.check.outputs.last_tag }}
         run: |
           if [ -n "$LAST_TAG" ]; then
             COMMITS=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s")
@@ -208,6 +209,8 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
+          # An empty version silently writes `version = ""`, which fails much further along
+          [ -n "$VERSION" ] || { echo "::error::the version job produced no version"; exit 1; }
           sed -i "0,/^version = /s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml
           sed -i "/^name = \"passbox\"$/{n;s/^version = .*/version = \"${VERSION#v}\"/}" Cargo.lock
           grep -m1 '^version' Cargo.toml
