@@ -47,7 +47,12 @@ enum Command {
         window: Option<u64>,
     },
     /// Print a secret
-    Get { name: String },
+    Get {
+        name: String,
+        /// One field of a multi-line entry, such as `username`. `password` is the first line
+        #[arg(long)]
+        field: Option<String>,
+    },
     /// List secret names
     Ls,
     /// Delete a secret, leaving a tombstone so the delete survives a sync
@@ -143,7 +148,7 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Init => init(&store),
         Command::Add { name, mode, window } => add(&store, &name, mode, window),
-        Command::Get { name } => get(&store, &name),
+        Command::Get { name, field } => get(&store, &name, field.as_deref()),
         Command::Ls => ls(&store),
         Command::Rm { name } => rm(&store, &name),
         Command::Mode {
@@ -689,8 +694,33 @@ fn import_pass(store: &Store, prefix: Option<&str>, mode: Option<Mode>, force: b
     Ok(())
 }
 
-fn get(store: &Store, name: &str) -> Result<()> {
-    let value = read_secret(store, name, false)?;
+/* The `pass` layout, which import keeps: the first line is the secret and later `key: value`
+lines are fields. Reading one field hands a caller the password without the note beside it. */
+fn fields(value: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut lines = value.lines();
+    if let Some(first) = lines.next() {
+        out.insert("password".to_string(), first.to_string());
+    }
+    for line in lines {
+        if let Some((key, v)) = line.split_once(':') {
+            let (key, v) = (key.trim().to_lowercase(), v.trim());
+            if !key.is_empty() && !v.is_empty() {
+                out.insert(key, v.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn get(store: &Store, name: &str, field: Option<&str>) -> Result<()> {
+    let whole = read_secret(store, name, false)?;
+    let value = match field {
+        None => whole,
+        Some(want) => fields(&whole)
+            .remove(want)
+            .with_context(|| format!("{name} has no field {want}"))?,
+    };
     let mut out = std::io::stdout();
     out.write_all(value.as_bytes())?;
     if out.is_terminal() {
@@ -888,4 +918,30 @@ fn read_value() -> Result<String> {
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
     Ok(buf.trim_end_matches('\n').to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fields;
+
+    #[test]
+    fn the_first_line_is_the_password() {
+        let f = fields("s3cret\nusername: bot\nhost: example.com");
+        assert_eq!(f["password"], "s3cret");
+        assert_eq!(f["username"], "bot");
+        assert_eq!(f["host"], "example.com");
+    }
+
+    #[test]
+    fn a_value_holding_a_colon_survives() {
+        let f = fields("pw\nurl: https://example.com:8443/x");
+        assert_eq!(f["url"], "https://example.com:8443/x");
+    }
+
+    #[test]
+    fn a_single_line_secret_has_only_a_password() {
+        let f = fields("just-a-token");
+        assert_eq!(f["password"], "just-a-token");
+        assert_eq!(f.len(), 1);
+    }
 }
