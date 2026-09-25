@@ -30,6 +30,28 @@ const MAX_GRANT_SECS: u64 = 86_400;
 #[cfg(feature = "host")]
 static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
 
+/* Exact names only. A token is worth minting because it is narrower than the store key, and a
+namespace is not: it hands over everything under it now, and a caller that asks for one has not
+said what it actually reads. The refusal lists them so naming them is a copy, not a chore. */
+#[cfg(feature = "host")]
+fn reject_namespaces(asked: &[String], known: &[String]) -> Result<()> {
+    for pattern in asked {
+        if known.iter().any(|n| n == pattern) {
+            continue;
+        }
+        let under = store::select(known, Some(pattern));
+        if under.is_empty() {
+            bail!("no secret named {pattern}");
+        }
+        bail!(
+            "{pattern} is a namespace holding {} secrets, ask for the ones this needs:\n  {}",
+            under.len(),
+            under.join("\n  ")
+        );
+    }
+    Ok(())
+}
+
 #[cfg(feature = "host")]
 /* Split out so the scoping rules can be tested without a store, a socket or a finger:
 an unknown token opens nothing, a known one opens only what it was granted, and neither
@@ -257,7 +279,9 @@ impl Broker {
         let key = self.key.clone().expect("just unlocked");
         let outcome = if asked { "approved" } else { "within window" };
         self.audit(&key, &request.agent, "<list>", outcome, caller)?;
-        Ok(self.store.names(&key)?.join("\n"))
+        let names = self.store.names(&key)?;
+        self.store.index_write(&names)?;
+        Ok(names.join("\n"))
     }
 
     /* One approval covers a name or a whole namespace, and yields a token that opens exactly
@@ -273,6 +297,12 @@ impl Broker {
             eprintln!("capped {asked}s at {MAX_GRANT_SECS}s");
         }
 
+        /* Check the names before asking for a finger. The index holds them in the clear, so a
+        grant that names a namespace can be refused without spending an approval on it. */
+        if let Some(known) = self.store.index_read() {
+            reject_namespaces(&request.names, &known)?;
+        }
+
         let reason = format!(
             "grant {} to {} for {ttl}s",
             request.names.join(", "),
@@ -281,16 +311,12 @@ impl Broker {
         self.ask(&reason)?;
         let key = self.key.clone().expect("just unlocked");
 
-        // Each pattern is a name or a namespace, and the token covers the union of them
+        // And again with the real names, for a store with no index yet
         let all = self.store.names(&key)?;
-        let mut wanted: Vec<String> = Vec::new();
-        for pattern in &request.names {
-            let matched = store::select(&all, Some(pattern));
-            if matched.is_empty() {
-                bail!("no secret named {pattern}, and nothing under {pattern}/");
-            }
-            wanted.extend(matched);
-        }
+        // Decrypting them is the expensive part and it is already done, so leave the list behind
+        self.store.index_write(&all)?;
+        reject_namespaces(&request.names, &all)?;
+        let mut wanted = request.names.clone();
         wanted.sort();
         wanted.dedup();
 
@@ -738,6 +764,49 @@ mod tests {
                 .collect(),
             expires,
         }
+    }
+
+    #[test]
+    fn a_namespace_is_refused_and_its_names_listed() {
+        let known: Vec<String> = ["bean/pk", "bean/addr", "personal/github"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let err = reject_namespaces(&["bean".to_string()], &known)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("namespace holding 2"), "{err}");
+        assert!(
+            err.contains("bean/pk") && err.contains("bean/addr"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn exact_names_are_accepted() {
+        let known: Vec<String> = ["bean/pk", "personal/github"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(reject_namespaces(&["bean/pk".to_string()], &known).is_ok());
+        assert!(
+            reject_namespaces(
+                &["bean/pk".to_string(), "personal/github".to_string()],
+                &known
+            )
+            .is_ok()
+        );
+    }
+
+    /// A flat store is the case a namespace rule would miss, so the rule is not about slashes
+    #[test]
+    fn a_name_that_is_not_there_is_refused() {
+        let known = vec!["token".to_string(), "other".to_string()];
+        let err = reject_namespaces(&["nope".to_string()], &known)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no secret named nope"), "{err}");
+        assert!(reject_namespaces(&["token".to_string()], &known).is_ok());
     }
 
     #[test]

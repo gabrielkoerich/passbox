@@ -789,10 +789,30 @@ pub fn run_child(
 /* The token goes to stdout and the rest to stderr, so `TOKEN=$(passbox grant bean)` picks up
 the token alone while a person still sees what it covers. */
 fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
+    /* Refuse a namespace before anything else, so it costs neither a round trip nor a
+    fingerprint. The names are in the clear locally, which is what the index is for. */
+    if let Some(known) = store.index_read() {
+        for pattern in names {
+            if known.iter().any(|n| n == pattern) {
+                continue;
+            }
+            let under = store::select(&known, Some(pattern));
+            if under.is_empty() {
+                bail!("no secret named {pattern}");
+            }
+            bail!(
+                "{pattern} is a namespace holding {} secrets, ask for the ones this needs:\n  {}",
+                under.len(),
+                under.join("\n  ")
+            );
+        }
+    }
+
     // A token lives in the broker, and a passphrase store reads without one at all
     if headless() || !store.has_se_wrap() {
         bail!("a token needs the broker, which this store does not use");
     }
+
     let answer = broker::grant(store, names, &agent(), ttl)?;
     let mut lines = answer.lines();
     let token = lines.next().context("the broker returned no token")?;

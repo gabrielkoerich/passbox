@@ -417,22 +417,25 @@ was granted**, for whoever holds it, until it lapses.
 export PASSBOX_TOKEN=$(passbox grant bean/hl-mainnet-pk --for 3600)
 ```
 
-**Name the secrets, not the namespace.** A token is only worth minting if it is narrower than
-the store, and `grant bean` on a project with twenty entries hands over all twenty to save one
-prompt. List what the job reads:
+**A namespace is refused.** A token is only worth minting if it is narrower than the store, and
+`grant bean` on a project with twenty entries hands over all twenty to save one prompt. Worse,
+it scopes on how the store happens to be laid out: put everything at the root and a namespace
+rule protects nothing. So a grant names each secret, and says what the job actually reads.
+
+```bash
+passbox grant bean namespace
+passbox: bean is a namespace holding 21 secrets, ask for the ones this needs:
+  bean/coinmarketcap-api-key
+  bean/hl-mainnet-pk
+  ...
+```
+
+The refusal lists them, so naming them is a copy rather than a chore, and it costs no
+fingerprint: the names come from the local index before the broker is involved.
 
 ```bash
 passbox grant bean/hl-mainnet-pk bean/coinmarketcap-api-key --for 3600
 ```
-
-A namespace is accepted, for the case where a job genuinely reads all of it:
-
-```bash
-passbox grant r2/storage --for 3600
-```
-
-Names and namespaces mix in one grant, so a job asks for what it needs across the store and
-gets nothing else.
 
 One fingerprint. The token goes to stdout and the covered names to stderr, so the command above
 captures the token alone. Every read that presents it is audited as `by token`.
