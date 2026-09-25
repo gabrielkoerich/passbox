@@ -414,15 +414,25 @@ value. A token is narrower: one approval mints a bearer token that opens **only 
 was granted**, for whoever holds it, until it lapses.
 
 ```bash
-export PASSBOX_TOKEN=$(passbox grant bean/hl-mainnet-pk personal/github --for 3600)
+export PASSBOX_TOKEN=$(passbox grant bean/hl-mainnet-pk --for 3600)
 ```
 
-Names and namespaces mix freely, so a job asks for what it needs and gets nothing else:
+**Name the secrets, not the namespace.** A token is only worth minting if it is narrower than
+the store, and `grant bean` on a project with twenty entries hands over all twenty to save one
+prompt. List what the job reads:
 
 ```bash
-passbox grant bean --for 3600                       # a whole namespace
-passbox grant bean/hl-mainnet-pk r2/storage         # two of them, from different places
+passbox grant bean/hl-mainnet-pk bean/coinmarketcap-api-key --for 3600
 ```
+
+A namespace is accepted, for the case where a job genuinely reads all of it:
+
+```bash
+passbox grant r2/storage --for 3600
+```
+
+Names and namespaces mix in one grant, so a job asks for what it needs across the store and
+gets nothing else.
 
 One fingerprint. The token goes to stdout and the covered names to stderr, so the command above
 captures the token alone. Every read that presents it is audited as `by token`.
