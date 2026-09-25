@@ -9,13 +9,17 @@ use age::plugin::{Identity, IdentityPluginV1, Recipient, RecipientPluginV1};
 use anyhow::{Context, Result, anyhow, bail};
 use std::str::FromStr;
 
+/* Two different names. The binary on PATH is `age-plugin-yubikey`, and the name inside a
+recipient is `yubikey`, which is what the age plugin API matches on. Comparing a parsed
+recipient against the binary name rejects every real token. */
 const PLUGIN: &str = "age-plugin-yubikey";
+const PLUGIN_NAME: &str = "yubikey";
 
 /// Recipients look like `age1yubikey1...` and identities like `AGE-PLUGIN-YUBIKEY-1...`
 pub fn recipient(text: &str) -> Result<Box<dyn age::Recipient + Send>> {
     let parsed = Recipient::from_str(text.trim())
         .map_err(|e| anyhow!("{text} is not an age recipient: {e}"))?;
-    if parsed.plugin() != PLUGIN {
+    if parsed.plugin() != PLUGIN_NAME {
         bail!(
             "{} is a {} recipient, not a YubiKey one",
             text,
@@ -30,9 +34,9 @@ pub fn recipient(text: &str) -> Result<Box<dyn age::Recipient + Send>> {
 
 /// Asks the plugin for whichever token is plugged in, so no identity file has to be kept
 pub fn identity() -> Result<Box<dyn age::Identity>> {
-    let found =
-        Identity::default_for_plugin(PLUGIN).map_err(|e| anyhow!("no YubiKey identity: {e}"))?;
-    let plugin = IdentityPluginV1::new(PLUGIN, &[found], UiCallbacks)
+    let found = Identity::default_for_plugin(PLUGIN_NAME)
+        .map_err(|e| anyhow!("no YubiKey identity: {e}"))?;
+    let plugin = IdentityPluginV1::new(PLUGIN_NAME, &[found], UiCallbacks)
         .context("age-plugin-yubikey is not on PATH")?;
     Ok(Box::new(plugin))
 }
@@ -238,6 +242,16 @@ mod tests {
     fn an_unreadable_applet_does_not_block_the_plugin() {
         assert!(check_management_key("").is_ok());
         assert!(check_management_key("PIV version: 5.7.4\n").is_ok());
+    }
+
+    /* A real recipient from a provisioned token. The plugin name inside it is `yubikey`, not the
+    binary name, and comparing against the binary rejected every genuine token. */
+    #[test]
+    fn a_real_yubikey_recipient_is_accepted() {
+        const REAL: &str =
+            "age1yubikey1q0vlphw7w6z47hqzfl8x950zv7hy66aed5amgcvyx8cu4rqcfh7fswwqa7n";
+        let parsed = Recipient::from_str(REAL).expect("a valid yubikey recipient");
+        assert_eq!(parsed.plugin(), PLUGIN_NAME);
     }
 
     #[test]
