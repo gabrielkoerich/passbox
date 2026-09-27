@@ -241,6 +241,30 @@ jobs:
           path: passbox-${{ matrix.target }}.tar.gz
           retention-days: 1
 
+  # The site is generated from README.md and AGENTS.md, so it cannot drift from them.
+  site:
+    needs: [lint]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: zola@0.23.6
+      - run: ./docs/build.sh
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/public
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
   release:
     needs: [lint, gitleaks, test-macos, client-build, version, binaries]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'

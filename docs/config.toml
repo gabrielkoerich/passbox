@@ -1,0 +1,16 @@
+base_url = "https://passbox.gabrielkoerich.com"
+compile_sass = true
+build_search_index = false
+title = "passbox"
+description = "A password manager for agents. A fingerprint releases one secret into one process."
+default_language = "en"
+minify_html = true
+
+[markdown]
+render_emoji = true
+[markdown.highlighting]
+style = "class"
+theme = "github-dark"
+
+[extra]
+github = "https://github.com/gabrielkoerich/passbox"

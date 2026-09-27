@@ -1,4 +1,8 @@
-# Ideas for later
++++
+title = "Ideas"
+description = "Not built, not committed to, written down so the reasoning survives"
+weight = 3
++++
 
 Little of this is built, and none of it is committed to. It is written down so the
 reasoning survives, and so a later session starts from the argument rather than

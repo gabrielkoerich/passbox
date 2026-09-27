@@ -9,7 +9,7 @@ one child process rather than into the agent.
 </p>
 
 Secrets are ordinary [age](https://age-encryption.org) files. The broker decides
-who may open them. See [docs/DESIGN.md](docs/DESIGN.md) for why it is built this
+who may open them. See [docs/content/design.md](docs/content/design.md) for why it is built this
 way and what it costs.
 
 Runs with no Apple Developer Program membership.
@@ -31,7 +31,7 @@ Command Line Tools for `swiftc`. A full Xcode is not needed either way.
 
 On Linux `brew install` gives the client build: no Secure Enclave, no broker and
 no `sync`, so it opens the store with a passphrase. See [Known
-limits](docs/DESIGN.md#known-limits).
+limits](docs/content/design.md#known-limits).
 
 `init` binds the store to this Mac's Secure Enclave and asks for nothing else.
 There is no passphrase, so there is no file anyone can carry off and grind at.

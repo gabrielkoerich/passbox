@@ -1,4 +1,8 @@
-# Design
++++
+title = "Design"
+description = "Why passbox is built this way, and what each decision cost"
+weight = 2
++++
 
 Why passbox is built this way, and what each decision costs.
 
