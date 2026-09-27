@@ -1,7 +1,7 @@
 +++
-title = "Ideas"
-description = "Not built, not committed to, written down so the reasoning survives"
-weight = 3
+title = "Roadmap"
+description = "Not built and not committed to, written down so the reasoning survives"
+weight = 8
 +++
 
 Little of this is built, and none of it is committed to. It is written down so the

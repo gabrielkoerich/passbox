@@ -169,7 +169,7 @@ passbox audit --tail 50
 
 Every decision is logged, encrypted, one record per line.
 
-## Backup, with no key anywhere
+## Backup and sync
 
 git carries the encrypted secrets and nothing that opens them.
 
@@ -184,7 +184,7 @@ only this Mac can read. That protects you from deleting a secret by accident. It
 does **not** protect you from losing the Mac, because nothing in the backup can
 open it. For that, turn on sync.
 
-## Sync
+### Sync
 
 Sync is off, and nothing leaves the Mac until you run `passbox sync` yourself.
 There is no timer and no syncing on write.
@@ -235,7 +235,7 @@ names.
 On a second Mac, `passbox sync` then `passbox machine add`, the same steps as
 recovering onto a replacement.
 
-## If you lose the Mac
+### If you lose the Mac
 
 By default there is no way back. `init` binds the store to this Mac's Secure
 Enclave and writes no other wrap, so the key exists in one place and cannot
@@ -283,7 +283,7 @@ adding a token to a store that already syncs.
 passbox yubikey-add age1yubikey1...    # the recipient from --list
 ```
 
-#### A YubiKey on firmware 5.7 needs one command first
+### A YubiKey on firmware 5.7 needs one command first
 
 Firmware 5.7 sets the PIV management key algorithm to **AES192**, and
 `age-plugin-yubikey` supports TDES only, so a brand new token fails. A factory
@@ -327,6 +327,71 @@ passbox uses the **PIV** applet. OpenPGP keys live in a separate applet on the
 same chip and are never touched. Before provisioning a slot it reads what PIV
 already holds and shows you, using `ykman` when it is installed.
 
+### When the YubiKey will not cooperate
+
+Four failures, each with an error naming neither the cause nor the fix. In the order you are
+likely to meet them.
+
+**`Failed to authenticate with the PIN-protected management key`**
+
+Firmware 5.7 sets the PIV management key algorithm to **AES192**, and `age-plugin-yubikey`
+supports TDES only. A factory reset does not help, because the reset sets AES192 too, so a
+brand new token arrives in this state.
+
+```bash
+ykman piv info | grep "Management key algorithm"   # AES192 means read on
+ykman piv access change-management-key -a tdes \
+  -n 010203040506070801020304050607080102030405060708
+```
+
+passbox checks this before it asks the plugin for anything, so it says which algorithm is set
+rather than failing inside the plugin.
+
+**`Error while communicating with YubiKey: authentication error`, after the touch**
+
+GPG's `scdaemon` opens the smart card exclusively and holds it. It lands between the plugin's
+key generation and its certificate write, and the write comes back as an authentication error.
+Anything that calls `pass` starts it again, including a scheduled job, so it can reappear
+mid-operation.
+
+```bash
+gpgconf --kill scdaemon
+```
+
+passbox offers to do this before generating. If something on a timer keeps restarting it, stop
+that first.
+
+**The touch never registers**
+
+On a 5C Nano the contact sits flush in the port and is hard to reach. The plugin waits, gets
+nothing, and reports it as an authentication error.
+
+```bash
+age-plugin-yubikey --generate --touch-policy never
+```
+
+For a Nano that is the right setting rather than a workaround: the form factor exists to live
+in a port permanently. The PIN still applies, so a stolen token is useless without it.
+
+**A prompt appears and the PIN is refused**
+
+If generation failed *after* the plugin's PIN-change step, your PIN is already the new one even
+though nothing was provisioned. Retrying with the old PIN burns attempts, and three wrong tries
+locks the applet. Check `ykman piv info` for `PIN tries remaining` before retrying, and reset
+rather than guess:
+
+```bash
+ykman piv reset       # needs no PIN, wipes the PIV applet only
+```
+
+A reset leaves your OpenPGP keys and their PIN untouched. They are a separate applet on the
+same chip. Remember to set TDES again afterwards.
+
+**A half-provisioned slot**
+
+A failed generation can leave a private key with no certificate. `ykman piv info` shows the
+slot; `ykman piv keys delete <slot>` clears it, or `ykman piv reset` clears everything.
+
 ### Recovering on a replacement Mac
 
 ```bash
@@ -341,80 +406,7 @@ reads go back to asking for a fingerprint.
 Rejected: backing up the Enclave key itself. It cannot be exported, which is the
 property that makes a stolen copy of the store useless.
 
-## Undoing a change
-
-Every write keeps the last 5 versions, and `rm` keeps the file too.
-
-```bash
-passbox restore github/token            # list versions
-passbox restore github/token --index 0  # put the newest one back
-```
-
-## What is on disk
-
-```text
-~/.passbox/
-  store/<random-id>.age     one self describing secret per file
-  store/<random-id>.tomb    deletion marker
-  store/.versions/<id>/     earlier versions, kept local
-  wraps/recipient           the store public key, no secret in it
-  wraps/recovery.age        the store key under your passphrase, only once sync is on
-  wraps/se-<host>.json      the store key under that Mac's Secure Enclave
-  audit-<host>.log          one encrypted record per line
-  broker.sock               the approval socket
-```
-
-The filename is a random id. Names live inside the ciphertext, so nothing on disk
-says what a secret is called. What still leaks: how many secrets exist, their
-sizes, and their modification times.
-
-## Environment
-
-| Variable | Effect |
-|---|---|
-| `PASSBOX_DIR` | Where the store lives, default `~/.passbox` |
-| `PASSBOX_REMOTE` | Overrides the destination for one run, ahead of the one `sync --enable` recorded |
-| `PASSBOX_AGENT` | Name shown in the prompt beside the secret |
-| `PASSBOX_PASSPHRASE` | Supplies the passphrase for CI and headless use, and turns off the Enclave path |
-
-## Building
-
-```bash
-cargo test
-cargo test -- --ignored   # the Secure Enclave round trip, needs a finger
-```
-
-`build.rs` compiles the Swift helper with `swiftc` from the Command Line Tools.
-
-## Listing names without unlocking
-
-`ls` used to decrypt every entry to learn the names, which meant a prompt and a store key warm
-in the broker afterwards. That is the largest privilege there is for the smallest question.
-
-A plaintext list of names now lives at `~/.passbox/names`, written as the store changes, so `ls`
-answers with no key and no prompt. `get` is unaffected and still needs one.
-
-The cost, stated plainly: that one file names what you hold. It never leaves the machine. Sync
-skips it, a store that is a git repo ignores it, and it is `0600`, so a copy elsewhere still says
-nothing about you. Someone with this disk but not the Enclave learns what you have, not what it
-is.
-
-A sync that pulls deletes the list, because a pull can bring names this machine has never
-decrypted. The next `ls` rebuilds it with one prompt.
-
-## Fields in one entry
-
-An entry can hold more than a password. The first line is the secret, later `key: value` lines
-are fields, which is the layout `pass` uses and `import-pass` keeps.
-
-```bash
-passbox get db/prod                  # the whole thing
-passbox get db/prod --field username # just that one
-```
-
-Reading one field hands a caller the password without the note beside it.
-
-## A job that runs unattended
+## Unattended
 
 A daemon cannot answer a fingerprint prompt at 3am, so the goal is that it never has to read
 passbox at all after it starts.
@@ -478,7 +470,84 @@ A token caches on the client that minted it. A factory that builds a fresh clien
 mints a fresh grant per call, and each one is a fingerprint. Memoise it. The symptom is
 repeated `approved` for one secret and one agent in `passbox audit`.
 
-## Using it from a program
+## Reference
+
+### Undoing a change
+
+Every write keeps the last 5 versions, and `rm` keeps the file too.
+
+```bash
+passbox restore github/token            # list versions
+passbox restore github/token --index 0  # put the newest one back
+```
+
+### What is on disk
+
+```text
+~/.passbox/
+  store/<random-id>.age     one self describing secret per file
+  store/<random-id>.tomb    deletion marker
+  store/.versions/<id>/     earlier versions, kept local
+  wraps/recipient           the store public key, no secret in it
+  wraps/recovery.age        the store key under your passphrase, only once sync is on
+  wraps/se-<host>.json      the store key under that Mac's Secure Enclave
+  audit-<host>.log          one encrypted record per line
+  broker.sock               the approval socket
+```
+
+The filename is a random id. Names live inside the ciphertext, so nothing on disk
+says what a secret is called. What still leaks: how many secrets exist, their
+sizes, and their modification times.
+
+### Environment
+
+| Variable | Effect |
+|---|---|
+| `PASSBOX_DIR` | Where the store lives, default `~/.passbox` |
+| `PASSBOX_REMOTE` | Overrides the destination for one run, ahead of the one `sync --enable` recorded |
+| `PASSBOX_AGENT` | Name shown in the prompt beside the secret |
+| `PASSBOX_PASSPHRASE` | Supplies the passphrase for CI and headless use, and turns off the Enclave path |
+
+### Building
+
+```bash
+cargo test
+cargo test -- --ignored   # the Secure Enclave round trip, needs a finger
+```
+
+`build.rs` compiles the Swift helper with `swiftc` from the Command Line Tools.
+
+### Listing names without unlocking
+
+`ls` used to decrypt every entry to learn the names, which meant a prompt and a store key warm
+in the broker afterwards. That is the largest privilege there is for the smallest question.
+
+A plaintext list of names now lives at `~/.passbox/names`, written as the store changes, so `ls`
+answers with no key and no prompt. `get` is unaffected and still needs one.
+
+The cost, stated plainly: that one file names what you hold. It never leaves the machine. Sync
+skips it, a store that is a git repo ignores it, and it is `0600`, so a copy elsewhere still says
+nothing about you. Someone with this disk but not the Enclave learns what you have, not what it
+is.
+
+A sync that pulls deletes the list, because a pull can bring names this machine has never
+decrypted. The next `ls` rebuilds it with one prompt.
+
+### Fields in one entry
+
+An entry can hold more than a password. The first line is the secret, later `key: value` lines
+are fields, which is the layout `pass` uses and `import-pass` keeps.
+
+```bash
+passbox get db/prod                  # the whole thing
+passbox get db/prod --field username # just that one
+```
+
+Reading one field hands a caller the password without the note beside it.
+
+## About
+
+### Using it from a program
 
 [`examples/`](examples) holds a [Python](examples/python) and a [Rust](examples/rust) client,
 each with a runnable self-check. The same shape works in any language: shell out to
@@ -488,7 +557,7 @@ one per read.
 For agents specifically, see [AGENTS.md](AGENTS.md), and the skill in
 [`skills/passbox`](skills/passbox) that teaches a coding agent to use passbox correctly.
 
-## Compared with pass
+### Compared with pass
 
 passbox exists because of the first two rows. It is not a replacement for
 [pass](https://www.passwordstore.org) in the rows below them.
@@ -509,7 +578,7 @@ passbox exists because of the first two rows. It is not a replacement for
 Use passbox for the secrets your agents touch. Keep pass for the ones you cannot
 afford to lose, until this has had outside eyes on it.
 
-## What this has and has not been checked against
+### What this has and has not been checked against
 
 The parts that came from elsewhere carry other people's review. age and scrypt
 come from the `age` crate. The Secure Enclave, HKDF and AES-GCM come from
@@ -528,7 +597,7 @@ What is ours is the composition, and these are the checks on it:
   records, and grants, which fail closed to no grants at all.
 - The base64 the helper is fed matches the RFC 4648 vectors.
 
-## Disclaimer
+### Disclaimer
 
 This is not proven and it is not fault proof.
 
@@ -539,6 +608,6 @@ nothing above is a proof of security.
 Use it for the secrets your agents reach for. Keep another copy of anything you
 cannot afford to lose. Findings are welcome.
 
-## Licence
+### Licence
 
 MIT

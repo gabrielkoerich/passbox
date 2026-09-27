@@ -23,7 +23,8 @@ body {
 }
 
 #container {
-  max-width: 800px;
+  // Wide enough that a `passbox exec --env VAR=name -- cmd` line does not scroll sideways
+  max-width: 1140px;
   margin: 0 auto;
   padding: 4rem 2rem;
 }
@@ -281,6 +282,11 @@ table {
 
 .docs-content {
   min-width: 0; // prevent overflow in grid
+
+  .page-description {
+    color: var(--text-secondary);
+    margin-top: -.5rem;
+  }
 
   h1:first-child {
     margin-top: 0;
