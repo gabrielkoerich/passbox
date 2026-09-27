@@ -283,10 +283,6 @@ table {
 .docs-content {
   min-width: 0; // prevent overflow in grid
 
-  .page-description {
-    color: var(--text-secondary);
-    margin-top: -.5rem;
-  }
 
   h1:first-child {
     margin-top: 0;
