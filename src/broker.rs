@@ -487,9 +487,11 @@ fn reply<S: std::io::Read + Write>(
 ) -> Result<()> {
     let mut line = String::new();
     let mut reader = BufReader::new(&mut *stream);
-    if reader.read_line(&mut line).is_err() {
+    if let Err(e) = reader.read_line(&mut line) {
+        eprintln!("could not read the request: {e}");
         return Ok(());
     }
+    eprintln!("read {} bytes of request", line.len());
     let response = match serde_json::from_str::<Request>(&line) {
         Ok(request) => match broker.lock().expect("broker").handle(&request, caller, cwd) {
             Ok(value) => Response {
@@ -532,7 +534,10 @@ fn serve_tailnet(
             .ok()
             .and_then(|a| crate::tailnet::whois(a.ip()))
             .unwrap_or_else(|| "an unidentified tailnet peer".to_string());
-        let _ = reply(&broker, &mut stream, &caller, None);
+        eprintln!("tailnet request from {caller}");
+        if let Err(e) = reply(&broker, &mut stream, &caller, None) {
+            eprintln!("tailnet request failed: {e:#}");
+        }
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
     }
 }
@@ -552,17 +557,30 @@ pub fn serve(store: Store) -> Result<()> {
 
     let broker = std::sync::Arc::new(std::sync::Mutex::new(Broker::new(store)));
 
-    // Off unless Tailscale is up, so a machine that is not on a tailnet opens no port at all
-    if let Some(addr) = crate::tailnet::address() {
-        match std::net::TcpListener::bind((addr, TAILNET_PORT)) {
+    /* Loopback, exposed to the tailnet by `tailscale serve`, rather than bound to the tailnet
+    address directly. Measured 2026-09-27: macOS runs Tailscale as a network extension, and a
+    socket bound to the 100.x address accepts a connection and then fails the first read with
+    ENOTCONN. `serve` forwards to loopback and works. A plain python server fails the same way,
+    so this is the platform, not us.
+
+    Loopback has none of the unix socket's 0600 protection, so any local user can reach this
+    port. That is the cost of the only inbound path macOS actually delivers. */
+    if crate::tailnet::address().is_some() {
+        match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, TAILNET_PORT)) {
             Ok(tcp) => {
-                eprintln!("listening on {addr}:{TAILNET_PORT} for tailnet peers");
+                eprintln!(
+                    "listening on 127.0.0.1:{TAILNET_PORT}; expose it with\n  \
+                     tailscale serve --bg --tcp {TAILNET_PORT} tcp://127.0.0.1:{TAILNET_PORT}"
+                );
                 let shared = std::sync::Arc::clone(&broker);
                 std::thread::spawn(move || serve_tailnet(tcp, shared));
             }
-            Err(e) => eprintln!("not listening on the tailnet: {e}"),
+            Err(e) => eprintln!("not listening for tailnet peers: {e}"),
         }
     }
+
+    // A daemon that prints nothing looks like a hang, so say plainly that it is working
+    eprintln!("broker ready, waiting for requests. Ctrl+C to stop");
 
     for stream in listener.incoming() {
         let mut stream = stream?;

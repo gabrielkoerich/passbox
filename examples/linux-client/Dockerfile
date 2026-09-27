@@ -28,7 +28,7 @@ RUN curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg \
 #   docker build --platform linux/amd64 ...
 RUN set -eux; \
     curl -fsSL -o /tmp/passbox.tar.gz \
-      https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox-x86_64-unknown-linux-gnu.tar.gz; \
+      https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox-x86_64-unknown-linux-musl.tar.gz; \
     tar -xzf /tmp/passbox.tar.gz -C /usr/local/bin passbox; \
     rm /tmp/passbox.tar.gz; \
     test -x /usr/local/bin/passbox
