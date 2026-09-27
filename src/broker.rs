@@ -473,6 +473,75 @@ impl Broker {
     }
 }
 
+/* The port the broker answers on over the tailnet. Fixed rather than configurable: a client
+would have to guess it, and a second knob is a second thing to get wrong. A client needs it
+too, so it is not gated behind the host feature. */
+pub const TAILNET_PORT: u16 = 8787;
+
+#[cfg(feature = "host")]
+fn reply<S: std::io::Read + Write>(
+    broker: &std::sync::Mutex<Broker>,
+    stream: &mut S,
+    caller: &str,
+    cwd: Option<&std::path::Path>,
+) -> Result<()> {
+    let mut line = String::new();
+    let mut reader = BufReader::new(&mut *stream);
+    if let Err(e) = reader.read_line(&mut line) {
+        eprintln!("could not read the request: {e}");
+        return Ok(());
+    }
+    eprintln!("read {} bytes of request", line.len());
+    let response = match serde_json::from_str::<Request>(&line) {
+        Ok(request) => match broker.lock().expect("broker").handle(&request, caller, cwd) {
+            Ok(value) => Response {
+                ok: true,
+                value: Some(value),
+                error: None,
+            },
+            Err(e) => Response {
+                ok: false,
+                value: None,
+                error: Some(format!("{e:#}")),
+            },
+        },
+        Err(e) => Response {
+            ok: false,
+            value: None,
+            error: Some(format!("bad request: {e}")),
+        },
+    };
+    writeln!(stream, "{}", serde_json::to_string(&response)?)?;
+    Ok(())
+}
+
+/* Another machine asks here. The listener is bound to this host's tailnet address rather than
+loopback or every interface: loopback has none of the unix socket's 0600 protection, so any
+local user could reach it, and every interface would put a secrets daemon on the LAN.
+
+`tailscale whois` names the peer, and unlike the agent string a caller sends, the control plane
+authenticated it. That is the first caller identity in passbox that is not self declared. */
+#[cfg(feature = "host")]
+fn serve_tailnet(
+    listener: std::net::TcpListener,
+    broker: std::sync::Arc<std::sync::Mutex<Broker>>,
+) {
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { continue };
+        LAST_SEEN.store(store::now(), Ordering::Relaxed);
+        let caller = stream
+            .peer_addr()
+            .ok()
+            .and_then(|a| crate::tailnet::whois(a.ip()))
+            .unwrap_or_else(|| "an unidentified tailnet peer".to_string());
+        eprintln!("tailnet request from {caller}");
+        if let Err(e) = reply(&broker, &mut stream, &caller, None) {
+            eprintln!("tailnet request failed: {e:#}");
+        }
+        LAST_SEEN.store(store::now(), Ordering::Relaxed);
+    }
+}
+
 #[cfg(feature = "host")]
 pub fn serve(store: Store) -> Result<()> {
     let socket = store.socket_path();
@@ -486,7 +555,33 @@ pub fn serve(store: Store) -> Result<()> {
     LAST_SEEN.store(store::now(), Ordering::Relaxed);
     watchdog(socket.clone());
 
-    let mut broker = Broker::new(store);
+    let broker = std::sync::Arc::new(std::sync::Mutex::new(Broker::new(store)));
+
+    /* Loopback, exposed to the tailnet by `tailscale serve`, rather than bound to the tailnet
+    address directly. Measured 2026-09-27: macOS runs Tailscale as a network extension, and a
+    socket bound to the 100.x address accepts a connection and then fails the first read with
+    ENOTCONN. `serve` forwards to loopback and works. A plain python server fails the same way,
+    so this is the platform, not us.
+
+    Loopback has none of the unix socket's 0600 protection, so any local user can reach this
+    port. That is the cost of the only inbound path macOS actually delivers. */
+    if crate::tailnet::address().is_some() {
+        match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, TAILNET_PORT)) {
+            Ok(tcp) => {
+                eprintln!(
+                    "listening on 127.0.0.1:{TAILNET_PORT}; expose it with\n  \
+                     tailscale serve --bg --tcp {TAILNET_PORT} tcp://127.0.0.1:{TAILNET_PORT}"
+                );
+                let shared = std::sync::Arc::clone(&broker);
+                std::thread::spawn(move || serve_tailnet(tcp, shared));
+            }
+            Err(e) => eprintln!("not listening for tailnet peers: {e}"),
+        }
+    }
+
+    // A daemon that prints nothing looks like a hang, so say plainly that it is working
+    eprintln!("broker ready, waiting for requests. Ctrl+C to stop");
+
     for stream in listener.incoming() {
         let mut stream = stream?;
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
@@ -494,33 +589,7 @@ pub fn serve(store: Store) -> Result<()> {
         let pid = peer_pid(&stream);
         let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
         let cwd = pid.and_then(caller_cwd);
-        let mut line = String::new();
-        if BufReader::new(stream.try_clone()?)
-            .read_line(&mut line)
-            .is_err()
-        {
-            continue;
-        }
-        let response = match serde_json::from_str::<Request>(&line) {
-            Ok(request) => match broker.handle(&request, &caller, cwd.as_deref()) {
-                Ok(value) => Response {
-                    ok: true,
-                    value: Some(value),
-                    error: None,
-                },
-                Err(e) => Response {
-                    ok: false,
-                    value: None,
-                    error: Some(format!("{e:#}")),
-                },
-            },
-            Err(e) => Response {
-                ok: false,
-                value: None,
-                error: Some(format!("bad request: {e}")),
-            },
-        };
-        let _ = writeln!(stream, "{}", serde_json::to_string(&response)?);
+        let _ = reply(&broker, &mut stream, &caller, cwd.as_deref());
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
     }
     Ok(())
@@ -650,6 +719,23 @@ pub fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<S
 
 /// Ask a running broker, starting one if the socket is dead.
 fn ask_broker(store: &Store, request: Request) -> Result<String> {
+    /* A configured host means this machine has no store of its own worth unlocking, so the
+    request goes over the tailnet to one that has. The reply is the value, and the finger that
+    released it was somewhere else. */
+    if let Some(host) = store.host() {
+        let target = if host.contains(':') {
+            host.clone()
+        } else {
+            format!("{host}:{TAILNET_PORT}")
+        };
+        let mut stream = std::net::TcpStream::connect(&target)
+            .with_context(|| format!("no passbox host at {target}"))?;
+        writeln!(stream, "{}", serde_json::to_string(&request)?)?;
+        let mut line = String::new();
+        BufReader::new(stream.try_clone()?).read_line(&mut line)?;
+        return unwrap_response(&line);
+    }
+
     let socket = store.socket_path();
     let mut stream = match UnixStream::connect(&socket) {
         Ok(s) => s,
@@ -671,7 +757,12 @@ fn ask_broker(store: &Store, request: Request) -> Result<String> {
 
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
-    let response: Response = serde_json::from_str(&line).context("broker sent nonsense")?;
+    unwrap_response(&line)
+}
+
+/// The same reply shape whether it arrived over a socket or the tailnet
+fn unwrap_response(line: &str) -> Result<String> {
+    let response: Response = serde_json::from_str(line).context("broker sent nonsense")?;
     if !response.ok {
         bail!(
             "{}",

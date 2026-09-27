@@ -95,6 +95,7 @@ pub fn new_id() -> String {
     hex::encode(bytes)
 }
 
+#[derive(Clone)]
 pub struct Store {
     pub dir: PathBuf,
 }
@@ -393,6 +394,24 @@ impl Store {
     question, and left the key warm in the broker afterwards. The cost is that this one file
     names what you hold. It never leaves the machine: sync skips it and a store that is a git
     repo ignores it, so a copy elsewhere still says nothing. */
+    /* A host to ask instead of a local broker. One line, `machine:port`, which a client writes
+    once. A machine with no Enclave has nothing to unlock and no sensor to ask, so asking a
+    machine that has both is the only thing it can usefully do. */
+    pub fn host_path(&self) -> PathBuf {
+        self.dir.join("host")
+    }
+
+    pub fn host(&self) -> Option<String> {
+        if let Ok(from_env) = std::env::var("PASSBOX_HOST")
+            && !from_env.is_empty()
+        {
+            return Some(from_env);
+        }
+        let text = fs::read_to_string(self.host_path()).ok()?;
+        let line = text.lines().next()?.trim().to_string();
+        (!line.is_empty()).then_some(line)
+    }
+
     pub fn index_path(&self) -> PathBuf {
         self.dir.join("names")
     }

@@ -1,0 +1,12 @@
+app = "passbox-poc"
+primary_region = "gru"
+
+[processes]
+  app = "sleep infinity"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

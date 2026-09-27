@@ -10,6 +10,8 @@ mod se;
 mod store;
 #[cfg(feature = "host")]
 mod sync;
+#[cfg(feature = "host")]
+mod tailnet;
 mod tree;
 #[cfg(feature = "host")]
 mod yubikey;
@@ -284,7 +286,10 @@ pub fn agent_read_secret(store: &Store, name: &str, agent: &str) -> Result<Strin
 /// The broker owns windows and the audit log, so every read goes through it when it can.
 /// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
 fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Result<String> {
-    if !headless() && store.has_se_wrap() {
+    /* A configured host means this machine keeps no store worth unlocking, so the question
+    goes there whatever is on this disk. Without this a client with no wraps falls through to
+    asking for a passphrase it does not have. */
+    if store.host().is_some() || (!headless() && store.has_se_wrap()) {
         return broker::request(store, name, agent);
     }
     let key = unlock(store, &format!("release the password for {name}"))?;
