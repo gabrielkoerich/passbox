@@ -10,6 +10,8 @@ mod se;
 mod store;
 #[cfg(feature = "host")]
 mod sync;
+#[cfg(feature = "host")]
+mod tailnet;
 mod tree;
 #[cfg(feature = "host")]
 mod yubikey;
