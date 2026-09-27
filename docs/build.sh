@@ -18,6 +18,7 @@ gen() {
                       s|\]\((examples[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
                       s|\]\((skills[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
                       s|\]\(docs/prompt\.png\)|](/prompt.png)|g;
+                      s|src="docs/([^"]*)"|src="/\1"|g;
                       s|\]\(LICENCE\)|](https://github.com/gabrielkoerich/passbox/blob/main/LICENCE)|g'
     } > "$out"
 }
