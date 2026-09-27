@@ -254,9 +254,10 @@ and the release line stalls until someone cuts it away by hand.
 - The file count is not the secret count, because tombstones linger for 90 days.
 - `PASSBOX_PASSPHRASE` turns off the Enclave path. It exists for CI and headless
   use, and it makes the passphrase the only gate.
-- A lease keeps one decrypted value in broker memory for its duration, and anything
-  able to reach the socket as you can reads it without a prompt. That is the cost of
-  running unattended, and why a lease is per secret rather than per store.
+- A token keeps its granted values in broker memory until it lapses, and whoever holds
+  the token reads them without a prompt. That is the cost of running unattended, and why
+  a grant names secrets rather than a namespace.
+- Tokens live in the broker's memory only, so restarting it revokes every one of them.
 - Linux builds the client half only, behind the `host` cargo feature being off.
   It has no Enclave, no broker server and no `sync`, so it opens the store with a
   passphrase. Asking a Mac to approve a read is designed, not built.

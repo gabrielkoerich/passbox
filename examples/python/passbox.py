@@ -14,6 +14,10 @@ from pathlib import Path
 # sensor rather than just a subprocess. The broker gives up well before it.
 READ_TIMEOUT = 120
 
+# passbox caps a grant at 24 hours and refuses more, so ask for the ceiling. A shorter one
+# only means another prompt sooner, and nobody is at the sensor at 3am.
+GRANT_SECS = 86_400
+
 
 class Passbox:
     """Paths are entry names, such as "github/token".
@@ -25,9 +29,46 @@ class Passbox:
     something a human will recognise when the prompt appears.
     """
 
-    def __init__(self, namespace: str | None = None, agent: str | None = None) -> None:
+    def __init__(
+        self,
+        namespace: str | None = None,
+        agent: str | None = None,
+        grant: list[str] | None = None,
+        grant_secs: int = GRANT_SECS,
+    ) -> None:
         self.namespace = namespace
         self.agent = agent
+        self.grant = grant
+        self.grant_secs = grant_secs
+        self._token: str | None = None
+
+    def _token_for(self) -> str | None:
+        """One approval for everything this process reads, rather than one per secret.
+
+        An inherited PASSBOX_TOKEN wins, which is how a daemon hands one to the jobs it
+        spawns. A grant that fails falls back to prompting rather than stopping the job.
+
+        Mint once and keep it. Build a fresh client per call and you mint a fresh grant per
+        call, which is a fingerprint per read.
+        """
+        inherited = os.environ.get("PASSBOX_TOKEN")
+        if inherited:
+            return inherited
+        if self._token or not self.grant:
+            return self._token
+        names = [self._name(n) for n in self.grant]
+        try:
+            done = subprocess.run(
+                ["passbox", "grant", *names, "--for", str(self.grant_secs)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=READ_TIMEOUT,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return None
+        self._token = done.stdout.strip() or None
+        return self._token
 
     def _name(self, path: str) -> str:
         return f"{self.namespace}/{path}" if self.namespace else path
@@ -84,6 +125,9 @@ class Passbox:
         env = os.environ.copy()
         if self.agent:
             env["PASSBOX_AGENT"] = self.agent
+        token = self._token_for()
+        if token:
+            env["PASSBOX_TOKEN"] = token
         return env
 
     def _run(self, cmd: list[str]) -> str:
@@ -115,7 +159,7 @@ def _self_check() -> None:
 
         os.environ["PASSBOX_DIR"] = store
         os.environ["PASSBOX_PASSPHRASE"] = "correct horse battery staple"
-        box = Passbox(namespace="demo", agent="self-check")
+        box = Passbox(namespace="demo", agent="self-check", grant=["api"])
 
         assert box.is_available()
         assert box.get("api").splitlines()[0] == "s3cret"

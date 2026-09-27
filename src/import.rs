@@ -101,7 +101,6 @@ pub fn import(
             name: name.clone(),
             mode,
             window_secs: DEFAULT_WINDOW_SECS,
-            lease_secs: 0,
             value: value.clone(),
             created: now(),
             updated: now(),

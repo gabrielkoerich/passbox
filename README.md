@@ -84,9 +84,26 @@ name, and passbox writes the rest.
 
 ### Through MCP
 
+An agent asks through tools rather than a shell, and the tools cannot hand it a value at all.
+
 ```bash
-claude mcp add passbox -- passbox mcp
+claude mcp add passbox -- passbox mcp          # Claude Code
+codex mcp add passbox -- passbox mcp           # Codex
 ```
+
+Any client that speaks MCP over stdio works, and the command is always `passbox mcp`. For one
+configured by file:
+
+```json
+{
+  "mcpServers": {
+    "passbox": { "command": "passbox", "args": ["mcp"] }
+  }
+}
+```
+
+That file is `~/.claude.json` for Claude Code, `~/.codex/config.toml` for Codex in TOML form,
+and `~/.cursor/mcp.json` for Cursor. Check it took with `claude mcp list`.
 
 The server exposes two tools, and neither returns a secret.
 
@@ -399,31 +416,44 @@ Reading one field hands a caller the password without the note beside it.
 
 ## A job that runs unattended
 
-A window asks for a fingerprint when it lapses, which nothing running at 3am can answer. A
-**lease** is the answer to that: one approval, then the broker keeps that one value for as long
-as you set, and asking for anything else still needs a fingerprint.
+A daemon cannot answer a fingerprint prompt at 3am, so the goal is that it never has to read
+passbox at all after it starts.
+
+### Inject at launch, and stop reading
+
+The first thing to reach for. One approval, and the value lands in the process environment
+where every child inherits it:
 
 ```bash
-passbox mode trade/signing-key window --lease 86400
+passbox exec --env GITHUB_TOKEN=github/token -- ./your-daemon
 ```
 
-### A token, for a job that should not get everything
+Nothing shells out to passbox again for the life of that process, so it runs for weeks on one
+fingerprint and needs you only when you restart it. This works with no code change wherever a
+credential layer already prefers an environment variable over its providers.
 
-A lease is keyed on the secret, so for its life anything that reaches the socket gets that
-value. A token is narrower: one approval mints a bearer token that opens **only the secrets it
-was granted**, for whoever holds it, until it lapses.
+Cost: the value sits in the environment for the process's lifetime, and anything running as you
+can read it with `ps eww`. Use `--stdin` where the child takes a secret that way.
+
+### A grant, for what cannot be injected
+
+Some secrets have no usable variable name, and some jobs pick what they read at runtime. For
+those, one approval mints a **token** that opens exactly the secrets it was granted, to whoever
+holds it, until it lapses:
 
 ```bash
-export PASSBOX_TOKEN=$(passbox grant bean/hl-mainnet-pk --for 3600)
+export PASSBOX_TOKEN=$(passbox grant bean/hl-mainnet-pk bean/hyperliquid-address --for 86400)
 ```
 
-**A namespace is refused.** A token is only worth minting if it is narrower than the store, and
-`grant bean` on a project with twenty entries hands over all twenty to save one prompt. Worse,
-it scopes on how the store happens to be laid out: put everything at the root and a namespace
-rule protects nothing. So a grant names each secret, and says what the job actually reads.
+The token goes to stdout and the covered names to stderr, so `$(...)` captures the token alone.
+Reads that present it are audited as `by token`.
+
+**A namespace is refused.** `grant bean` would hand over everything under it to save one prompt,
+and it scopes on how the store happens to be laid out rather than on what the job reads: put
+everything at the root and a namespace rule protects nothing.
 
 ```bash
-passbox grant bean namespace
+passbox grant bean
 passbox: bean is a namespace holding 21 secrets, ask for the ones this needs:
   bean/coinmarketcap-api-key
   bean/hl-mainnet-pk
@@ -433,57 +463,30 @@ passbox: bean is a namespace holding 21 secrets, ask for the ones this needs:
 The refusal lists them, so naming them is a copy rather than a chore, and it costs no
 fingerprint: the names come from the local index before the broker is involved.
 
-```bash
-passbox grant bean/hl-mainnet-pk bean/coinmarketcap-api-key --for 3600
-```
+**24 hours is the ceiling** and it cannot be raised. A token that never lapses is a password
+with extra steps. Something that must run untended indefinitely wants injection, not a token.
 
-One fingerprint. The token goes to stdout and the covered names to stderr, so the command above
-captures the token alone. Every read that presents it is audited as `by token`.
-
-| | Lease | Token |
-|---|---|---|
-| Who gets it | anything on the socket | whoever holds the token |
-| Covers | one secret | the names granted, and no others |
-| Ends | when it lapses | when it lapses, or the broker restarts |
-| Ceiling | none | 24 hours |
-
-Prefer a token. The lease is the blunter instrument, and it is kept because it needs nothing
-passed along to a child.
-
-Both need the broker, so a passphrase-only store has neither: it reads without a prompt anyway.
-
-A namespace works too, and costs one fingerprint rather than one per secret:
+Restarting the broker tears up every outstanding token:
 
 ```bash
-passbox mode bean window --lease 86400      # everything under bean/
+pkill -f "passbox broker"
 ```
 
-A lease is keyed on the secret, not on the agent that asked, so one approval covers every
-program that reads it. Without a lease, two agents reading the same secret prompt twice.
+### Mint once per process
 
-The lease holds the value, not the store key. That is the whole difference. The store key opens
-every secret, so the broker drops it after five minutes; a lease covers the secret it was
-approved for and nothing else. A broker holding a day-long lease on one key cannot be talked
-into handing over a second one.
-
-| | Window | Lease |
-|---|---|---|
-| Covers | one agent and one secret | one secret |
-| When it lapses | prompts again | prompts again |
-| Survives the store key expiring | no | yes |
-| Good for | you, at the keyboard | a daemon, unattended |
-
-Leased reads are still audited, and `passbox audit` shows them as `within lease`.
-
-The honest limit: for the lease's duration that value sits in broker memory, and anything able
-to reach the socket as you can read it without a prompt. That is the cost of unattended access,
-and it is why the lease is per secret rather than per store.
+A token caches on the client that minted it. A factory that builds a fresh client per call
+mints a fresh grant per call, and each one is a fingerprint. Memoise it. The symptom is
+repeated `approved` for one secret and one agent in `passbox audit`.
 
 ## Using it from a program
 
-[`examples/python`](examples/python) is a small client over the CLI, with a runnable
-self-check. The same shape works in any language: shell out to `passbox exec` to hand
-a secret to a child process, or `passbox get` when a library needs the value itself.
+[`examples/`](examples) holds a [Python](examples/python) and a [Rust](examples/rust) client,
+each with a runnable self-check. The same shape works in any language: shell out to
+`passbox exec` to hand a secret to a child process, and mint one grant per process rather than
+one per read.
+
+For agents specifically, see [AGENTS.md](AGENTS.md), and the skill in
+[`skills/passbox`](skills/passbox) that teaches a coding agent to use passbox correctly.
 
 ## Compared with pass
 

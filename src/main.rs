@@ -72,9 +72,6 @@ enum Command {
         mode: Mode,
         #[arg(long)]
         window: Option<u64>,
-        /// Seconds the broker may keep this one value after an approval, for unattended jobs
-        #[arg(long)]
-        lease: Option<u64>,
     },
     /// List or restore earlier versions of a secret
     Restore {
@@ -161,12 +158,7 @@ fn run() -> Result<()> {
         Command::Grant { names, r#for } => grant(&store, &names, r#for),
         Command::Ls => ls(&store),
         Command::Rm { name } => rm(&store, &name),
-        Command::Mode {
-            name,
-            mode,
-            window,
-            lease,
-        } => set_mode(&store, &name, mode, window, lease),
+        Command::Mode { name, mode, window } => set_mode(&store, &name, mode, window),
         Command::Restore { name, index } => restore(&store, &name, index),
         #[cfg(feature = "host")]
         Command::MachineAdd => machine_add(&store),
@@ -632,18 +624,17 @@ fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Re
         let key = unlock(store, &format!("replace {name}"))?;
         store
             .find(name, &key)?
-            .map(|(id, s)| (id, s.created, s.mode, s.window_secs, s.lease_secs))
+            .map(|(id, s)| (id, s.created, s.mode, s.window_secs))
     };
 
     // A new value must never widen access, so an unnamed mode keeps what the secret already had
     let secret = match existing {
-        Some((id, created, old_mode, old_window, old_lease)) => (
+        Some((id, created, old_mode, old_window)) => (
             id,
             Secret {
                 name: name.to_string(),
                 mode: mode.unwrap_or(old_mode),
                 window_secs: window.unwrap_or(old_window),
-                lease_secs: old_lease,
                 value,
                 created,
                 updated: store::now(),
@@ -655,7 +646,6 @@ fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Re
                 name: name.to_string(),
                 mode: mode.unwrap_or(Mode::Window),
                 window_secs: window.unwrap_or(DEFAULT_WINDOW_SECS),
-                lease_secs: 0,
                 value,
                 created: store::now(),
                 updated: store::now(),
@@ -862,15 +852,9 @@ fn rm(store: &Store, name: &str) -> Result<()> {
     Ok(())
 }
 
-/* A name, or a namespace. Setting a lease one secret at a time costs a fingerprint each, which
+/* A name, or a namespace. Setting a mode one secret at a time costs a fingerprint each, which
 for a project with twenty entries is twenty prompts to do one thing. One unlock covers the lot. */
-fn set_mode(
-    store: &Store,
-    name: &str,
-    mode: Mode,
-    window: Option<u64>,
-    lease: Option<u64>,
-) -> Result<()> {
+fn set_mode(store: &Store, name: &str, mode: Mode, window: Option<u64>) -> Result<()> {
     let key = unlock(store, &format!("change the permission mode of {name}"))?;
     let recipient = store.recipient()?;
 
@@ -887,22 +871,11 @@ fn set_mode(
         if let Some(w) = window {
             secret.window_secs = w;
         }
-        if let Some(l) = lease {
-            secret.lease_secs = l;
-        }
         secret.updated = store::now();
         store.put(&id, &secret, &recipient)?;
         eprintln!("{each} is now {mode}");
     }
 
-    if let Some(l) = lease
-        && l > 0
-    {
-        eprintln!(
-            "one approval each then holds {} secret(s) for {l}s, and nothing else",
-            matched.len()
-        );
-    }
     Ok(())
 }
 
