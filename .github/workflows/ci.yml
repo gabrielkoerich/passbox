@@ -194,8 +194,10 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
             features: ""
+          # musl, statically linked. A gnu build inherits the runner's glibc floor, which
+          # made the 0.13 binaries refuse to start on Debian 12 and Ubuntu 22.04.
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             features: "--no-default-features"
     runs-on: ${{ matrix.os }}
     steps:
@@ -205,6 +207,10 @@ jobs:
           key: ${{ matrix.target }}
 
       # Stamped before the build, so `passbox --version` is the version it ships as
+      - name: Install the musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Stamp the version
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -384,7 +390,7 @@ jobs:
           for pair in \
             "MACOS_ARM:aarch64-apple-darwin" \
             "MACOS_INTEL:x86_64-apple-darwin" \
-            "LINUX:x86_64-unknown-linux-gnu"; do
+            "LINUX:x86_64-unknown-linux-musl"; do
             key="${pair%%:*}"; target="${pair#*:}"
             file="artifacts/passbox-${target}.tar.gz"
             [ -f "$file" ] || { echo "::error::missing $file"; exit 1; }

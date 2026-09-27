@@ -35,12 +35,13 @@ Take the binary from a [release](https://github.com/gabrielkoerich/passbox/relea
 
 ```bash
 curl -sSfL -o passbox.tar.gz \
-  https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox-x86_64-unknown-linux-gnu.tar.gz
+  https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox-x86_64-unknown-linux-musl.tar.gz
 tar -xzf passbox.tar.gz && sudo install passbox /usr/local/bin/
 ```
 
-That is the client build: no Secure Enclave, no broker and no `sync`, so it opens a store with
-a passphrase rather than a fingerprint. Asking a Mac to approve a read is designed, not built.
+That binary is statically linked against musl, so it runs on any distribution regardless of its
+glibc. It is the client build: no Secure Enclave, no broker and no `sync`, so it opens a store
+with a passphrase rather than a fingerprint. Asking a Mac to approve a read is designed, not built.
 See [Known limits](docs/content/design.md#known-limits).
 
 `init` binds the store to this Mac's Secure Enclave and asks for nothing else.
