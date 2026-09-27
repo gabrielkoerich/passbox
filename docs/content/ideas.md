@@ -168,6 +168,41 @@ project manifests use: a changed hash means it asks again.
 Without that rule this feature hands an attacker a way to be asked for the store
 key. It should not ship before the allowlist does.
 
+## An SSH agent, the way 1Password does it
+
+1Password exposes an `SSH_AUTH_SOCK`, answers the SSH agent protocol on it, and asks for
+biometrics per signature. `ssh` needs no configuration beyond the socket path, so every tool
+that already speaks to an agent works unchanged: git, scp, rsync, ansible.
+
+passbox already has the two hard parts. The broker is a long-lived process holding keys behind
+Touch ID, and it already serves a unix socket with peer identification. What is missing is the
+protocol and the key material.
+
+**The protocol.** `SSH_AGENT_IDENTITIES_ANSWER` to list, `SSH_AGENT_SIGN_RESPONSE` to sign.
+It is a small binary protocol and the signing side is the only part that matters, because
+listing hands out public keys, which are public.
+
+**The key material.** A secret is an opaque string today, and signing needs a parsed key an
+implementation can compute with. Ed25519 is the case worth supporting; it is one algorithm,
+and everything modern uses it.
+
+The prompt writes itself and is the reason to build it: `github.com wants to authenticate as
+your key`, once per session or once per signature.
+
+| | |
+|---|---|
+| Keeps | the private key never leaves the broker, and every use is audited |
+| Costs | a second protocol to implement, and a key format to parse |
+| Rejected | shelling out to `ssh-add`, which puts the key in another agent's memory where passbox cannot gate it |
+
+Worth pairing with a Secure Enclave key directly: a P-256 key in the Enclave can sign, so an
+SSH key could be hardware-bound rather than a stored secret. That changes it from "passbox
+holds your key" to "your key cannot be copied", which is the stronger claim and the one worth
+making.
+
+Not started. It is a bigger piece than anything above, and the wrap and approver work should
+settle first.
+
 ## Documentation, later
 
 A GitHub wiki, or a docs site. Not now, and worth writing down so it is not
