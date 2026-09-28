@@ -99,6 +99,14 @@ header {
 #intro {
   margin: 2rem 0 3rem;
 
+  // The pitch is the first thing anyone reads, so let it breathe
+  > p:first-child {
+    font-size: 1.15rem;
+    line-height: 1.6;
+  }
+
+  img { display: block; margin: 2rem auto; }
+
   em {
     color: var(--text-secondary);
     font-style: italic;
