@@ -439,3 +439,86 @@ fn a_missing_secret_fails_loudly() {
     let err = cli.run(&["get", "nope"], None).unwrap_err();
     assert!(err.contains("no secret named nope"), "{err}");
 }
+
+/* Git and the mirror answer different questions and a write does both. They were only ever
+tested apart, and together the repo was being copied into the mirror, which swamped the sync
+and left the secrets behind: one commit, nothing backed up, and no error saying so. */
+#[test]
+fn a_write_commits_and_mirrors_without_copying_the_repo() {
+    let cli = Cli::new();
+    let remote = tempfile::tempdir().unwrap();
+
+    cli.run(&["git", "init"], None).expect("git init");
+    std::fs::write(
+        cli.dir.path().join("remote"),
+        remote.path().to_string_lossy().as_bytes(),
+    )
+    .expect("choose a remote");
+
+    cli.run(&["add", "one/secret"], Some("value")).expect("add");
+
+    let commits = Command::new("git")
+        .args(["-C", &cli.dir.path().to_string_lossy(), "log", "--oneline"])
+        .output()
+        .expect("git log");
+    let log = String::from_utf8_lossy(&commits.stdout);
+    assert_eq!(
+        log.lines().count(),
+        1,
+        "the write should commit once: {log}"
+    );
+    assert!(
+        !log.contains("one/secret"),
+        "a subject must not name the entry: {log}"
+    );
+
+    let mirrored: Vec<_> = std::fs::read_dir(remote.path().join("store"))
+        .expect("the mirror should hold a store")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "age"))
+        .collect();
+    assert_eq!(mirrored.len(), 1, "the write should reach the mirror");
+
+    assert!(
+        !remote.path().join(".git").exists(),
+        "the repo is this machine's history and must not be mirrored"
+    );
+
+    // and a delete travels too, rather than leaving the copy holding a secret you removed
+    cli.run(&["rm", "one/secret"], None).expect("rm");
+    let tombs = std::fs::read_dir(remote.path().join("store"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "tomb"))
+        .count();
+    assert_eq!(tombs, 1, "a delete should reach the mirror as a tombstone");
+}
+
+/// Writing in a loop should be able to opt out of the copy
+#[test]
+fn autosync_can_be_turned_off() {
+    let cli = Cli::new();
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cli.dir.path().join("remote"),
+        remote.path().to_string_lossy().as_bytes(),
+    )
+    .unwrap();
+
+    let mut cmd = cli.cmd(PASSPHRASE);
+    cmd.env("PASSBOX_NO_AUTOSYNC", "1");
+    let mut child = cmd
+        .args(["add", "quiet/one"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(b"value").unwrap();
+    assert!(child.wait().unwrap().success());
+
+    assert!(
+        !remote.path().join("store").exists(),
+        "PASSBOX_NO_AUTOSYNC should stop the copy"
+    );
+}
