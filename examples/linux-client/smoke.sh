@@ -4,7 +4,7 @@
 # Run it on the Linux box, with ~/.passbox/host or PASSBOX_HOST pointing at the Mac and a
 # broker running there. Every check names what it expects, so a failure says what broke.
 #
-#   ./smoke.sh bean/hyperliquid-address
+#   ./smoke.sh acme/api-key
 set -uo pipefail
 
 SECRET="${1:?usage: smoke.sh <a-secret-name>}"

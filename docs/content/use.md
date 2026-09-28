@@ -14,8 +14,8 @@ passbox get github/token
 
 ```bash
 passbox import-pass              # everything
-passbox import-pass bean         # one namespace
-passbox import-pass bean/token   # one entry
+passbox import-pass acme        # one namespace
+passbox import-pass acme/token  # one entry
 ```
 
 Each entry is decrypted through GPG and re-encrypted to the store key. The whole

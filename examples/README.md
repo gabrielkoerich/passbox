@@ -7,6 +7,8 @@ library to depend on, and no key material in the calling process.
 |---|---|
 | [`python`](python) | `python3 python/passbox.py` |
 | [`rust`](rust) | `rustc --edition 2021 rust/passbox.rs -o /tmp/pb && /tmp/pb` |
+| [`typescript`](typescript) | `npx tsx typescript/selfcheck.ts` |
+| [`linux-client`](linux-client) | a container that asks a Mac over the tailnet |
 
 Both show the same three things, which are what any language needs:
 

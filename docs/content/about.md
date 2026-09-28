@@ -6,7 +6,8 @@ weight = 7
 
 ### Using it from a program
 
-[`examples/`](https://github.com/gabrielkoerich/passbox/tree/main/examples) holds a [Python](https://github.com/gabrielkoerich/passbox/tree/main/examples/python) and a [Rust](https://github.com/gabrielkoerich/passbox/tree/main/examples/rust) client,
+[`examples/`](https://github.com/gabrielkoerich/passbox/tree/main/examples) holds [Python](https://github.com/gabrielkoerich/passbox/tree/main/examples/python), [Rust](https://github.com/gabrielkoerich/passbox/tree/main/examples/rust) and
+[TypeScript](https://github.com/gabrielkoerich/passbox/tree/main/examples/typescript) clients,
 each with a runnable self-check. The same shape works in any language: shell out to
 `passbox exec` to hand a secret to a child process, and mint one grant per process rather than
 one per read.
@@ -26,14 +27,21 @@ passbox exists because of the first two rows. It is not a replacement for
 | Authorisation | one GPG passphrase, then the agent caches it | per agent and per secret, with modes and windows |
 | Who asked for it | unknowable | named in the prompt and in the audit log |
 | Giving one to an agent | prints to stdout | injected into one child, and scrubbed from its output |
+| Asking from an agent | a shell command it composes | MCP tools that cannot return a value |
+| A job at 3am | the agent holds the passphrase | injected at launch, or a token scoped to named secrets |
+| Another machine | copy the key there | it asks the Mac, and the fingerprint happens there |
 | Maturity | a decade old, packaged everywhere | young, unreviewed |
-| Platforms | anywhere GPG runs | macOS, with a passphrase-only client on Linux |
-| Ecosystem | browser, mobile, dmenu, otp, import | none |
+| Platforms | anywhere GPG runs | macOS holds the store, Linux asks it |
+| Ecosystem | browser, mobile, dmenu, otp, import | Python, Rust and TypeScript clients, and an MCP server |
 | Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on, then a passphrase or a YubiKey opens it |
-| Reading the source | 721 lines of shell | 3,079 lines of Rust and Swift, plus a daemon |
+| Reading the source | 721 lines of shell | 3,798 lines of Rust and Swift, plus a daemon |
 
-Use passbox for the secrets your agents touch. Keep pass for the ones you cannot
-afford to lose, until this has had outside eyes on it.
+The first four rows are why it exists. The rest is where `pass` is the better tool, and that is
+most of them: it is older, it runs everywhere, and losing your only machine is survivable by
+design rather than by remembering to turn sync on.
+
+Use passbox for the secrets your agents touch. Keep pass for the ones you cannot afford to lose,
+until this has had outside eyes on it.
 
 ### What this has and has not been checked against
 

@@ -30,21 +30,21 @@ those, one approval mints a **token** that opens exactly the secrets it was gran
 holds it, until it lapses:
 
 ```bash
-export PASSBOX_TOKEN=$(passbox grant bean/hl-mainnet-pk bean/hyperliquid-address --for 86400)
+export PASSBOX_TOKEN=$(passbox grant acme/signing-key acme/api-key --for 86400)
 ```
 
 The token goes to stdout and the covered names to stderr, so `$(...)` captures the token alone.
 Reads that present it are audited as `by token`.
 
-**A namespace is refused.** `grant bean` would hand over everything under it to save one prompt,
+**A namespace is refused.** `grant acme` would hand over everything under it to save one prompt,
 and it scopes on how the store happens to be laid out rather than on what the job reads: put
 everything at the root and a namespace rule protects nothing.
 
 ```bash
-passbox grant bean
-passbox: bean is a namespace holding 21 secrets, ask for the ones this needs:
-  bean/coinmarketcap-api-key
-  bean/hl-mainnet-pk
+passbox grant acme
+passbox: acme is a namespace holding 9 secrets, ask for the ones this needs:
+  acme/api-key
+  acme/signing-key
   ...
 ```
 

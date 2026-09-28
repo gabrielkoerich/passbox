@@ -36,7 +36,7 @@ environment with `ps eww`.
 needs a human at the sensor. Injecting does not.
 
 ```bash
-passbox exec --env HYPERLIQUID_PK=bean/hl-mainnet-pk -- python -m your.daemon
+passbox exec --env SIGNING_KEY=acme/signing-key -- python -m your.daemon
 ```
 
 One approval at launch. The value lands in the process environment and every child inherits
@@ -60,13 +60,13 @@ A **grant** is one approval that mints a **token**: a bearer string that opens e
 secrets it was granted, for whoever holds it, until it lapses. Capped at 24 hours.
 
 ```bash
-export PASSBOX_TOKEN=$(passbox grant bean/hl-mainnet-pk bean/hyperliquid-address --for 3600)
-passbox get bean/hl-mainnet-pk      # no prompt, audited as `by token`
+export PASSBOX_TOKEN=$(passbox grant acme/signing-key acme/api-key --for 3600)
+passbox get acme/signing-key        # no prompt, audited as `by token`
 ```
 
 The token goes to stdout and the covered names to stderr, so `$(...)` captures the token alone.
 
-**A namespace is refused.** `grant bean` would hand over everything under it to save one
+**A namespace is refused.** `grant acme` would hand over everything under it to save one
 prompt, and it scopes on how the store is laid out rather than on what the job reads. Put
 everything at the root and a namespace rule protects nothing. The refusal lists the names so
 you can copy the ones you want, and costs no fingerprint: it is checked locally against the
