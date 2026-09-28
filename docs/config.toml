@@ -9,8 +9,10 @@ minify_html = true
 [markdown]
 render_emoji = true
 [markdown.highlighting]
+# Class based, so the palette ships as one stylesheet rather than inline colours on every span
 style = "class"
 theme = "github-dark"
+add_color_scheme = true
 
 [extra]
 github = "https://github.com/gabrielkoerich/passbox"

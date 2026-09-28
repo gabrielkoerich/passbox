@@ -63,7 +63,7 @@ configured by file:
     "passbox": { "command": "passbox", "args": ["mcp"] }
   }
 }
-```
+```bash
 
 That file is `~/.claude.json` for Claude Code, `~/.codex/config.toml` for Codex in TOML form,
 and `~/.cursor/mcp.json` for Cursor. Check it took with `claude mcp list`.
@@ -82,6 +82,38 @@ passbox replaces it in the output before returning.
 
 The agent name in the prompt comes from the MCP handshake, so it is the client's
 own `clientInfo.name` rather than a guess up the process tree.
+
+#### Grants and MCP
+
+The MCP server is a client of the broker like anything else, so a token works the same way:
+`PASSBOX_TOKEN` in the server's environment covers the secrets it was granted, and those reads
+stop prompting.
+
+The server inherits the environment of whatever launched it, which for an editor is the editor
+itself. So the token has to be in the MCP entry rather than your shell:
+
+```json
+{
+  "mcpServers": {
+    "passbox": {
+      "command": "passbox",
+      "args": ["mcp"],
+      "env": { "PASSBOX_TOKEN": "..." }
+    }
+  }
+}
+```
+
+That is a bearer token in a config file, which is a real cost. It is worth it for an agent that
+reads the same few secrets all day and is otherwise prompting on every call. It is not worth it
+for one that reads a secret occasionally: take the prompt.
+
+A token cannot widen what the tools already refuse. `list_secrets` still returns names only,
+`run_with_secret` still runs the command rather than handing over the value, and there is still
+no `get_secret`. A token changes whether you are asked, never what is released.
+
+Tokens live in the broker's memory, so restarting it revokes every one of them and the MCP
+server goes back to prompting. It does not need restarting itself.
 
 ### Approving a project once
 
@@ -128,7 +160,7 @@ already had unless you pass `--mode`.
 
 ```bash
 passbox audit --tail 50
-```
+```bash
 
 Every decision is logged, encrypted, one record per line.
 

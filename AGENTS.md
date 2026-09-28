@@ -34,7 +34,7 @@ wants JSON:
 
 ```json
 { "mcpServers": { "passbox": { "command": "passbox", "args": ["mcp"] } } }
-```
+```bash
 
 | Tool | Returns |
 |---|---|

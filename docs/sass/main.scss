@@ -333,3 +333,14 @@ table {
 ::-webkit-scrollbar-track { background: var(--bg-color); }
 ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+/* Syntax highlighting. Zola emits numbered classes for its highlighter and ships no palette
+   with `style = "class"`, so these are ours, keyed to the same dark ground as the page. */
+pre.z-code {
+  .z-3  { color: #8b949e; font-style: italic; }   // comments
+  .z-4  { color: #79c0ff; }                        // flags and options
+  .z-5  { color: #ffa657; }                        // numbers and constants
+  .z-6  { color: #c9d1d9; }                        // plain arguments
+  .z-7  { color: #d2a8ff; }                        // the command itself
+  .z-10 { color: #a5d6ff; }                        // strings and paths
+}
