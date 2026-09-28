@@ -151,6 +151,37 @@ this machine has never decrypted, and the next `ls` rebuilds it with one prompt.
 Still do not use `ls` as a health check. Check the binary and that `~/.passbox/wraps`
 exists instead.
 
+## Reading from another machine
+
+A Linux box with no Enclave can ask a Mac. The client holds no store and no key.
+
+```bash
+echo "100.x.y.z" > ~/.passbox/host    # the Mac's tailnet address
+passbox get github/token              # prompt appears on the Mac
+```
+
+Three things have to be true on the Mac, and each fails silently in its own way:
+
+**The broker must be a LaunchAgent** in the login session. One started by an incoming
+connection blocks inside `evaluatePolicy` forever rather than prompting.
+
+**Give that LaunchAgent a PATH.** It gets a minimal one, `tailscale` is not on it, and the
+broker starts with no tailnet listener and says nothing.
+
+**Expose it with `tailscale serve`, not by binding the tailnet address.** macOS runs Tailscale
+as a network extension; a socket bound to the 100.x address accepts the connection and then
+fails the first read with `ENOTCONN`.
+
+```bash
+tailscale serve --bg --tcp 8787 tcp://127.0.0.1:8787
+```
+
+In a container, give tailscaled a real `/dev/net/tun`. Userspace networking reaches the tailnet
+only through a SOCKS proxy, so `connect()` to a 100.x address times out with no hint why.
+
+The caller is not identified: traffic through `serve` has a loopback peer, so `whois` resolves
+nothing and the prompt says `an unidentified tailnet peer`.
+
 ## Gotchas
 
 **An upgrade leaves a stale broker.** `brew upgrade passbox` does not restart the running

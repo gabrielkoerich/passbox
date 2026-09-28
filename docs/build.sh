@@ -16,6 +16,7 @@ rewrite() {
             s|\]\(AGENTS\.md\)|](/agents)|g;
             s|\]\(README\.md#([a-z0-9-]*)\)|](/\1)|g;
             s|\]\(#if-you-lose-the-mac\)|](/backup-and-sync#if-you-lose-the-mac)|g;
+            s|\]\(#unattended\)|](/unattended)|g;
             s|\]\((examples[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
             s|\]\((skills[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
             s|\]\(docs/prompt\.png\)|](/prompt.png)|g;

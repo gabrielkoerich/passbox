@@ -4,7 +4,13 @@ set -euo pipefail
 
 : "${PASSBOX_HOST:?set PASSBOX_HOST to the Mac tailnet name, such as m4 or m4.tailnet.ts.net}"
 
-tailscaled --tun=userspace-networking --state=/var/lib/tailscale/state >/var/log/tailscaled.log 2>&1 &
+# A real tun where the platform allows it. Userspace networking reaches the tailnet only
+# through a SOCKS proxy, so an ordinary connect() to a 100.x address times out.
+if [ -c /dev/net/tun ]; then
+    tailscaled --state=/var/lib/tailscale/state >/var/log/tailscaled.log 2>&1 &
+else
+    tailscaled --tun=userspace-networking --state=/var/lib/tailscale/state >/var/log/tailscaled.log 2>&1 &
+fi
 for _ in $(seq 30); do tailscale status >/dev/null 2>&1 && break; sleep 1; done
 
 if [ -n "${TS_AUTHKEY:-}" ]; then
