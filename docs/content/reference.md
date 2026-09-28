@@ -38,6 +38,7 @@ sizes, and their modification times.
 | `PASSBOX_DIR` | Where the store lives, default `~/.passbox` |
 | `PASSBOX_REMOTE` | Overrides the destination for one run, ahead of the one `sync --enable` recorded |
 | `PASSBOX_AGENT` | Name shown in the prompt beside the secret |
+| `PASSBOX_NO_AUTOSYNC` | Set to stop a write copying to the configured directory |
 | `PASSBOX_PASSPHRASE` | Supplies the passphrase for CI and headless use, and turns off the Enclave path |
 
 ### Building

@@ -156,22 +156,21 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Init => init(&store),
         Command::Add { name, mode, window } => {
-            add(&store, &name, mode, window).inspect(|()| commit(&store, "add a secret"))
+            add(&store, &name, mode, window).inspect(|()| written(&store, "add a secret"))
         }
         Command::Get { name, field } => get(&store, &name, field.as_deref()),
         Command::Grant { names, r#for } => grant(&store, &names, r#for),
         Command::Ls => ls(&store),
-        Command::Rm { name } => rm(&store, &name).inspect(|()| commit(&store, "remove a secret")),
+        Command::Rm { name } => rm(&store, &name).inspect(|()| written(&store, "remove a secret")),
         Command::Mode { name, mode, window } => set_mode(&store, &name, mode, window)
-            .inspect(|()| commit(&store, "change a permission mode")),
-        Command::Restore { name, index } => {
-            restore(&store, &name, index).inspect(|()| commit(&store, "restore an earlier version"))
-        }
+            .inspect(|()| written(&store, "change a permission mode")),
+        Command::Restore { name, index } => restore(&store, &name, index)
+            .inspect(|()| written(&store, "restore an earlier version")),
         #[cfg(feature = "host")]
         Command::MachineAdd => machine_add(&store),
         #[cfg(feature = "host")]
         Command::YubikeyAdd { recipient } => yubikey_add(&store, &recipient)
-            .inspect(|()| commit(&store, "wrap the store key to a YubiKey")),
+            .inspect(|()| written(&store, "wrap the store key to a YubiKey")),
         Command::Exec {
             envs,
             stdin,
@@ -187,7 +186,7 @@ fn run() -> Result<()> {
             mode,
             force,
         } => import_pass(&store, prefix.as_deref(), mode, force)
-            .inspect(|()| commit(&store, "import from pass")),
+            .inspect(|()| written(&store, "import from pass")),
         Command::Mcp => mcp::serve(store),
         Command::Git { args } => git(&store, &args),
         #[cfg(feature = "host")]
@@ -258,6 +257,12 @@ fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
     Ok(())
 }
 
+/// One place for everything a write should trigger, so a new command cannot forget half of it
+fn written(store: &Store, what: &str) {
+    commit(store, what);
+    mirror(store);
+}
+
 /// Optional history alongside the copy. A subject naming an entry would undo the encrypted names.
 fn in_git(store: &Store) -> bool {
     store.dir.join(".git").exists()
@@ -288,6 +293,37 @@ fn commit(store: &Store, what: &str) {
     git_quietly(store, &["add", "-A"]);
     git_quietly(store, &["commit", "-m", what]);
 }
+
+/* A write that is only on this Mac is a write you can lose. Committing gives history, but the
+copy elsewhere is what survives the machine, so a write updates it too.
+
+Only the mirror, and only one that was already chosen: a directory copy is a few milliseconds,
+while pushing to git or rclone is a network round trip nobody wants on every `add`. Those stay
+on `passbox sync`.
+
+Best effort by design. The value is already written and encrypted; failing the command because a
+USB stick was unplugged would be the tail wagging the dog. Set PASSBOX_NO_AUTOSYNC to turn it
+off for a script that writes in a loop. */
+#[cfg(feature = "host")]
+fn mirror(store: &Store) {
+    if std::env::var_os("PASSBOX_NO_AUTOSYNC").is_some() {
+        return;
+    }
+    let Some(remote) = sync::configured_remote(store) else {
+        return;
+    };
+    if sync::classify(&remote) != sync::Kind::Directory {
+        return;
+    }
+    match sync::sync(store, std::path::Path::new(&remote)) {
+        Ok(report) if report.pushed > 0 => eprintln!("{} copied to {remote}", report.pushed),
+        Ok(_) => {}
+        Err(e) => eprintln!("not copied to {remote}: {e:#}"),
+    }
+}
+
+#[cfg(not(feature = "host"))]
+fn mirror(_store: &Store) {}
 
 /// Sync is where a commit leaves the machine, because pushing on every write would be slow
 #[cfg(feature = "host")]

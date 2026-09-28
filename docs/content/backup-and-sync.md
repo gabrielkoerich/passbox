@@ -15,6 +15,15 @@ After that every write commits on its own, the way `pass` does: `add`, `rm`, `mo
 and `import-pass`. `sync` is what pushes, since pushing on every write would be slow. Nothing
 happens until you run `git init`, so the history is a choice.
 
+**A write also updates the copy.** Once `sync --enable` has chosen a directory, every write
+copies to it, because nobody remembers to run `sync` and a secret that exists only on this Mac
+is a secret you can lose. A delete travels too, as a tombstone.
+
+Only a directory, which is a few milliseconds. Git and rclone remotes are a network round trip
+and stay on `passbox sync`. It is best effort: the value is already written and encrypted, so an
+unplugged USB stick warns rather than failing the command. `PASSBOX_NO_AUTOSYNC=1` turns it off
+for a script that writes in a loop.
+
 Commit subjects name the operation and never the entry, because a subject naming a secret would
 undo the work of keeping names out of filenames.
 
