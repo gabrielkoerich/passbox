@@ -736,7 +736,8 @@ fn get(store: &Store, name: &str, field: Option<&str>) -> Result<()> {
 
 /// Through the broker, so a second listing inside the window does not ask again
 pub fn agent_list_names(store: &Store, agent: &str) -> Result<Vec<String>> {
-    if !headless() && store.has_se_wrap() {
+    // A configured host has the key and the names, same as for a read
+    if store.host().is_some() || (!headless() && store.has_se_wrap()) {
         return broker::list(store, agent);
     }
     let key = unlock(store, "list your secret names")?;
