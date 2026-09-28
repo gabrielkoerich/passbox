@@ -68,6 +68,11 @@ fn skip(relative: &Path) -> bool {
     text == "broker.sock"
         || text == "remote"
         || text == "names"
+        // A repo is this machine's history. Copying it into a shared directory would put two
+        // machines' git internals in one place, and the remote is a mirror, not a clone.
+        || text == ".git"
+        || text.starts_with(".git/")
+        || text == ".gitignore"
         || text.starts_with("store/.versions")
         || (text.starts_with("grants-") && text.ends_with(".age"))
 }
@@ -324,6 +329,17 @@ mod tests {
         sync(&one, remote.path()).unwrap();
         assert!(one.names(&key).unwrap().is_empty());
         assert!(two.names(&key).unwrap().is_empty());
+    }
+
+    /* A repo in the store used to be copied into the mirror, which swamped the sync and left
+    the secrets behind. The remote is a mirror, not a clone. */
+    #[test]
+    fn a_repo_is_not_copied_to_the_mirror() {
+        assert!(skip(Path::new(".git")));
+        assert!(skip(Path::new(".git/config")));
+        assert!(skip(Path::new(".git/objects/ab/cdef")));
+        assert!(skip(Path::new(".gitignore")));
+        assert!(!skip(Path::new("store/abc123.age")));
     }
 
     #[test]

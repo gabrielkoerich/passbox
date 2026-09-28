@@ -32,6 +32,11 @@ really goes. Git keeps it: the old `.age` blob stays in the history, still reada
 key. With a repo, delete stops meaning delete. That is the same trade `pass` makes, and it is
 worth making deliberately.
 
+Git and sync are not alternatives. With both set up a write does both, and they answer different
+questions: the repo is this machine's history, the copy is what survives the machine. The repo
+is never copied to the mirror, because a shared directory holding two machines' git internals
+would be a mess, and the remote is a mirror rather than a clone.
+
 The Secure Enclave wraps are excluded, so the remote holds opaque age files that
 only this Mac can read. That protects you from deleting a secret by accident. It
 does **not** protect you from losing the Mac, because nothing in the backup can
