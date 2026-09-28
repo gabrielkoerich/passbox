@@ -9,8 +9,19 @@ git carries the encrypted secrets and nothing that opens them.
 ```bash
 passbox git init
 passbox git remote add origin git@github.com:you/passbox-store.git
-passbox git add -A && passbox git commit -m backup && passbox git push
 ```
+
+After that every write commits on its own, the way `pass` does: `add`, `rm`, `mode`, `restore`
+and `import-pass`. `sync` is what pushes, since pushing on every write would be slow. Nothing
+happens until you run `git init`, so the history is a choice.
+
+Commit subjects name the operation and never the entry, because a subject naming a secret would
+undo the work of keeping names out of filenames.
+
+**What history costs.** `passbox rm` writes a tombstone and prunes after 90 days, so a secret
+really goes. Git keeps it: the old `.age` blob stays in the history, still readable by the store
+key. With a repo, delete stops meaning delete. That is the same trade `pass` makes, and it is
+worth making deliberately.
 
 The Secure Enclave wraps are excluded, so the remote holds opaque age files that
 only this Mac can read. That protects you from deleting a secret by accident. It

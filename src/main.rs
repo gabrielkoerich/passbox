@@ -155,17 +155,23 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Init => init(&store),
-        Command::Add { name, mode, window } => add(&store, &name, mode, window),
+        Command::Add { name, mode, window } => {
+            add(&store, &name, mode, window).inspect(|()| commit(&store, "add a secret"))
+        }
         Command::Get { name, field } => get(&store, &name, field.as_deref()),
         Command::Grant { names, r#for } => grant(&store, &names, r#for),
         Command::Ls => ls(&store),
-        Command::Rm { name } => rm(&store, &name),
-        Command::Mode { name, mode, window } => set_mode(&store, &name, mode, window),
-        Command::Restore { name, index } => restore(&store, &name, index),
+        Command::Rm { name } => rm(&store, &name).inspect(|()| commit(&store, "remove a secret")),
+        Command::Mode { name, mode, window } => set_mode(&store, &name, mode, window)
+            .inspect(|()| commit(&store, "change a permission mode")),
+        Command::Restore { name, index } => {
+            restore(&store, &name, index).inspect(|()| commit(&store, "restore an earlier version"))
+        }
         #[cfg(feature = "host")]
         Command::MachineAdd => machine_add(&store),
         #[cfg(feature = "host")]
-        Command::YubikeyAdd { recipient } => yubikey_add(&store, &recipient),
+        Command::YubikeyAdd { recipient } => yubikey_add(&store, &recipient)
+            .inspect(|()| commit(&store, "wrap the store key to a YubiKey")),
         Command::Exec {
             envs,
             stdin,
@@ -180,7 +186,8 @@ fn run() -> Result<()> {
             prefix,
             mode,
             force,
-        } => import_pass(&store, prefix.as_deref(), mode, force),
+        } => import_pass(&store, prefix.as_deref(), mode, force)
+            .inspect(|()| commit(&store, "import from pass")),
         Command::Mcp => mcp::serve(store),
         Command::Git { args } => git(&store, &args),
         #[cfg(feature = "host")]
@@ -252,22 +259,44 @@ fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
 }
 
 /// Optional history alongside the copy. A subject naming an entry would undo the encrypted names.
-#[cfg(feature = "host")]
-fn git_push(store: &Store) {
-    if !store.dir.join(".git").exists() {
+fn in_git(store: &Store) -> bool {
+    store.dir.join(".git").exists()
+}
+
+fn git_quietly(store: &Store, args: &[&str]) {
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&store.dir)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/* Commit on every write, the way `pass` does once its store is a repo. Nothing is committed
+until someone runs `passbox git init`, so this is a choice rather than a surprise, and it is
+worth knowing what the choice costs: git history is permanent, so a secret removed from the
+store stays in the history, still readable by the store key.
+
+Subjects name the operation and not the entry, since a subject naming a secret would undo the
+work of keeping names out of filenames. */
+fn commit(store: &Store, what: &str) {
+    if !in_git(store) {
         return;
     }
     let _ = ensure_store_gitignore(store);
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&store.dir)
-            .args(args)
-            .status()
-    };
-    let _ = git(&["add", "-A"]);
-    let _ = git(&["commit", "-m", "update"]);
-    let _ = git(&["push"]);
+    git_quietly(store, &["add", "-A"]);
+    git_quietly(store, &["commit", "-m", what]);
+}
+
+/// Sync is where a commit leaves the machine, because pushing on every write would be slow
+#[cfg(feature = "host")]
+fn git_push(store: &Store) {
+    if !in_git(store) {
+        return;
+    }
+    commit(store, "update");
+    git_quietly(store, &["push"]);
 }
 
 /// Advisory, since the broker cannot verify it. The prompt shows it beside the secret name.
