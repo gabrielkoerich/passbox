@@ -696,8 +696,6 @@ passbox get db/prod --field username # just that one
 
 Reading one field hands a caller the password without the note beside it.
 
-## About
-
 ### Using it from a program
 
 [`examples/`](examples) holds [Python](examples/python), [Rust](examples/rust) and
@@ -709,10 +707,11 @@ one per read.
 For agents specifically, see [AGENTS.md](AGENTS.md), and the skill in
 [`skills/passbox`](skills/passbox) that teaches a coding agent to use passbox correctly.
 
+## About
+
 ### Compared with pass
 
-passbox exists because of the first two rows. It is not a replacement for
-[pass](https://www.passwordstore.org) in the rows below them.
+It is not a replacement for [pass](https://www.passwordstore.org).
 
 | | `pass` | passbox |
 |---|---|---|
@@ -730,12 +729,9 @@ passbox exists because of the first two rows. It is not a replacement for
 | Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on, then a passphrase or a YubiKey opens it |
 | Reading the source | 721 lines of shell | 3,798 lines of Rust and Swift, plus a daemon |
 
-The first four rows are why it exists. The rest is where `pass` is the better tool, and that is
-most of them: it is older, it runs everywhere, and losing your only machine is survivable by
-design rather than by remembering to turn sync on.
-
-Use passbox for the secrets your agents touch. Keep pass for the ones you cannot afford to lose,
-until this has had outside eyes on it.
+The first six rows are why passbox exists. The rest is where `pass` is the better tool, and
+that is most of them: it is older, it runs everywhere, and losing your only machine is
+survivable by design rather than by remembering to turn sync on.
 
 ### What this has and has not been checked against
 
