@@ -116,46 +116,6 @@ adding a token to a store that already syncs.
 passbox yubikey-add age1yubikey1...    # the recipient from --list
 ```
 
-### A YubiKey on firmware 5.7 needs one command first
-
-Firmware 5.7 sets the PIV management key algorithm to **AES192**, and
-`age-plugin-yubikey` supports TDES only, so a brand new token fails. A factory
-reset does not help, because the reset sets AES192 too.
-
-```bash
-ykman piv info | grep "Management key algorithm"   # AES192 means read on
-ykman piv access change-management-key -a tdes \
-  -n 010203040506070801020304050607080102030405060708
-```
-
-passbox checks this before it asks the plugin for anything, so it says which
-algorithm is set and what to run rather than failing inside the plugin. The
-symptom without the check is an error naming neither the cause nor the fix, and
-on a half-finished attempt a private key is left in a PIV slot with no
-certificate. `ykman piv keys delete <slot>` clears that.
-
-This touches the PIV applet only. OpenPGP is a separate applet on the same chip,
-so PGP keys and their PIN are unaffected.
-
-The copy in iCloud is then inert without the token in your hand. Touch ID stays
-the daily path on this Mac; the token is only for recovery. `machine add` uses it
-when the wrap is there, and falls back to the passphrase otherwise.
-
-| | passphrase wrap | YubiKey wrap |
-|---|---|---|
-| A stolen copy | can be ground offline | is useless |
-| You must keep | the phrase | the token |
-| Recovery needs | the phrase | the token and `age-plugin-yubikey` |
-
-Enrol a second token. age takes any number of recipients, so `yubikey-add` adds
-to the same wrap rather than replacing it, and either token then opens the store.
-
-```bash
-passbox yubikey-add age1yubikey1...   # the second one
-```
-
-Recipients are public keys, so they sit in the clear in `wraps/yubikey.recipients`.
-
 passbox uses the **PIV** applet. OpenPGP keys live in a separate applet on the
 same chip and are never touched. Before provisioning a slot it reads what PIV
 already holds and shows you, using `ykman` when it is installed.
