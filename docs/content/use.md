@@ -137,6 +137,25 @@ The project is the caller's working directory, read from the kernel rather than
 taken from the request, so a caller cannot point at a manifest somewhere else.
 Grants live in `grants-<host>.age`, encrypted, and never sync.
 
+#### `.passbox.toml` and `.env.passbox` are different files
+
+Similar names, unrelated jobs. They compose, and a project can have both.
+
+| | `.passbox.toml` | `.env.passbox` |
+|---|---|---|
+| Answers | may this project ask for these | which variable gets which secret |
+| Read by | the broker, when deciding | your program, at startup |
+| Effect | one prompt covers the list, for a window | populates `process.env` or equivalent |
+| Approval | yes, bound to the file's hash | none, it is a lookup table |
+| Safe to commit | yes, it names secrets and grants nothing | yes, same |
+
+The `.toml` is a **request**: it changes how often you are asked. The `.env` is a **mapping**:
+it says where a value lands once you have it. Neither holds a value, which is why both can be
+committed, and neither is a grant on its own.
+
+If a project uses both, the `.toml` covers the same names the `.env` maps, so the one prompt
+covers the whole startup.
+
 ### Permission modes
 
 Every secret carries one.

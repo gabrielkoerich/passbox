@@ -13,6 +13,11 @@ STRIPE_KEY=stripe
 That file is safe to commit. It documents what the service needs without being worth stealing,
 and a new machine needs no copy of anything.
 
+Not to be confused with [`.passbox.toml`](../../README.md#approving-a-project-once), which is a
+different file doing a different job: that one asks the broker to approve a list of secrets in
+one prompt, this one says which variable each value lands in. A project can have both, and then
+the single approval covers the whole startup.
+
 ## Loading into process.env
 
 ```ts
