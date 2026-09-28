@@ -63,7 +63,7 @@ configured by file:
     "passbox": { "command": "passbox", "args": ["mcp"] }
   }
 }
-```bash
+```
 
 That file is `~/.claude.json` for Claude Code, `~/.codex/config.toml` for Codex in TOML form,
 and `~/.cursor/mcp.json` for Cursor. Check it took with `claude mcp list`.
@@ -160,7 +160,7 @@ already had unless you pass `--mode`.
 
 ```bash
 passbox audit --tail 50
-```bash
+```
 
 Every decision is logged, encrypted, one record per line.
 

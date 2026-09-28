@@ -41,7 +41,7 @@ Where should the copy go?
   2) A directory you name, such as a USB stick or Dropbox
   3) A git remote, which also gives you history
   4) An rclone remote, for S3, B2, Drive and the rest
-```bash
+```
 
 The answer is written to `~/.passbox/remote`, so later runs of bare `passbox sync`
 go to the same place. Running `--enable` again shows the current destination and
@@ -126,7 +126,7 @@ reset does not help, because the reset sets AES192 too.
 ykman piv info | grep "Management key algorithm"   # AES192 means read on
 ykman piv access change-management-key -a tdes \
   -n 010203040506070801020304050607080102030405060708
-```bash
+```
 
 passbox checks this before it asks the plugin for anything, so it says which
 algorithm is set and what to run rather than failing inside the plugin. The
@@ -152,7 +152,7 @@ to the same wrap rather than replacing it, and either token then opens the store
 
 ```bash
 passbox yubikey-add age1yubikey1...   # the second one
-```bash
+```
 
 Recipients are public keys, so they sit in the clear in `wraps/yubikey.recipients`.
 
@@ -175,7 +175,7 @@ brand new token arrives in this state.
 ykman piv info | grep "Management key algorithm"   # AES192 means read on
 ykman piv access change-management-key -a tdes \
   -n 010203040506070801020304050607080102030405060708
-```bash
+```
 
 passbox checks this before it asks the plugin for anything, so it says which algorithm is set
 rather than failing inside the plugin.
@@ -189,7 +189,7 @@ mid-operation.
 
 ```bash
 gpgconf --kill scdaemon
-```bash
+```
 
 passbox offers to do this before generating. If something on a timer keeps restarting it, stop
 that first.
@@ -231,7 +231,7 @@ slot; `ykman piv keys delete <slot>` clears it, or `ykman piv reset` clears ever
 brew install gabrielkoerich/tap/passbox
 cp -R ~/Library/Mobile\ Documents/com~apple~CloudDocs/passbox ~/.passbox
 passbox machine add
-```bash
+```
 
 `machine add` asks the recovery passphrase, then binds the new Mac's Enclave, so
 reads go back to asking for a fingerprint.

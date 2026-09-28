@@ -73,7 +73,7 @@ are fields, which is the layout `pass` uses and `import-pass` keeps.
 ```bash
 passbox get db/prod                  # the whole thing
 passbox get db/prod --field username # just that one
-```bash
+```
 
 Reading one field hands a caller the password without the note beside it.
 
