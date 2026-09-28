@@ -375,30 +375,53 @@ per agent policy enforceable rather than advisory.
 
 Tailscale would do the same through node identity.
 
-## The phone could approve, and that is a fork
+## Approving from a phone, declined
 
-A phone on the tailnet is reachable and `whois` identifies it the same way it
-identifies a Mac. As a client it is unremarkable. As an **approver** it answers
-the question the first design notes left open, which is what a machine with no
-sensor does, and it removes the requirement that the host be awake and unlocked.
+The idea: a push notification to the phone, approve there, the value is released. It answers
+what a machine with no sensor does, and it removes the requirement that the host be awake.
 
-It cannot be bolted on. The host's Enclave key is `.biometryAny` today, so it
-cannot be used at all without a fingerprint on that Mac. Approving somewhere else
-means choosing one of these:
+Declined, because building it means rebuilding a password manager.
 
-| | The host key becomes | Keeps | Costs |
-|---|---|---|---|
-| A | access control `.none`, still hardware bound | the key cannot be stolen off the Mac | the key can be used with nobody at the Mac, so the broker is the only presence check |
-| B | the phone holds its own wrap in its own Enclave | real biometric presence | the key exists on two devices |
-| C | `.none`, opened only on a signed approval from the phone | both guarantees | a signing key on the phone and more parts |
+It needs an iOS app, push infrastructure, a credential the phone can unwrap with, and a way for
+the answer to travel back. iOS has no background daemons, so the phone cannot listen; there is
+no cheap version of this. A passkey makes the credential part easier, because one lives in
+iCloud Keychain and syncs, and the WebAuthn PRF extension can derive a key-encryption key from
+it. That would replace the per-machine Enclave wrap and make a phone a first-class client. It
+still does nothing for delegation: a passkey authenticates on the device in your hand, and has
+no notion of one machine asking and another approving.
 
-iOS has no background daemons, so the phone cannot listen for requests. An
-approver needs a push notification into an app, or a Shortcut the user triggers.
-That weighs against B and C more than against A.
+So the full feature is an app, sync, push, and device key management. That is the part of a
+password manager other people have spent a decade on, and it is not the part passbox is for.
 
-Undecided. Worth deciding before any of it is built, because the answer changes
-the access control on the host key, and that is not a setting you can flip on a
-store that already exists.
+What passbox is for is narrow: a secret goes into one child process rather than into an agent's
+context, the prompt names which agent wants which secret, and the audit log says what was
+released to whom. None of that is a phone feature.
+
+And the sharper version of the problem this was meant to solve is not "approve from my phone",
+it is "nobody is awake at 3am". Injection at launch and a scoped grant already answer that, and
+they answer it better, because they need no one at all.
+
+Rejected: a phone as approver, and the passkey work that would support it. Revisit only if the
+agent boundary is finished and this is still the largest missing thing, which it is not today.
+
+## Knowing when to stop
+
+A list of ideas is not a plan, and this file is where features come to be argued with rather
+than agreed to. Three questions before anything here gets built:
+
+**Does it serve the one sentence?** passbox keeps a secret out of an agent's context. A feature
+that does not make that truer, or cheaper, or harder to get wrong, is someone else's product.
+
+**Is it the part nobody else is building?** Sync, mobile apps, device management and key
+recovery all have mature answers. Duplicating them costs the years they took and wins nothing.
+
+**Is it the largest missing thing?** Not the most interesting one. The tailnet client shipped
+because a Linux box could not read a secret at all. A phone approver is a convenience for a
+problem already solved another way.
+
+Two failure modes worth naming. A feature that is fun to build is not thereby worth building.
+And a mechanism kept beside its replacement is a cost, not a courtesy: the lease was removed
+once grants existed, because two answers to one question is how documentation starts lying.
 
 ## Remote capabilities, a later idea
 
