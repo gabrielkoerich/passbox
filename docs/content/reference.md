@@ -80,11 +80,13 @@ Reading one field hands a caller the password without the note beside it.
 
 ### Using it from a program
 
-[`examples/`](https://github.com/gabrielkoerich/passbox/tree/main/examples) holds [Python](https://github.com/gabrielkoerich/passbox/tree/main/examples/python), [Rust](https://github.com/gabrielkoerich/passbox/tree/main/examples/rust) and
-[TypeScript](https://github.com/gabrielkoerich/passbox/tree/main/examples/typescript) clients,
-each with a runnable self-check. The same shape works in any language: shell out to
-`passbox exec` to hand a secret to a child process, and mint one grant per process rather than
-one per read.
+In Rust, depend on [`passbox-client`](https://github.com/gabrielkoerich/passbox/tree/main/client):
+
+```bash
+cargo add passbox-client
+```
+
+[`examples/`](https://github.com/gabrielkoerich/passbox/tree/main/examples) holds [Python](https://github.com/gabrielkoerich/passbox/tree/main/examples/python) and [TypeScript](https://github.com/gabrielkoerich/passbox/tree/main/examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
 
 For agents specifically, see [AGENTS.md](/agents), and the skill in
 [`skills/passbox`](https://github.com/gabrielkoerich/passbox/tree/main/skills/passbox) that teaches a coding agent to use passbox correctly.

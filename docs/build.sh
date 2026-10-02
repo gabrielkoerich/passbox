@@ -18,6 +18,7 @@ rewrite() {
             s|\]\(#if-you-lose-the-mac\)|](/backup-and-sync#if-you-lose-the-mac)|g;
             s|\]\(#unattended\)|](/unattended)|g;
             s|\]\((examples[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
+            s|\]\((client[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
             s|\]\((skills[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
             s|\]\(docs/prompt\.png\)|](/prompt.png)|g;
             s|src="docs/([^"]*)"|src="/\1"|g;
@@ -31,7 +32,8 @@ find docs/content -name '*.md' ! -name '_index.head.md' ! -name 'design.md' \
 # Everything above the first `## ` is the pitch, and belongs on the landing page
 { cat docs/content/_index.head.md
   echo
-  awk '/^## /{exit} {print}' README.md | sed '1{/^# /d;}' | rewrite
+  # Badges are for GitHub, the site has its own header
+  awk '/^## /{exit} {print}' README.md | sed '1{/^# /d;}; /^\[!\[/d' | rewrite
 } > docs/content/_index.md
 
 # One page per `## `, weighted by the order the README puts them in. A state machine rather

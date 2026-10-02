@@ -4,6 +4,7 @@ sort_by = "weight"
 +++
 
 
+
 A password store for machines that run agents. An agent asks for a secret, macOS
 raises a Touch ID prompt naming the agent and the secret, and the value goes into
 one child process rather than into the agent.
