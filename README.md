@@ -28,8 +28,16 @@ one. If the install stops and says so, run `brew trust --formula
 gabrielkoerich/tap/passbox` and try again.
 
 That downloads a prebuilt binary. Nothing is compiled, so Rust is not needed.
-Building from source, with `--build-from-source` or `--HEAD`, needs Rust and the
-Command Line Tools for `swiftc`. A full Xcode is not needed either way.
+
+Or build it from [crates.io](https://crates.io/crates/passbox), which needs Rust and the Command Line Tools for `swiftc`. A full Xcode is not needed.
+
+```bash
+cargo install passbox
+```
+
+`init` binds the store to this Mac's Secure Enclave and asks for nothing else. There is no passphrase, so there is no file anyone can carry off and grind at.
+
+The cost is plain: the store opens on this Mac only. Lose it and the secrets are gone. Turning on sync is what adds a way back, and it is off until you ask.
 
 ### On Linux
 
@@ -41,16 +49,9 @@ curl -sSfL -o passbox.tar.gz \
 tar -xzf passbox.tar.gz && sudo install passbox /usr/local/bin/
 ```
 
-That binary is statically linked against musl, so it runs on any distribution regardless of its
-glibc. It is the client build: no Secure Enclave, no broker and no `sync`, so it opens a store
-with a passphrase rather than a fingerprint. Asking a Mac to approve a read is designed, not built.
-See [Known limits](docs/content/design.md#known-limits).
+Or build it with `cargo install passbox --no-default-features`.
 
-`init` binds the store to this Mac's Secure Enclave and asks for nothing else.
-There is no passphrase, so there is no file anyone can carry off and grind at.
-
-The cost is plain: the store opens on this Mac only. Lose it and the secrets are
-gone. Turning on sync is what adds a way back, and it is off until you ask.
+The release binary is statically linked against musl, so it runs on any distribution regardless of its glibc. Both are the client build: no Secure Enclave, no broker and no `sync`. On its own it opens a store with a passphrase. To have a Mac approve each read with its fingerprint instead, see [Another machine](README.md#another-machine).
 
 ## Use
 

@@ -433,3 +433,16 @@ jobs:
           gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
           git push origin ":refs/tags/$VERSION" 2>/dev/null || true
           git tag -d "$VERSION" 2>/dev/null || true
+
+      # Last, so a failed publish cannot take back a release that already shipped
+      - name: Publish to crates.io
+        if: needs.version.outputs.skip == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "::warning::CARGO_REGISTRY_TOKEN is not set, skipping crates.io"
+            exit 0
+          fi
+          # The default build needs swiftc, which this Linux runner lacks
+          cargo publish --locked --no-default-features
