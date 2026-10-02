@@ -1,3 +1,9 @@
 /target
 /.claude
 /local
+
+# Generated from README.md and AGENTS.md by docs/build.sh
+/docs/content/*.md
+!/docs/content/_index.head.md
+!/docs/content/design.md
+!/docs/content/roadmap.md
