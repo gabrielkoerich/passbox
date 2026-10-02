@@ -1,5 +1,7 @@
 # passbox
 
+[![CI](https://github.com/gabrielkoerich/passbox/actions/workflows/ci.yml/badge.svg)](https://github.com/gabrielkoerich/passbox/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/gabrielkoerich/passbox)](https://github.com/gabrielkoerich/passbox/releases/latest) [![Homebrew](https://img.shields.io/badge/homebrew-gabrielkoerich%2Ftap-orange)](https://github.com/gabrielkoerich/homebrew-tap) [![crates.io](https://img.shields.io/crates/v/passbox-client)](https://crates.io/crates/passbox-client) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A password store for machines that run agents. An agent asks for a secret, macOS
 raises a Touch ID prompt naming the agent and the secret, and the value goes into
 one child process rather than into the agent.
@@ -698,20 +700,22 @@ Reading one field hands a caller the password without the note beside it.
 
 ### Using it from a program
 
-[`examples/`](examples) holds [Python](examples/python), [Rust](examples/rust) and
-[TypeScript](examples/typescript) clients,
-each with a runnable self-check. The same shape works in any language: shell out to
-`passbox exec` to hand a secret to a child process, and mint one grant per process rather than
-one per read.
+In Rust, depend on [`passbox-client`](client):
+
+```bash
+cargo add passbox-client
+```
+
+[`examples/`](examples) holds [Python](examples/python) and [TypeScript](examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
 
 For agents specifically, see [AGENTS.md](AGENTS.md), and the skill in
 [`skills/passbox`](skills/passbox) that teaches a coding agent to use passbox correctly.
 
-## About
+## Comparisons
 
-### Compared with pass
+### pass
 
-It is not a replacement for [pass](https://www.passwordstore.org).
+passbox was built next to [pass](https://www.passwordstore.org), and both can stay installed. The table shows where each one is the better tool.
 
 | | `pass` | passbox |
 |---|---|---|
@@ -729,11 +733,11 @@ It is not a replacement for [pass](https://www.passwordstore.org).
 | Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on, then a passphrase or a YubiKey opens it |
 | Reading the source | 721 lines of shell | 3,798 lines of Rust and Swift, plus a daemon |
 
-The first six rows are why passbox exists. The rest is where `pass` is the better tool, and
-that is most of them: it is older, it runs everywhere, and losing your only machine is
-survivable by design rather than by remembering to turn sync on.
+The first six rows are why passbox exists. In the rest, `pass` is the better tool: it is older, it runs everywhere, and you can lose your only machine without losing your secrets.
 
-### What this has and has not been checked against
+## Security
+
+### What has been checked
 
 The parts that came from elsewhere carry other people's review. age and scrypt
 come from the `age` crate. The Secure Enclave, HKDF and AES-GCM come from
@@ -763,6 +767,6 @@ nothing above is a proof of security.
 Use it for the secrets your agents reach for. Keep another copy of anything you
 cannot afford to lose. Findings are welcome.
 
-### Licence
+## Licence
 
 MIT

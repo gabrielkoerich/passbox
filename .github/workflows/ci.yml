@@ -57,10 +57,10 @@ jobs:
         run: brew install age
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --workspace
 
       # A second implementation opening what CryptoKit sealed is the evidence that the
       # construction is standard. Wrapping uses only a public key, so no Enclave is involved.

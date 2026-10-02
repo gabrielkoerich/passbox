@@ -1,11 +1,10 @@
 //! Read secrets from passbox, and hand one to a child process without holding it.
 //!
-//! No crate to depend on: it shells out to the CLI, so no key material enters this process.
-//! Run the self-check with `rustc passbox.rs -o /tmp/passbox-example && /tmp/passbox-example`.
+//! It shells out to the `passbox` CLI, so no key material enters this process and the broker,
+//! the prompt and the audit log apply as they do to any other caller.
 
 use std::collections::HashMap;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// passbox caps a grant at 24 hours and refuses more, so ask for the ceiling. A shorter one
 /// only means another prompt sooner, and nobody is at the sensor at 3am.
@@ -45,10 +44,10 @@ impl Passbox {
     Mint once and keep it: build a fresh client per call and you mint a fresh grant per call,
     which is a fingerprint per read. */
     fn token(&mut self) -> Option<String> {
-        if let Ok(inherited) = std::env::var("PASSBOX_TOKEN") {
-            if !inherited.is_empty() {
-                return Some(inherited);
-            }
+        if let Ok(inherited) = std::env::var("PASSBOX_TOKEN")
+            && !inherited.is_empty()
+        {
+            return Some(inherited);
         }
         if self.token.is_some() || self.grant.is_empty() {
             return self.token.clone();
@@ -95,21 +94,7 @@ impl Passbox {
 
     /// First line as `password`, then any `key: value` lines below it.
     pub fn fields(&mut self, path: &str) -> Result<HashMap<String, String>, String> {
-        let whole = self.get(path)?;
-        let mut out = HashMap::new();
-        let mut lines = whole.trim().lines();
-        if let Some(first) = lines.next() {
-            out.insert("password".to_string(), first.to_string());
-        }
-        for line in lines {
-            if let Some((k, v)) = line.split_once(':') {
-                let (k, v) = (k.trim().to_lowercase(), v.trim());
-                if !k.is_empty() && !v.is_empty() {
-                    out.insert(k, v.to_string());
-                }
-            }
-        }
-        Ok(out)
+        Ok(parse_fields(&self.get(path)?))
     }
 
     /* Prefer this over get(). The value goes from the broker into the child, so a panic or a
@@ -130,9 +115,11 @@ impl Passbox {
     /* Whether passbox can be used, without reading anything. Deliberately not `passbox ls`,
     which needs the store key and so raises a prompt every time it is asked. */
     pub fn is_available(&self) -> bool {
-        let dir = std::env::var("PASSBOX_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".passbox")
-        });
+        let dir = std::env::var("PASSBOX_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".passbox")
+            });
         dir.join("wraps").is_dir()
             && Command::new("passbox")
                 .arg("--version")
@@ -141,46 +128,43 @@ impl Passbox {
     }
 }
 
-/// Round trip against a throwaway store, so it needs no hardware and raises no prompt.
-fn main() {
-    let dir = std::env::temp_dir().join(format!("passbox-example-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    unsafe {
-        std::env::set_var("PASSBOX_DIR", &dir);
-        std::env::set_var("PASSBOX_PASSPHRASE", "correct horse battery staple");
+/// First line as `password`, then any `key: value` lines below it
+pub fn parse_fields(whole: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut lines = whole.trim().lines();
+    if let Some(first) = lines.next() {
+        out.insert("password".to_string(), first.to_string());
+    }
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            let (k, v) = (k.trim().to_lowercase(), v.trim());
+            if !k.is_empty() && !v.is_empty() {
+                out.insert(k, v.to_string());
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fields_split_the_password_from_the_rest() {
+        let f = parse_fields("s3cret\nUsername: bot\nurl: https://example.com\nnote:\n");
+        assert_eq!(f["password"], "s3cret");
+        assert_eq!(f["username"], "bot");
+        assert_eq!(f["url"], "https://example.com");
+        assert!(!f.contains_key("note"));
     }
 
-    assert!(
-        Command::new("passbox").arg("init").status().expect("passbox on PATH").success(),
-        "init failed"
-    );
-
-    let mut add = Command::new("passbox")
-        .args(["add", "demo/api"])
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("add");
-    add.stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(b"s3cret\nusername: bot\nhost: example.com")
-        .expect("write");
-    assert!(add.wait().expect("add").success(), "add failed");
-
-    let mut box_ = Passbox::new(Some("demo"), Some("self-check"), &["api"]);
-    assert!(box_.is_available(), "store should be usable");
-    assert_eq!(box_.get("api").unwrap().lines().next(), Some("s3cret"));
-
-    let fields = box_.fields("api").unwrap();
-    assert_eq!(fields["password"], "s3cret");
-    assert_eq!(fields["username"], "bot");
-    assert_eq!(fields["host"], "example.com");
-
-    let out = box_
-        .run_with("API_KEY", "api", &["sh", "-c", "test -n \"$API_KEY\" && echo ok"])
-        .unwrap();
-    assert_eq!(out.trim(), "ok");
-
-    std::fs::remove_dir_all(&dir).ok();
-    println!("all checks passed");
+    #[test]
+    fn a_namespace_prefixes_every_name() {
+        assert_eq!(
+            Passbox::new(Some("acme"), None, &[]).name("token"),
+            "acme/token"
+        );
+        assert_eq!(Passbox::new(None, None, &[]).name("token"), "token");
+    }
 }
