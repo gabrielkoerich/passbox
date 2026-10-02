@@ -9,7 +9,7 @@ homepage = "https://passbox.gabrielkoerich.com"
 readme = "README.md"
 keywords = ["secrets", "password", "agents", "touch-id"]
 categories = ["authentication", "command-line-utilities"]
-include = ["src/**", "swift/**", "build.rs", "README.md", "LICENSE"]
+include = ["/src/**", "/swift/**", "/build.rs", "/README.md", "/LICENSE"]
 
 [features]
 # The host holds the Enclave, the store and the broker. A client only asks one.
