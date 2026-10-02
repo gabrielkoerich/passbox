@@ -1,11 +1,11 @@
 # Examples
 
-Each is a small client over the CLI, with a runnable self-check against a throwaway store. No key material enters the calling process. Rust has a crate, [`passbox-client`](../client).
+Each is a small client over the CLI, with a runnable self-check against a throwaway store. No key material enters the calling process. Rust uses the `passbox` crate.
 
 | | Run the self-check |
 |---|---|
 | [`python`](python) | `python3 python/passbox.py` |
-| [`client`](../client) | `cargo run -p passbox-client --example selfcheck` |
+| [`rust`](rust) | `cargo run --manifest-path rust/Cargo.toml` |
 | [`typescript`](typescript) | `npx tsx typescript/selfcheck.ts` |
 | [`linux-client`](linux-client) | a container that asks a Mac over the tailnet |
 

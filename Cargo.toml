@@ -2,6 +2,14 @@
 name = "passbox"
 version = "0.13.36"
 edition = "2024"
+description = "A password store for agents, where a fingerprint releases one secret into one process"
+license = "MIT"
+repository = "https://github.com/gabrielkoerich/passbox"
+homepage = "https://passbox.gabrielkoerich.com"
+readme = "README.md"
+keywords = ["secrets", "password", "agents", "touch-id"]
+categories = ["authentication", "command-line-utilities"]
+include = ["src/**", "swift/**", "build.rs", "README.md", "LICENSE"]
 
 [features]
 # The host holds the Enclave, the store and the broker. A client only asks one.
@@ -27,6 +35,3 @@ zeroize = "1.9.0"
 
 [dev-dependencies]
 tempfile = "3.24.0"
-
-[workspace]
-members = ["client"]

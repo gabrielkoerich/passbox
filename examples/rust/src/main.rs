@@ -1,5 +1,5 @@
 //! Round trip against a throwaway store, so it needs no hardware and raises no prompt.
-//! Run with `cargo run -p passbox-client --example selfcheck`, with `passbox` on PATH.
+//! Run with `cargo run`, with `passbox` on PATH.
 
 use passbox::Passbox;
 use std::io::Write;

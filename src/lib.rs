@@ -2,6 +2,9 @@
 //!
 //! It shells out to the `passbox` CLI, so no key material enters this process and the broker,
 //! the prompt and the audit log apply as they do to any other caller.
+//!
+//! This crate also builds the `passbox` CLI. A program that only uses the library adds it with
+//! `default-features = false`, which skips the Swift helper and builds on Linux too.
 
 use std::collections::HashMap;
 use std::process::Command;

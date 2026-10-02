@@ -1,6 +1,6 @@
 # passbox
 
-[![CI](https://github.com/gabrielkoerich/passbox/actions/workflows/ci.yml/badge.svg)](https://github.com/gabrielkoerich/passbox/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/gabrielkoerich/passbox)](https://github.com/gabrielkoerich/passbox/releases/latest) [![Homebrew](https://img.shields.io/badge/homebrew-gabrielkoerich%2Ftap-orange)](https://github.com/gabrielkoerich/homebrew-tap) [![crates.io](https://img.shields.io/crates/v/passbox-client)](https://crates.io/crates/passbox-client) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://github.com/gabrielkoerich/passbox/actions/workflows/ci.yml/badge.svg)](https://github.com/gabrielkoerich/passbox/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/gabrielkoerich/passbox)](https://github.com/gabrielkoerich/passbox/releases/latest) [![Homebrew](https://img.shields.io/badge/homebrew-gabrielkoerich%2Ftap-orange)](https://github.com/gabrielkoerich/homebrew-tap) [![crates.io](https://img.shields.io/crates/v/passbox)](https://crates.io/crates/passbox) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 A password store for machines that run agents. An agent asks for a secret, macOS
 raises a Touch ID prompt naming the agent and the secret, and the value goes into
@@ -700,13 +700,29 @@ Reading one field hands a caller the password without the note beside it.
 
 ### Using it from a program
 
-In Rust, depend on [`passbox-client`](client):
+In Rust, add the crate without its default features. They build the CLI's Secure Enclave helper, which the library does not use:
 
 ```bash
-cargo add passbox-client
+cargo add passbox --no-default-features
 ```
 
-[`examples/`](examples) holds [Python](examples/python) and [TypeScript](examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
+```rust
+use passbox::Passbox;
+
+// One approval covers both secrets for 24 hours
+let mut pb = Passbox::new(Some("acme"), Some("my-job"), &["api", "db"]);
+
+// Preferred: the value goes from the broker into the child
+let out = pb.run_with("API_KEY", "api", &["./deploy"])?;
+
+// When a library needs the value in-process
+let db = pb.fields("db")?;
+let password = &db["password"];
+```
+
+The library runs the `passbox` binary on `PATH`, so it works on a Mac and on a Linux machine that asks one. [`examples/rust`](examples/rust) is a small project that depends on it.
+
+[`examples/`](examples) also holds [Python](examples/python) and [TypeScript](examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
 
 For agents specifically, see [AGENTS.md](AGENTS.md), and the skill in
 [`skills/passbox`](skills/passbox) that teaches a coding agent to use passbox correctly.
