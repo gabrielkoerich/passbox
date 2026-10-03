@@ -20,6 +20,7 @@ rewrite() {
             s|\]\((examples[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
             s|\]\((skills[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
             s|\]\(docs/prompt\.png\)|](/prompt.png)|g;
+            s|\]\(llms\.txt\)|](/llms.txt)|g;
             s|src="docs/([^"]*)"|src="/\1"|g;
             s|\]\(LICENCE\)|](https://github.com/gabrielkoerich/passbox/blob/main/LICENCE)|g'
 }
@@ -66,4 +67,11 @@ done
 } | rewrite > docs/content/agents.md
 
 cp docs/prompt.png docs/static/prompt.png 2>/dev/null || true
+
+# llms.txt is written by hand for models. llms-full.txt is every page in one file, front matter dropped
+cp llms.txt docs/static/llms.txt
+for page in README.md AGENTS.md docs/content/design.md docs/content/roadmap.md; do
+    awk '/^\+\+\+$/ { fm = !fm; next } !fm' "$page"
+    echo
+done > docs/static/llms-full.txt
 exec zola --root docs build "$@"

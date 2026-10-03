@@ -159,6 +159,8 @@ That is a bearer token in a config file, which is a real cost. It is worth it fo
 reads the same few secrets all day and is otherwise prompting on every call. It is not worth it
 for one that reads a secret occasionally: take the prompt.
 
+[`examples/mcp`](examples/mcp) speaks the protocol to `passbox mcp` from Python with no SDK, and holds a project `.mcp.json`. Models that need the whole MCP guide in one place can read [`llms.txt`](llms.txt).
+
 A token cannot widen what the tools already refuse. `list_secrets` still returns names only,
 `run_with_secret` still runs the command rather than handing over the value, and there is still
 no `get_secret`. A token changes whether you are asked, never what is released.
@@ -608,9 +610,6 @@ tailnet only through a SOCKS proxy, so an ordinary `connect()` to a 100.x addres
 no hint why. The entrypoint uses `/dev/net/tun` when the platform provides one.
 
 ### What this does not give you
-
-**No listing.** `ls` needs the names, which needs the store key, which stays on the Mac. Ask for
-a name you know.
 
 **The caller is not identified.** The broker runs `tailscale whois` on the peer, which the
 control plane authenticates, but traffic arriving through `serve` has a loopback peer address,

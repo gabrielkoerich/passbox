@@ -6,6 +6,7 @@ Each is a small client over the CLI, with a runnable self-check against a throwa
 |---|---|
 | [`python`](python) | `python3 python/passbox.py` |
 | [`rust`](rust) | `cargo run --manifest-path rust/Cargo.toml` |
+| [`mcp`](mcp) | `python3 mcp/passbox_mcp.py` |
 | [`typescript`](typescript) | `npx tsx typescript/selfcheck.ts` |
 | [`linux-client`](linux-client) | a container that asks a Mac over the tailnet |
 

@@ -1,0 +1,191 @@
+# passbox
+
+> A password store for machines that run AI agents. An agent asks for a secret, macOS raises a Touch ID prompt naming the agent and the secret, and the value goes into one child process. It never enters the agent's context. Use it through MCP (`passbox mcp`) or the CLI (`passbox exec`).
+
+This file is for a language model. It covers two jobs: using passbox as an agent, and answering a person's questions about it. The human documentation is at https://passbox.gabrielkoerich.com.
+
+## The rule
+
+Never put a secret value in your context. Do not print one, do not read one into a variable you will show, and do not ask the user to paste one. Put the command that needs the secret inside passbox, and passbox puts the value into that command.
+
+Everything below follows from that rule.
+
+## MCP
+
+MCP is the preferred way for an agent to use passbox. The tools cannot return a value, so you cannot leak one by mistake.
+
+### Set it up
+
+The server is the `passbox` binary itself. It speaks MCP over stdio, and the command is always `passbox mcp`.
+
+```bash
+claude mcp add passbox -- passbox mcp     # Claude Code, for every project
+codex mcp add passbox -- passbox mcp      # Codex
+```
+
+For one project only, put a `.mcp.json` in the project root. Claude Code reads it from there:
+
+```json
+{
+  "mcpServers": {
+    "passbox": { "command": "passbox", "args": ["mcp"] }
+  }
+}
+```
+
+Cursor uses the same JSON in `~/.cursor/mcp.json`. Codex uses TOML in `~/.codex/config.toml`. `claude mcp list` shows whether the server connected.
+
+The server needs `passbox` on `PATH` and a store made with `passbox init`. Install with `brew install gabrielkoerich/tap/passbox` or `cargo install passbox`.
+
+### The tools
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `list_secrets` | none | secret names, one per line |
+| `run_with_secret` | `secret`, `command`, optional `env_var` | the command's output, with the value scrubbed |
+
+There is no `get_secret`, and that is deliberate. A tool result goes into the model's context, where it is logged and sent onward. So the server runs the command for you.
+
+`run_with_secret` arguments:
+
+- `secret`: a name exactly as `list_secrets` shows it, such as `github/token`.
+- `command`: the program and its arguments as an array, such as `["gh", "api", "/user"]`. It is not run through a shell.
+- `env_var`: the environment variable that holds the value in the child, such as `GH_TOKEN`. Without it, the value is written to the child's stdin.
+
+The result is the child's stdout. If the child wrote to stderr, the text `stderr:` and that output follow. If the child exited non-zero, `exit: <code>` follows. Any occurrence of the value in that text, whole or one line of it, is replaced with `[redacted by passbox]`.
+
+### What happens on a call
+
+1. The server sends the request to the passbox broker on the user's Mac.
+2. The broker decides by the secret's mode. It can release the value at once, raise a Touch ID prompt, or refuse.
+3. The prompt names the secret and the agent. The agent name is the `clientInfo.name` your MCP client sent in the handshake, such as `claude-code`.
+4. The broker writes the decision to an encrypted audit log. The user sees it with `passbox audit`.
+5. The value goes into the child process. You get the output.
+
+A prompt waits for a person at the Mac. If you expect one, tell the user before you call: name the secret and say they should approve it.
+
+Secret modes:
+
+| Mode | Behaviour |
+|---|---|
+| `open` | released with no prompt |
+| `window` | one prompt per agent and secret, then no prompt for the window, 300 seconds by default |
+| `always` | a prompt on every read |
+| `never` | never released to an agent |
+
+`list_secrets` prompts too, at most once per agent every 300 seconds.
+
+### Recipes
+
+A tool that reads its token from the environment:
+
+```json
+{ "secret": "github/token", "env_var": "GH_TOKEN", "command": ["gh", "pr", "list"] }
+```
+
+A tool that reads a password on stdin. Leave out `env_var`:
+
+```json
+{ "secret": "ghcr/token", "command": ["docker", "login", "ghcr.io", "-u", "bot", "--password-stdin"] }
+```
+
+A header for an HTTP call. The shell expands the variable inside the child:
+
+```json
+{ "secret": "acme/api-key", "env_var": "API_KEY",
+  "command": ["sh", "-c", "curl -sS -H \"Authorization: Bearer $API_KEY\" https://api.example.com/me"] }
+```
+
+The value then sits in curl's arguments, where any process of the same user can read it with `ps`. Prefer a tool that reads the environment or stdin itself. Use `sh -c` only when there is no other way.
+
+To check a secret exists, call `list_secrets`. Never run `echo` or `cat` on the value to check it. Redaction would hide it, but the call still wastes an approval and is logged as a release.
+
+### When a call fails
+
+A failure comes back as a tool result with `isError` set, so you can read it.
+
+| Message | Meaning | What to do |
+|---|---|---|
+| `no secret named X` | the name is wrong | call `list_secrets` and use an exact name |
+| `X is marked never, refusing` | the user forbids agents this secret | stop, and tell the user. Do not look for another way to reach it |
+| `denied: ...` | the user refused the prompt | stop. Do not retry without asking the user |
+| `Touch ID is unavailable on this Mac right now` | the Mac is asleep, locked or its lid is closed | ask the user to wake the Mac, then retry once |
+| a passphrase is requested, or the unlock fails, on Linux | the client has no Mac configured | the user puts the Mac's tailnet address in `~/.passbox/host` |
+| `exit: N` at the end of the output | passbox released the value and the command failed | debug the command, not passbox |
+
+### Fewer prompts
+
+A busy agent can raise many prompts. In order of preference:
+
+1. Do nothing. In `window` mode one approval covers every read of that secret for the window.
+2. A project file. A `.passbox.toml` in the project lists the secrets the project uses, and one prompt covers all of them for up to 12 hours:
+
+   ```toml
+   secrets = ["github/token", "npm/token"]
+   window_secs = 3600
+   ```
+
+   The broker matches the file against the working directory of the process that asks. For MCP that is the `passbox mcp` process, which runs in the directory the client started it in. That is usually the project root. You may write this file. It requests access, and nothing is granted until the user touches the sensor.
+
+3. A grant token. `passbox grant acme/api-key acme/signing-key --for 86400` prints a token that opens those secrets and nothing else, for at most 24 hours. For MCP, the token goes in the server's environment in the client config, as `"env": { "PASSBOX_TOKEN": "..." }`. A namespace is refused. Name each secret. Minting a token takes a prompt, and the token is a bearer credential, so only the user should mint one and place it.
+
+A token never widens what the tools return. It only removes prompts.
+
+### Limits of the MCP server today
+
+- One secret per call. A command that needs two secrets needs `passbox exec` from a shell, which takes `--env` more than once.
+- A multi-line entry is injected whole, first line and fields together. There is no field selector yet.
+- The command runs in the server's working directory. There is no `cwd` argument, so use `sh -c "cd /path && ..."` when you need one.
+- There is no timeout and no output cap. A command that waits for input blocks the server, so pass non-interactive flags.
+
+## From a shell
+
+Use this when MCP is not configured, or for what the tools cannot do.
+
+```bash
+passbox exec --env GITHUB_TOKEN=github/token -- gh api /user
+passbox exec --env A=svc/a --env B=svc/b -- ./job      # several secrets
+passbox exec --stdin ghcr/token -- docker login ghcr.io -u bot --password-stdin
+passbox ls                                               # names only
+```
+
+Set `PASSBOX_AGENT=<your name>` so the prompt names you. Without it the prompt says `passbox`, and the user cannot tell who is asking.
+
+`passbox get` prints a value to stdout. It exists for a person at a terminal. As an agent, do not run it. Its output would land in your context.
+
+To store a secret the user gives you, pipe it in. Never write it to a file and never echo it:
+
+```bash
+printf '%s' "$VALUE" | passbox add service/name
+```
+
+## Unattended jobs
+
+A job that runs at night cannot answer a prompt. Start it with the value injected, and it never asks passbox again:
+
+```bash
+passbox exec --env API_KEY=svc/key -- ./scheduled-job
+```
+
+If the job chooses at runtime what it reads, use a grant token as above, at most 24 hours. Rust programs can use the `passbox` crate (`cargo add passbox --no-default-features`). Python and TypeScript examples are in the repository's `examples/` folder.
+
+## Answering questions about passbox
+
+- **What it is**: a secret store whose reads are approved per agent and per secret with Touch ID, and whose values go into a child process instead of the agent. Secrets are standard age files. Names are encrypted too.
+- **Platforms**: the store lives on a Mac with a Secure Enclave. Linux runs a client build that asks the Mac over Tailscale, and the fingerprint happens on the Mac.
+- **Install**: `brew install gabrielkoerich/tap/passbox`, or `cargo install passbox`. Then `passbox init`.
+- **Backup**: off by default. With no sync, losing the Mac loses the store. `passbox sync --enable` turns sync on with a recovery passphrase, and a YubiKey can replace the passphrase.
+- **Compared with pass**: pass is older, runs everywhere and has more integrations. passbox exists for agents: per-secret approval, encrypted names, and values that never reach the agent.
+- **Maturity**: young and not independently audited. Advise users to keep another copy of anything they cannot lose.
+- **Licence**: MIT.
+
+## Docs
+
+- [Home](https://passbox.gabrielkoerich.com): what it is and how to install
+- [Use](https://passbox.gabrielkoerich.com/use): everyday commands, MCP, modes, project files
+- [Unattended](https://passbox.gabrielkoerich.com/unattended): injection and grant tokens
+- [Another machine](https://passbox.gabrielkoerich.com/another-machine): Linux clients over Tailscale
+- [Design](https://passbox.gabrielkoerich.com/design): why it is built this way, and the costs
+- [For agents](https://passbox.gabrielkoerich.com/agents): the short version of this file
+- [Full text](https://passbox.gabrielkoerich.com/llms-full.txt): every page in one file
+- [Source](https://github.com/gabrielkoerich/passbox)

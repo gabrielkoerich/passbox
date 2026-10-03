@@ -71,6 +71,11 @@ jobs:
           /tmp/venv/bin/pip install --quiet cryptography
           /tmp/venv/bin/python tests/ecies.py /tmp/passbox-se
 
+      - name: Run the MCP example against the server
+        run: |
+          cargo build
+          PATH="$PWD/target/debug:$PATH" python3 examples/mcp/passbox_mcp.py
+
       - name: Run the Rust example against the library
         run: |
           cargo build
