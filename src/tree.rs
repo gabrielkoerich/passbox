@@ -55,16 +55,13 @@ mod tests {
 
     #[test]
     fn nests_by_namespace() {
-        let out = render(
-            &names(&["bean/api-key", "bean/hl-mainnet-pk", "top"]),
-            false,
-        );
+        let out = render(&names(&["acme/api-key", "acme/signing-key", "top"]), false);
         assert_eq!(
             out,
             "passbox\n\
-             ├── bean\n\
+             ├── acme\n\
              │   ├── api-key\n\
-             │   └── hl-mainnet-pk\n\
+             │   └── signing-key\n\
              └── top\n"
         );
     }
@@ -88,8 +85,8 @@ mod tests {
     /// Colour marks namespaces, so a leaf never carries an escape sequence
     #[test]
     fn colour_only_marks_namespaces() {
-        let out = render(&names(&["bean/api-key", "top"]), true);
-        assert!(out.contains("\x1b[1;34mbean\x1b[0m"));
+        let out = render(&names(&["acme/api-key", "top"]), true);
+        assert!(out.contains("\x1b[1;34macme\x1b[0m"));
         assert!(out.contains("└── top\n"));
         assert!(!out.contains("\x1b[1;34mtop"));
         assert!(!out.contains("\x1b[1;34mapi-key"));

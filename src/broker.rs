@@ -831,30 +831,30 @@ mod tests {
 
     #[test]
     fn a_namespace_is_refused_and_its_names_listed() {
-        let known: Vec<String> = ["bean/pk", "bean/addr", "personal/github"]
+        let known: Vec<String> = ["acme/pk", "acme/addr", "personal/github"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let err = reject_namespaces(&["bean".to_string()], &known)
+        let err = reject_namespaces(&["acme".to_string()], &known)
             .unwrap_err()
             .to_string();
         assert!(err.contains("namespace holding 2"), "{err}");
         assert!(
-            err.contains("bean/pk") && err.contains("bean/addr"),
+            err.contains("acme/pk") && err.contains("acme/addr"),
             "{err}"
         );
     }
 
     #[test]
     fn exact_names_are_accepted() {
-        let known: Vec<String> = ["bean/pk", "personal/github"]
+        let known: Vec<String> = ["acme/pk", "personal/github"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert!(reject_namespaces(&["bean/pk".to_string()], &known).is_ok());
+        assert!(reject_namespaces(&["acme/pk".to_string()], &known).is_ok());
         assert!(
             reject_namespaces(
-                &["bean/pk".to_string(), "personal/github".to_string()],
+                &["acme/pk".to_string(), "personal/github".to_string()],
                 &known
             )
             .is_ok()
@@ -875,9 +875,9 @@ mod tests {
     #[test]
     fn a_token_opens_only_what_it_was_granted() {
         let mut tokens = HashMap::new();
-        tokens.insert("tok".to_string(), grant_of(&[("bean/pk", "value")], 2_000));
+        tokens.insert("tok".to_string(), grant_of(&[("acme/pk", "value")], 2_000));
         assert_eq!(
-            token_lookup(&tokens, "tok", "bean/pk", 1_000).as_deref(),
+            token_lookup(&tokens, "tok", "acme/pk", 1_000).as_deref(),
             Some("value")
         );
         assert!(token_lookup(&tokens, "tok", "personal/github", 1_000).is_none());
@@ -886,16 +886,16 @@ mod tests {
     #[test]
     fn an_unknown_token_opens_nothing() {
         let mut tokens = HashMap::new();
-        tokens.insert("tok".to_string(), grant_of(&[("bean/pk", "v")], 2_000));
-        assert!(token_lookup(&tokens, "guessed", "bean/pk", 1_000).is_none());
+        tokens.insert("tok".to_string(), grant_of(&[("acme/pk", "v")], 2_000));
+        assert!(token_lookup(&tokens, "guessed", "acme/pk", 1_000).is_none());
     }
 
     #[test]
     fn a_lapsed_token_opens_nothing() {
         let mut tokens = HashMap::new();
-        tokens.insert("tok".to_string(), grant_of(&[("bean/pk", "v")], 2_000));
-        assert!(token_lookup(&tokens, "tok", "bean/pk", 2_000).is_none());
-        assert!(token_lookup(&tokens, "tok", "bean/pk", 9_999).is_none());
+        tokens.insert("tok".to_string(), grant_of(&[("acme/pk", "v")], 2_000));
+        assert!(token_lookup(&tokens, "tok", "acme/pk", 2_000).is_none());
+        assert!(token_lookup(&tokens, "tok", "acme/pk", 9_999).is_none());
     }
 
     #[test]

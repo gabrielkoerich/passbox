@@ -55,9 +55,9 @@ enum Command {
         #[arg(long)]
         field: Option<String>,
     },
-    /// Approve a secret or a namespace once, and print a token that opens only those
+    /// Approve named secrets once, and print a token that opens only those
     Grant {
-        /// Names or namespaces, such as `bean/hl-mainnet-pk personal/github` or `bean`
+        /// Secret names, such as `acme/api-key acme/signing-key`. A namespace is refused
         #[arg(required = true)]
         names: Vec<String>,
         /// Seconds the token stays valid, capped at 24 hours
@@ -121,7 +121,7 @@ enum Command {
     #[cfg(feature = "host")]
     /// Copy entries across from `pass`, all of them or one namespace
     ImportPass {
-        /// A namespace such as `bean`, or one entry. Everything, if omitted.
+        /// A namespace such as `acme`, or one entry. Everything, if omitted.
         prefix: Option<String>,
         #[arg(long)]
         mode: Option<Mode>,
@@ -847,7 +847,7 @@ pub fn run_child(
 }
 
 /// A tree for a terminal, one name per line for anything reading the output
-/* The token goes to stdout and the rest to stderr, so `TOKEN=$(passbox grant bean)` picks up
+/* The token goes to stdout and the rest to stderr, so `TOKEN=$(passbox grant acme/api-key)` picks up
 the token alone while a person still sees what it covers. */
 fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
     /* Refuse a namespace before anything else, so it costs neither a round trip nor a

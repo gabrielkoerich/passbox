@@ -77,8 +77,8 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/* A name, or everything under a namespace. The trailing slash is what stops `bean` dragging
-in `beanstalk`. Lives here rather than in `import` because the client build has no `import`. */
+/* A name, or everything under a namespace. The trailing slash is what stops `acme` dragging
+in `acmecorp`. Lives here rather than in `import` because the client build has no `import`. */
 pub fn select(all: &[String], prefix: Option<&str>) -> Vec<String> {
     let Some(prefix) = prefix else {
         return all.to_vec();

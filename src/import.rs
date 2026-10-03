@@ -52,7 +52,7 @@ fn walk(root: &Path, at: &Path, out: &mut Vec<String>) -> Result<()> {
 pub use crate::store::select;
 
 /* The whole body is kept, not just the first line. pass entries commonly carry `key: value` lines
-under the password, and bean's `get_fields` reads them, so trimming to line one would lose data. */
+under the password, and the Python client's `get_fields` reads them, so trimming to line one would lose data. */
 fn show(entry: &str) -> Result<String> {
     let out = std::process::Command::new("pass")
         .arg("show")
@@ -126,18 +126,14 @@ mod tests {
     fn entry_names_mirror_the_pass_layout() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        touch(&root.join("fred-api-key.gpg"));
-        touch(&root.join("bean/hl-mainnet-pk.gpg"));
+        touch(&root.join("api-key.gpg"));
+        touch(&root.join("acme/signing-key.gpg"));
         touch(&root.join("r2/storage/access-key-id.gpg"));
 
         let found = entries(root).unwrap();
         assert_eq!(
             found,
-            vec![
-                "bean/hl-mainnet-pk",
-                "fred-api-key",
-                "r2/storage/access-key-id"
-            ]
+            vec!["acme/signing-key", "api-key", "r2/storage/access-key-id"]
         );
     }
 
@@ -156,9 +152,9 @@ mod tests {
 
     fn names() -> Vec<String> {
         [
-            "bean/hl-mainnet-pk",
-            "bean/fred-api-key",
-            "beanstalk/other",
+            "acme/signing-key",
+            "acme/api-key",
+            "acmecorp/other",
             "r2/storage/id",
             "top",
         ]
@@ -172,11 +168,11 @@ mod tests {
         assert_eq!(select(&names(), None).len(), 5);
     }
 
-    /// `bean` must not drag in `beanstalk`, which is why the match is on a trailing slash
+    /// `acme` must not drag in `acmecorp`, which is why the match is on a trailing slash
     #[test]
     fn a_namespace_does_not_match_a_longer_name() {
-        let picked = select(&names(), Some("bean"));
-        assert_eq!(picked, vec!["bean/hl-mainnet-pk", "bean/fred-api-key"]);
+        let picked = select(&names(), Some("acme"));
+        assert_eq!(picked, vec!["acme/signing-key", "acme/api-key"]);
     }
 
     #[test]
@@ -190,7 +186,7 @@ mod tests {
 
     #[test]
     fn a_trailing_slash_is_tolerated() {
-        assert_eq!(select(&names(), Some("bean/")).len(), 2);
+        assert_eq!(select(&names(), Some("acme/")).len(), 2);
     }
 
     #[test]

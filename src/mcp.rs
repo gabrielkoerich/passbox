@@ -23,13 +23,18 @@ pub fn serve(store: Store) -> Result<()> {
             continue;
         }
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            reply(
+                &mut out,
+                &Value::Null,
+                Err((-32700, "parse error".to_string())),
+            )?;
             continue;
         };
         let id = message.get("id").cloned();
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
 
-        let reply = match method {
+        let result = match method {
             "initialize" => {
                 // The client names itself in the handshake, which beats guessing up the tree
                 if let Some(name) = params
@@ -39,25 +44,33 @@ pub fn serve(store: Store) -> Result<()> {
                 {
                     agent = name.to_string();
                 }
-                Some(initialize(&params))
+                Ok(initialize(&params))
             }
-            "tools/list" => Some(tools()),
-            "tools/call" => Some(call(&store, &agent, &params)),
-            "ping" => Some(json!({})),
-            _ => None,
+            "tools/list" => Ok(tools()),
+            "tools/call" => Ok(call(&store, &agent, &params)),
+            "ping" => Ok(json!({})),
+            other => Err((-32601, format!("no method named {other}"))),
         };
 
         // A message with no id is a notification, which takes no reply
-        let (Some(id), Some(result)) = (id, reply) else {
+        let Some(id) = id else {
             continue;
         };
-        writeln!(
-            out,
-            "{}",
-            json!({"jsonrpc": "2.0", "id": id, "result": result})
-        )?;
-        out.flush()?;
+        reply(&mut out, &id, result)?;
     }
+    Ok(())
+}
+
+/// A request left unanswered hangs the client, so an unknown method still gets an error back
+fn reply(out: &mut impl Write, id: &Value, result: Result<Value, (i64, String)>) -> Result<()> {
+    let message = match result {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err((code, text)) => {
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": text}})
+        }
+    };
+    writeln!(out, "{message}")?;
+    out.flush()?;
     Ok(())
 }
 
@@ -171,12 +184,29 @@ fn run_with_secret(store: &Store, agent: &str, args: &Value) -> Result<String> {
     Ok(redact(&text, &value))
 }
 
-/// A command that echoes its own secret would otherwise put it straight into the transcript
+/* A command that echoes its own secret would otherwise put it straight into the transcript.
+
+A multi-line entry is redacted whole and also piece by piece, its password line and each field
+value, because a command that prints only the first line would otherwise slip past. Longest
+first, so the whole value is caught before its parts. Pieces under four characters are left, so
+a field such as `id: 7` cannot blank every 7 in the output. */
 fn redact(text: &str, secret: &str) -> String {
-    if secret.is_empty() {
-        return text.to_string();
+    const MIN_PIECE: usize = 4;
+    let mut pieces: Vec<&str> = vec![secret];
+    for (i, line) in secret.lines().enumerate() {
+        let piece = match line.split_once(':') {
+            Some((_, value)) if i > 0 => value.trim(),
+            _ => line.trim(),
+        };
+        if piece.len() >= MIN_PIECE {
+            pieces.push(piece);
+        }
     }
-    text.replace(secret, "[redacted by passbox]")
+    pieces.retain(|p| !p.is_empty());
+    pieces.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    pieces.into_iter().fold(text.to_string(), |out, p| {
+        out.replace(p, "[redacted by passbox]")
+    })
 }
 
 #[cfg(test)]
@@ -194,6 +224,32 @@ mod tests {
     fn redacting_every_occurrence() {
         let out = redact("a s b s", "s");
         assert_eq!(out.matches("[redacted by passbox]").count(), 2);
+    }
+
+    #[test]
+    fn printing_one_line_of_a_multi_line_entry_is_still_scrubbed() {
+        let secret = "s3cret-pw\nusername: bot\napi_key: key-123456";
+        let out = redact("pw=s3cret-pw key=key-123456 user=bot", secret);
+        assert!(
+            !out.contains("s3cret-pw") && !out.contains("key-123456"),
+            "{out}"
+        );
+        // A short field is not a secret worth blanking every occurrence of
+        assert!(out.contains("user=bot"), "{out}");
+    }
+
+    #[test]
+    fn an_unknown_method_gets_an_error_rather_than_silence() {
+        let mut out = Vec::new();
+        reply(
+            &mut out,
+            &json!(3),
+            Err((-32601, "no method named resources/list".into())),
+        )
+        .unwrap();
+        let sent: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(sent["id"], 3);
+        assert_eq!(sent["error"]["code"], -32601);
     }
 
     #[test]
