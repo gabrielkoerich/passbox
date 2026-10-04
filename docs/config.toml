@@ -1,4 +1,5 @@
 base_url = "https://passbox.gabrielkoerich.com"
+theme = "zola-docs"
 compile_sass = true
 build_search_index = false
 title = "passbox"
@@ -15,4 +16,12 @@ theme = "github-dark"
 add_color_scheme = true
 
 [extra]
+author = "Gabriel Koerich"
+site_name = "passbox"
+home_url = "https://gabrielkoerich.com"
 github = "https://github.com/gabrielkoerich/passbox"
+stylesheet = "main.css"
+nav = [
+    { name = "Docs", url = "@/_index.md" },
+    { name = "Releases", url = "https://github.com/gabrielkoerich/passbox/releases" },
+]

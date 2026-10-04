@@ -271,13 +271,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
-      - uses: taiki-e/install-action@v2
+      - uses: gabrielkoerich/zola-docs-action@v1
         with:
-          tool: zola@0.23.6
-      - run: ./docs/build.sh
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/public
+          path: docs
+          zola-version: "0.22.1"
+          build-command: ./build.sh
       - id: deployment
         uses: actions/deploy-pages@v4
 

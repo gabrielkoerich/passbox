@@ -74,4 +74,19 @@ for page in README.md AGENTS.md docs/content/design.md docs/content/roadmap.md; 
     awk '/^\+\+\+$/ { fm = !fm; next } !fm' "$page"
     echo
 done > docs/static/llms-full.txt
+# The zola-docs theme is Tera 1, Zola 0.23 moved to Tera 2 and rejects it
+case "$(zola --version)" in
+    "zola 0.2"[3-9]*|"zola "[1-9]*) echo "Zola 0.22 or older is needed for the zola-docs theme, found $(zola --version)" >&2; exit 1 ;;
+esac
+# CI gets the theme from zola-docs-action, a local run copies it in
+if [ ! -d docs/themes/zola-docs ]; then
+    src="$HOME/Projects/zola-docs-action/theme"
+    if [ ! -d "$src" ]; then
+        tmp=$(mktemp -d)
+        git clone -q --depth 1 https://github.com/gabrielkoerich/zola-docs-action "$tmp"
+        src="$tmp/theme"
+    fi
+    mkdir -p docs/themes
+    cp -R "$src" docs/themes/zola-docs
+fi
 exec zola --root docs build "$@"
