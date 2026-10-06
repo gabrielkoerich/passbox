@@ -8,8 +8,6 @@ This file is for a language model. It covers two jobs: using passbox as an agent
 
 Never put a secret value in your context. Do not print one, do not read one into a variable you will show, and do not ask the user to paste one. Put the command that needs the secret inside passbox, and passbox puts the value into that command.
 
-Everything below follows from that rule.
-
 ## MCP
 
 MCP is the preferred way for an agent to use passbox. The tools cannot return a value, so you cannot leak one by mistake.
