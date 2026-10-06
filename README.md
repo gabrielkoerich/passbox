@@ -489,7 +489,7 @@ Give the container a real tun device. `tailscaled --tun=userspace-networking` re
 
 **The caller is not identified.** The broker runs `tailscale whois` on the peer, which the control plane authenticates, but traffic arriving through `serve` has a loopback peer address, so it resolves to nothing and the prompt says `an unidentified tailnet peer`. `PASSBOX_AGENT` is still whatever the caller claims.
 
-**The Mac must be awake, unlocked, and its lid open.** Nothing can answer a prompt otherwise, and a closed lid fails with `canEvaluatePolicy` false rather than anything clearer.
+**The Mac must be awake, unlocked, and its lid open.** Nothing can answer a prompt otherwise. A closed lid fails, and the error says so: Touch ID is unavailable, open the lid or use the recovery passphrase.
 
 **Nobody is there at 3am.** A scheduled job wants injection or a grant, not a prompt. See [Unattended](README.md#unattended).
 

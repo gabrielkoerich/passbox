@@ -40,4 +40,4 @@ passbox get github/token
 
 **The agent name is still self declared.** `PASSBOX_AGENT` is whatever the caller sets. Over the tailnet the broker also runs `tailscale whois` on the peer address. The control plane authenticated that name, so the prompt shows a machine rather than a claim.
 
-**The Mac has to be awake, unlocked, and lid open.** No prompt can be answered otherwise, and a closed lid fails with `canEvaluatePolicy` false rather than anything clearer.
+**The Mac has to be awake, unlocked, and lid open.** No prompt can be answered otherwise. A closed lid fails, and the error says so: Touch ID is unavailable, open the lid or use the recovery passphrase.
