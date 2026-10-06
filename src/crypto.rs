@@ -3,6 +3,7 @@
 use age::{Decryptor, Encryptor, Identity, Recipient};
 use anyhow::{Result, anyhow};
 use std::io::{Read, Write};
+use zeroize::Zeroizing;
 
 /// Encrypt to every recipient. One recipient failing to wrap is fatal, a store
 /// that silently drops its recovery key is worse than no store.
@@ -36,19 +37,21 @@ pub fn encrypt_line(plaintext: &[u8], recipient: &age::x25519::Recipient) -> Res
 }
 
 #[cfg(feature = "host")]
-pub fn decrypt_line(line: &str, key: &age::x25519::Identity) -> Result<Vec<u8>> {
+pub fn decrypt_line(line: &str, key: &age::x25519::Identity) -> Result<Zeroizing<Vec<u8>>> {
     let raw = hex::decode(line.trim()).map_err(|e| anyhow!("bad audit line: {e}"))?;
     decrypt(&raw, &[Box::new(key.clone())])
 }
 
-pub fn decrypt(ciphertext: &[u8], identities: &[Box<dyn Identity>]) -> Result<Vec<u8>> {
+/// Plaintext is never larger than its ciphertext, so the buffer is sized once and never grown,
+/// which would free a copy of the plaintext without wiping it. It wipes itself when dropped
+pub fn decrypt(ciphertext: &[u8], identities: &[Box<dyn Identity>]) -> Result<Zeroizing<Vec<u8>>> {
     let decryptor = Decryptor::new_buffered(ciphertext)?;
     let refs: Vec<&dyn Identity> = identities
         .iter()
         .map(|i| i.as_ref() as &dyn Identity)
         .collect();
     let mut reader = decryptor.decrypt(refs.into_iter())?;
-    let mut out = Vec::new();
+    let mut out = Zeroizing::new(Vec::with_capacity(ciphertext.len()));
     reader.read_to_end(&mut out)?;
     Ok(out)
 }
@@ -66,7 +69,7 @@ mod tests {
         let ct = encrypt(b"correct horse battery staple", &recipients).unwrap();
         assert_ne!(ct, b"correct horse battery staple");
         let pt = decrypt(&ct, &identities).unwrap();
-        assert_eq!(pt, b"correct horse battery staple");
+        assert_eq!(&pt[..], b"correct horse battery staple");
     }
 
     #[test]

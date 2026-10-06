@@ -18,6 +18,30 @@ mod yubikey;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use std::alloc::{GlobalAlloc, Layout, System};
+use zeroize::Zeroize;
+
+/* Every freed block is wiped before the system allocator gets it back. Decrypting, parsing JSON
+and decoding keys all pass plaintext through buffers owned by age, serde_json and std, which free
+them without wiping, so wiping at the one place every free goes through catches all of them.
+The default `realloc` frees through `dealloc`, so a buffer that grows is wiped too. */
+struct WipeOnFree;
+
+unsafe impl GlobalAlloc for WipeOnFree {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe {
+            std::slice::from_raw_parts_mut(ptr, layout.size()).zeroize();
+            System.dealloc(ptr, layout)
+        }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: WipeOnFree = WipeOnFree;
 use secrecy::SecretString;
 use std::io::{IsTerminal, Read, Write};
 use store::{DEFAULT_WINDOW_SECS, Mode, Secret, Store};
@@ -1016,6 +1040,25 @@ fn read_value() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::fields;
+
+    /* A freed block must come back zeroed, or a secret the broker decrypted would linger in
+    memory a debugger or core dump could reach. Uses an odd size to miss the small-bin reuse
+    other test allocations churn through. */
+    #[test]
+    fn freed_memory_is_wiped() {
+        use std::alloc::{Layout, alloc, dealloc};
+        let layout = Layout::from_size_align(4099, 1).unwrap();
+        unsafe {
+            let p = alloc(layout);
+            std::slice::from_raw_parts_mut(p, 4099).fill(0xAB);
+            dealloc(p, layout);
+            // The same request usually returns the same block, now that dealloc has wiped it
+            let q = alloc(layout);
+            let seen = std::slice::from_raw_parts(q, 4099);
+            assert!(seen.iter().all(|&b| b == 0), "freed bytes were not wiped");
+            dealloc(q, layout);
+        }
+    }
 
     #[test]
     fn the_first_line_is_the_password() {

@@ -30,6 +30,7 @@ class Passbox < Formula
   def install
     if build.head?
       system "cargo", "install", *std_cargo_args
+      system "codesign", "-s", "-", "--force", "--options", "runtime", bin/"passbox"
     else
       bin.install "passbox"
     end

@@ -2,9 +2,10 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use zeroize::Zeroizing;
 
 /// The helper rides inside this binary so `cargo install` stays a single step
 const HELPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/passbox-se"));
@@ -48,7 +49,7 @@ fn helper() -> Result<PathBuf> {
     Ok(path)
 }
 
-fn run(args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+fn run(args: &[&str], stdin: Option<&[u8]>) -> Result<Zeroizing<Vec<u8>>> {
     let mut child = Command::new(helper()?)
         .args(args)
         .stdin(Stdio::piped())
@@ -61,11 +62,15 @@ fn run(args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
     }
     drop(child.stdin.take());
 
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    // Stdout carries the store key on unwrap. A buffer that never grows leaves no stray copy
+    let mut out = Zeroizing::new(Vec::with_capacity(4096));
+    child.stdout.take().expect("piped").read_to_end(&mut out)?;
+    let mut err = Vec::new();
+    child.stderr.take().expect("piped").read_to_end(&mut err)?;
+    if !child.wait()?.success() {
+        bail!("{}", String::from_utf8_lossy(&err).trim());
     }
-    Ok(out.stdout)
+    Ok(out)
 }
 
 /// Wrap the store key to a new Secure Enclave key. Neither step raises a prompt.
@@ -89,7 +94,7 @@ pub fn wrap(plaintext: &[u8]) -> Result<SeWrap> {
 /* Raise a Touch ID prompt worded by `reason`, then open the wrap. macOS renders the dialog as
 "<binary> is trying to <reason>.", so `reason` has to be a verb phrase that finishes that
 sentence, such as "release the password for github/token to claude-code". */
-pub fn unwrap(wrap: &SeWrap, reason: &str) -> Result<Vec<u8>> {
+pub fn unwrap(wrap: &SeWrap, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
     let request = serde_json::json!({
         "key_blob": wrap.key_blob,
         "ephemeral": wrap.ephemeral,
@@ -145,6 +150,6 @@ mod tests {
         let key = b"AGE-SECRET-KEY-EXAMPLE";
         let wrap = wrap(key).unwrap();
         let back = unwrap(&wrap, "passbox is running its own test").unwrap();
-        assert_eq!(back, key);
+        assert_eq!(&back[..], key);
     }
 }

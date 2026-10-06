@@ -29,4 +29,12 @@ fn main() {
         status.success(),
         "could not build the Secure Enclave helper"
     );
+
+    // The helper hands back the store key, so it refuses a debugger too. Ad hoc, no account needed
+    let signed = Command::new("codesign")
+        .args(["-s", "-", "--force", "--options", "runtime"])
+        .arg(&out)
+        .status()
+        .expect("codesign is missing, install the Command Line Tools");
+    assert!(signed.success(), "could not sign the Secure Enclave helper");
 }

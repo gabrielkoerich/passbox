@@ -537,8 +537,25 @@ fn serve_tailnet(
     }
 }
 
+/* The broker holds the store key for minutes at a time, so a debugger attaching as the same user
+could read it out. PT_DENY_ATTACH refuses that attach, and a zero core limit stops a crash from
+writing the key to disk. Root can still get past both. */
+#[cfg(all(feature = "host", target_os = "macos"))]
+fn harden() {
+    unsafe {
+        libc::ptrace(libc::PT_DENY_ATTACH, 0, std::ptr::null_mut(), 0);
+        let none = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        libc::setrlimit(libc::RLIMIT_CORE, &none);
+    }
+}
+
 #[cfg(feature = "host")]
 pub fn serve(store: Store) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    harden();
     let socket = store.socket_path();
     if socket.exists() {
         std::fs::remove_file(&socket)?;

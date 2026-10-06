@@ -249,6 +249,11 @@ jobs:
           rustup target add "$TARGET"
           # shellcheck disable=SC2086
           cargo build --release --locked --target "$TARGET" $FEATURES
+          # The hardened runtime stops a same-user debugger reading the broker's memory
+          if [[ "$TARGET" == *apple-darwin ]]; then
+            codesign -s - --force --options runtime "target/$TARGET/release/passbox"
+            codesign -dv "target/$TARGET/release/passbox" 2>&1 | grep -q "runtime"
+          fi
           tar -czf "passbox-$TARGET.tar.gz" -C "target/$TARGET/release" passbox
 
       - uses: actions/upload-artifact@v7

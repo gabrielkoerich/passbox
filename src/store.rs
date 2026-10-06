@@ -277,11 +277,9 @@ impl Store {
     #[cfg(feature = "host")]
     pub fn unlock_with_yubikey(&self) -> Result<x25519::Identity> {
         let wrapped = fs::read(self.yubikey_wrap_path()).context("no YubiKey wrap")?;
-        let mut raw = crypto::decrypt(&wrapped, &[crate::yubikey::identity()?])
+        let raw = crypto::decrypt(&wrapped, &[crate::yubikey::identity()?])
             .context("the YubiKey refused, or it is not the one this was wrapped to")?;
-        let text = String::from_utf8(raw.clone()).context("the wrap is not a key")?;
-        raw.zeroize();
-        x25519::Identity::from_str(text.trim()).map_err(|e| anyhow!("bad store key: {e}"))
+        key_from_bytes(&raw)
     }
 
     pub fn recipient(&self) -> Result<x25519::Recipient> {
@@ -292,14 +290,12 @@ impl Store {
 
     pub fn unlock_with_passphrase(&self, passphrase: SecretString) -> Result<x25519::Identity> {
         let wrapped = fs::read(self.recovery_path()).context("no recovery wrap")?;
-        let mut raw = crypto::decrypt(
+        let raw = crypto::decrypt(
             &wrapped,
             &[Box::new(age::scrypt::Identity::new(passphrase))],
         )
         .context("wrong passphrase")?;
-        let text = String::from_utf8(raw.clone()).context("recovery wrap is not a key")?;
-        raw.zeroize();
-        x25519::Identity::from_str(text.trim()).map_err(|e| anyhow!("bad store key: {e}"))
+        key_from_bytes(&raw)
     }
 
     /// Bind the store key to this Mac's Secure Enclave. Neither step raises a prompt.
@@ -317,10 +313,8 @@ impl Store {
         let raw =
             fs::read(self.se_wrap_path()).context("no Secure Enclave wrap on this machine")?;
         let wrap: crate::se::SeWrap = serde_json::from_slice(&raw)?;
-        let mut plain = crate::se::unwrap(&wrap, reason)?;
-        let text = String::from_utf8(plain.clone()).context("the wrap is not a key")?;
-        plain.zeroize();
-        x25519::Identity::from_str(text.trim()).map_err(|e| anyhow!("bad store key: {e}"))
+        let plain = crate::se::unwrap(&wrap, reason)?;
+        key_from_bytes(&plain)
     }
 
     /// Ids with a secret file and no tombstone.
@@ -414,10 +408,20 @@ impl Store {
         }
     }
 
+    /* serde skips a field the struct does not name without building it, so the value is never
+    copied out of the decrypted buffer, which wipes itself when dropped. */
     pub fn names(&self, key: &x25519::Identity) -> Result<Vec<String>> {
+        #[derive(Deserialize)]
+        struct NameOnly {
+            name: String,
+        }
         let mut out = Vec::new();
         for id in self.ids()? {
-            out.push(self.load(&id, key)?.name.clone());
+            let raw = fs::read(self.secret_path(&id))?;
+            let plain = crypto::decrypt(&raw, &[Box::new(key.clone())])?;
+            let entry: NameOnly =
+                serde_json::from_slice(&plain).context("secret file is not valid json")?;
+            out.push(entry.name);
         }
         out.sort();
         Ok(out)
@@ -533,6 +537,11 @@ pub fn hostname() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn key_from_bytes(raw: &[u8]) -> Result<x25519::Identity> {
+    let text = std::str::from_utf8(raw).context("the wrap is not a key")?;
+    x25519::Identity::from_str(text.trim()).map_err(|e| anyhow!("bad store key: {e}"))
 }
 
 pub fn private_dir(path: &Path) -> Result<()> {
@@ -740,6 +749,7 @@ mod tests {
         Ok(PathBuf::from(path))
     }
 
+    #[cfg(feature = "host")]
     #[test]
     fn a_tampered_audit_line_is_refused() {
         let (_tmp, store, key) = store();
