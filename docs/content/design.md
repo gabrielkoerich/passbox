@@ -214,24 +214,15 @@ Cost: the winner is chosen by file modification time, so a tool that rewrites
 mtimes can pick the wrong one. The loser is still in `.versions`.
 Cost: a delete racing an edit can resurrect a secret.
 
-## Listing does not unlock the store
+## Listing costs a prompt
 
-Names live inside the ciphertext, so `ls` decrypted every entry to read them. That meant a
-prompt, and a store key left warm in the broker for five minutes afterwards: the largest
-privilege there is, spent on the smallest question.
+`ls` and the MCP `list_secrets` go through the broker like a read: approved with Touch ID, recorded in the audit log, and good for 300 seconds per agent.
 
-`~/.passbox/names` is a plaintext list, kept in step as the store changes. `ls` reads it and
-needs no key. `get` is untouched and still does.
+Rejected: a plaintext list at `~/.passbox/names`, shipped until 0.13.42. It let `ls` answer with no key, but any process running as the user could read every name with no prompt and no audit entry, which undid [No index](#no-index). Version 0.13.43 deletes the file on its first run.
 
-Cost: that one file names what you hold. It is local only, `0600`, skipped by sync and ignored
-by a git store, so a copy elsewhere still says nothing. Someone with this disk but not the
-Enclave learns what you have, not what it is. That is a real loss against the old behaviour and
-it is the price of not escalating to the whole store to answer "what do I have".
+Rejected: an encrypted list. Reading it needs the store key, which is the same cost as decrypting the secrets.
 
-A pull clears it, because a sync can bring names this machine has never decrypted. The next `ls`
-rebuilds it with one prompt.
-
-Rejected: an encrypted index. It would need the key to read, which is the thing being avoided.
+Cost: listing takes a fingerprint, and leaves the store key warm in the broker for 300 seconds. A namespace grant is refused before the prompt only when the key is already warm, and after it otherwise.
 
 ## Fields are a read-time parse
 

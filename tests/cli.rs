@@ -115,25 +115,36 @@ fn add_get_and_list() {
     );
 }
 
+/// The whole store directory, not only `store/`, which is how a plaintext name list once slipped by
 #[test]
 fn nothing_on_disk_reveals_a_name() {
     let cli = Cli::new();
+    // What a version before 0.13.43 left behind, which the next command must remove
+    std::fs::write(cli.path().join("names"), "github/token\n").unwrap();
     cli.run(&["add", "github/token"], Some("ghp_abc")).unwrap();
+    cli.run(&["ls"], None).unwrap();
+    cli.run(&["get", "github/token"], None).unwrap();
 
-    for entry in std::fs::read_dir(cli.path().join("store")).unwrap() {
-        let path = entry.unwrap().path();
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
-        assert!(!name.contains("github"), "{name} holds the secret name");
-        if path.is_file() {
-            let raw = std::fs::read(&path).unwrap();
-            let text = String::from_utf8_lossy(&raw);
+    let mut dirs = vec![cli.path().to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            assert!(!name.contains("github"), "{name} holds the secret name");
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).to_string();
             assert!(
                 !text.contains("github"),
-                "{name} holds the name in the clear"
+                "{} holds the name in the clear",
+                path.display()
             );
             assert!(
                 !text.contains("ghp_abc"),
-                "{name} holds the value in the clear"
+                "{} holds the value in the clear",
+                path.display()
             );
         }
     }

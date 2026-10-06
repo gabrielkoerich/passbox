@@ -69,8 +69,8 @@ The token goes to stdout and the covered names to stderr, so `$(...)` captures t
 **A namespace is refused.** `grant acme` would hand over everything under it to save one
 prompt, and it scopes on how the store is laid out rather than on what the job reads. Put
 everything at the root and a namespace rule protects nothing. The refusal lists the names so
-you can copy the ones you want, and costs no fingerprint: it is checked locally against the
-name index before the broker is involved.
+you can copy the ones you want. It costs no fingerprint when the broker's key is still warm
+from a recent read.
 
 Revoke by restarting the broker, which tears up every outstanding token:
 
@@ -141,15 +141,7 @@ parses the same layout.
 
 ## Listing names
 
-`ls` reads `~/.passbox/names`, a plaintext list kept in step as the store changes, so
-it needs no key and raises no prompt. `get` still does.
-
-That file names what you hold, and it is local only: sync skips it, a git store
-ignores it, it is `0600`. A sync that pulls deletes it, since a pull can bring names
-this machine has never decrypted, and the next `ls` rebuilds it with one prompt.
-
-Still do not use `ls` as a health check. Check the binary and that `~/.passbox/wraps`
-exists instead.
+`ls` goes through the broker like a read, so it raises a prompt once per agent every 300 seconds and is audited. Do not use it as a health check. Check the binary and that `~/.passbox/wraps` exists instead.
 
 ## Reading from another machine
 

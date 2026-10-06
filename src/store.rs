@@ -388,12 +388,6 @@ impl Store {
         Ok(None)
     }
 
-    /* A plaintext list of names, so listing does not need the store key.
-
-    Listing used to unlock the store, which is the largest privilege there is for the smallest
-    question, and left the key warm in the broker afterwards. The cost is that this one file
-    names what you hold. It never leaves the machine: sync skips it and a store that is a git
-    repo ignores it, so a copy elsewhere still says nothing. */
     /* A host to ask instead of a local broker. One line, `machine:port`, which a client writes
     once. A machine with no Enclave has nothing to unlock and no sensor to ask, so asking a
     machine that has both is the only thing it can usefully do. */
@@ -412,47 +406,9 @@ impl Store {
         (!line.is_empty()).then_some(line)
     }
 
-    pub fn index_path(&self) -> PathBuf {
-        self.dir.join("names")
-    }
-
-    pub fn index_read(&self) -> Option<Vec<String>> {
-        let text = fs::read_to_string(self.index_path()).ok()?;
-        let names: Vec<String> = text
-            .lines()
-            .map(str::to_string)
-            .filter(|l| !l.is_empty())
-            .collect();
-        (!names.is_empty()).then_some(names)
-    }
-
-    pub fn index_write(&self, names: &[String]) -> Result<()> {
-        let mut all = names.to_vec();
-        all.sort();
-        all.dedup();
-        write_private(&self.index_path(), all.join("\n").as_bytes())
-    }
-
-    fn index_edit(&self, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
-        // No index yet means nothing to keep in step, and `ls` will build one when it is asked
-        let Some(mut names) = self.index_read() else {
-            return Ok(());
-        };
-        f(&mut names);
-        self.index_write(&names)
-    }
-
-    pub fn index_add(&self, name: &str) -> Result<()> {
-        self.index_edit(|names| names.push(name.to_string()))
-    }
-
-    pub fn index_remove(&self, name: &str) -> Result<()> {
-        self.index_edit(|names| names.retain(|n| n != name))
-    }
-
-    /// A sync can bring names this machine has never seen, so the next `ls` rebuilds
-    pub fn index_clear(&self) -> Result<()> {
-        match fs::remove_file(self.index_path()) {
+    /// Versions before 0.13.43 kept every name in the clear here, so remove what they left
+    pub fn remove_name_index(&self) -> Result<()> {
+        match fs::remove_file(self.dir.join("names")) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
         }
@@ -478,7 +434,6 @@ impl Store {
         if tomb.exists() {
             fs::remove_file(tomb)?;
         }
-        self.index_add(&secret.name)?;
         Ok(())
     }
 
@@ -599,46 +554,16 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
-    /* The index exists so listing does not unlock the store. These pin the two halves of that:
-    it answers without a key, and it stays true as the store changes. */
     #[test]
-    fn the_index_answers_without_a_key() {
+    fn removing_an_old_name_index_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store {
             dir: dir.path().to_path_buf(),
         };
-        store
-            .index_write(&["b/two".to_string(), "a/one".to_string()])
-            .unwrap();
-        assert_eq!(
-            store.index_read().unwrap(),
-            vec!["a/one".to_string(), "b/two".to_string()]
-        );
-    }
-
-    #[test]
-    fn a_removed_name_leaves_the_index() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store {
-            dir: dir.path().to_path_buf(),
-        };
-        store
-            .index_write(&["a/one".to_string(), "b/two".to_string()])
-            .unwrap();
-        store.index_remove("a/one").unwrap();
-        assert_eq!(store.index_read().unwrap(), vec!["b/two".to_string()]);
-    }
-
-    #[test]
-    fn a_pull_invalidates_the_index() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store {
-            dir: dir.path().to_path_buf(),
-        };
-        store.index_write(&["a/one".to_string()]).unwrap();
-        store.index_clear().unwrap();
-        assert!(store.index_read().is_none());
-        store.index_clear().unwrap(); // clearing twice is not an error
+        std::fs::write(dir.path().join("names"), "a/one\n").unwrap();
+        store.remove_name_index().unwrap();
+        assert!(!dir.path().join("names").exists());
+        store.remove_name_index().unwrap();
     }
 
     fn store() -> (tempfile::TempDir, Store, x25519::Identity) {

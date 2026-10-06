@@ -162,10 +162,6 @@ pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
             _ => {}
         }
     }
-    // A pull can bring names this machine has never decrypted, so the list is no longer true
-    if report.pulled > 0 {
-        store.index_clear()?;
-    }
     Ok(report)
 }
 

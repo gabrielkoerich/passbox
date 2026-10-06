@@ -274,7 +274,6 @@ impl Broker {
         let outcome = if asked { "approved" } else { "within window" };
         self.audit(&key, &request.agent, "<list>", outcome, caller)?;
         let names = self.store.names(&key)?;
-        self.store.index_write(&names)?;
         Ok(names.join("\n"))
     }
 
@@ -291,10 +290,9 @@ impl Broker {
             eprintln!("capped {asked}s at {MAX_GRANT_SECS}s");
         }
 
-        /* Check the names before asking for a finger. The index holds them in the clear, so a
-        grant that names a namespace can be refused without spending an approval on it. */
-        if let Some(known) = self.store.index_read() {
-            reject_namespaces(&request.names, &known)?;
+        // A key still warm from an earlier read refuses a namespace without spending a prompt
+        if let Some(key) = self.cached_key().cloned() {
+            reject_namespaces(&request.names, &self.store.names(&key)?)?;
         }
 
         let reason = format!(
@@ -305,10 +303,7 @@ impl Broker {
         self.ask(&reason)?;
         let key = self.key.clone().expect("just unlocked");
 
-        // And again with the real names, for a store with no index yet
         let all = self.store.names(&key)?;
-        // Decrypting them is the expensive part and it is already done, so leave the list behind
-        self.store.index_write(&all)?;
         reject_namespaces(&request.names, &all)?;
         let mut wanted = request.names.clone();
         wanted.sort();

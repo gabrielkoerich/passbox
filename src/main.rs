@@ -152,6 +152,7 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let store = Store::open()?;
+    store.remove_name_index()?;
 
     match cli.command {
         Command::Init => init(&store),
@@ -850,25 +851,6 @@ pub fn run_child(
 /* The token goes to stdout and the rest to stderr, so `TOKEN=$(passbox grant acme/api-key)` picks up
 the token alone while a person still sees what it covers. */
 fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
-    /* Refuse a namespace before anything else, so it costs neither a round trip nor a
-    fingerprint. The names are in the clear locally, which is what the index is for. */
-    if let Some(known) = store.index_read() {
-        for pattern in names {
-            if known.iter().any(|n| n == pattern) {
-                continue;
-            }
-            let under = store::select(&known, Some(pattern));
-            if under.is_empty() {
-                bail!("no secret named {pattern}");
-            }
-            bail!(
-                "{pattern} is a namespace holding {} secrets, ask for the ones this needs:\n  {}",
-                under.len(),
-                under.join("\n  ")
-            );
-        }
-    }
-
     // A token lives in the broker, and a passphrase store reads without one at all
     if headless() || !store.has_se_wrap() {
         bail!("a token needs the broker, which this store does not use");
@@ -891,15 +873,8 @@ fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
 }
 
 fn ls(store: &Store) -> Result<()> {
-    // The index answers without the key. Absent, one prompt builds it and later runs are free
-    let names = match store.index_read() {
-        Some(names) => names,
-        None => {
-            let names = agent_list_names(store, &agent())?;
-            store.index_write(&names)?;
-            names
-        }
-    };
+    // Through the broker like a read, so listing is approved and audited
+    let names = agent_list_names(store, &agent())?;
     let mut out = std::io::stdout();
     if out.is_terminal() {
         out.write_all(tree::render(&names, true).as_bytes())?;
@@ -917,7 +892,6 @@ fn rm(store: &Store, name: &str) -> Result<()> {
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
     store.delete(&id)?;
-    store.index_remove(name)?;
     store.prune_tombs()?;
     eprintln!("deleted {name}, recoverable with `passbox restore {name}`");
     Ok(())
