@@ -598,7 +598,7 @@ passbox was built next to [pass](https://www.passwordstore.org), and both can st
 | Platforms | anywhere GPG runs | macOS holds the store, Linux asks it |
 | Ecosystem | browser, mobile, dmenu, otp, import | Python, Rust and TypeScript clients, and an MCP server |
 | Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on, then a passphrase or a YubiKey opens it |
-| Reading the source | 721 lines of shell | 3,798 lines of Rust and Swift, plus a daemon |
+| Reading the source | 721 lines of shell | about 5,100 lines of Rust and Swift, plus a daemon |
 
 The first eight rows are why passbox exists. In the rest, `pass` is the better tool: it is older, it runs everywhere, and you can lose your only machine without losing your secrets.
 

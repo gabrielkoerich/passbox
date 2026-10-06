@@ -24,7 +24,7 @@ Rejected: a single `index.age` mapping names to ids. It changes on every write, 
 
 Rejected: hashing the name into the filename. Anyone holding the directory could hash a wordlist against it.
 
-Cost: listing names decrypts every file. At a few hundred secrets that is milliseconds, and the broker caches the map while it holds the key.
+Cost: listing names decrypts every file. At a few hundred secrets that is milliseconds, and the broker reuses the key it already holds rather than prompting again.
 
 ## One store key, several wraps
 
