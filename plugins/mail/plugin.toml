@@ -1,5 +1,6 @@
 name = "mail"
 description = "Apple Mail: read, search and send"
+version = "1.0.0"
 
 [[tool]]
 name = "recent"

@@ -239,6 +239,8 @@ A tool whose command is missing is refused before it prompts, with the install l
 
 Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `mode` (`open`, `window`, `always`, `never`), its `params`, and a `run` command where `{param}` is one whole argument.
 
+Each plugin carries a `version`. `passbox plugin update <name|dir>` refreshes an installed plugin, and `plugin list` flags a first-party plugin whose bundled version is newer than the installed copy, which is what happens after a `brew upgrade`.
+
 ## Backup and sync
 
 git carries the encrypted secrets and nothing that opens them.

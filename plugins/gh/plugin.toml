@@ -1,5 +1,6 @@
 name = "gh"
 description = "Gated GitHub pull request and issue creation, in the current repository"
+version = "1.0.0"
 requires = "gh"
 install = "brew install gh"
 cwd = "caller"

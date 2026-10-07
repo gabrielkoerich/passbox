@@ -15,6 +15,9 @@ use std::process::Command;
 pub struct Manifest {
     pub name: String,
     pub description: String,
+    /// Bumped when the plugin's behaviour changes, so a stale install can be spotted
+    #[serde(default)]
+    pub version: Option<String>,
     /// A command the plugin shells out to, which must be on PATH
     #[serde(default)]
     pub requires: Option<String>,
@@ -73,6 +76,10 @@ impl Manifest {
     /// Whether tools run where they were invoked rather than in the plugin directory
     pub fn runs_in_caller_dir(&self) -> bool {
         self.cwd.as_deref() == Some("caller")
+    }
+
+    pub fn version(&self) -> &str {
+        self.version.as_deref().unwrap_or("0")
     }
 
     pub fn tool(&self, action: &str) -> Option<&Tool> {

@@ -165,6 +165,50 @@ fn a_first_party_plugin_installs_by_name() {
 }
 
 #[test]
+fn plugin_update_overwrites_an_installed_plugin() {
+    let cli = Cli::new();
+    let src = tempfile::tempdir().unwrap();
+    let write = |version: &str, desc: &str| {
+        std::fs::write(
+            src.path().join("plugin.toml"),
+            format!(
+                "name = \"demo\"\ndescription = \"{desc}\"\nversion = \"{version}\"\n\n\
+                 [[tool]]\nname = \"say\"\nmode = \"open\"\nrun = [\"echo\", \"hi\"]\n"
+            ),
+        )
+        .unwrap();
+    };
+    write("1.0.0", "one");
+    cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
+    assert!(
+        cli.run(&["plugin", "add", src.path().to_str().unwrap()], None)
+            .unwrap_err()
+            .contains("already installed")
+    );
+    write("2.0.0", "two");
+    cli.note(&["plugin", "update", src.path().to_str().unwrap()], None);
+    assert!(
+        cli.run(&["plugin", "list"], None)
+            .unwrap()
+            .contains("demo 2.0.0")
+    );
+}
+
+#[test]
+fn a_stale_first_party_plugin_is_flagged_for_update() {
+    let cli = Cli::new();
+    cli.note(&["plugin", "add", "things3"], None);
+    // Rewrite the installed version to an older one, as a brew upgrade would leave it behind
+    let toml = cli.path().join("plugins/things3/plugin.toml");
+    let older = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("version = \"1.0.0\"", "version = \"0.1.0\"");
+    std::fs::write(&toml, older).unwrap();
+    let list = cli.run(&["plugin", "list"], None).unwrap();
+    assert!(list.contains("update available: 0.1.0 -> 1.0.0"), "{list}");
+}
+
+#[test]
 fn a_caller_cwd_plugin_runs_where_it_was_invoked() {
     let cli = Cli::new();
     let src = tempfile::tempdir().unwrap();

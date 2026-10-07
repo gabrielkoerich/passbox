@@ -848,10 +848,11 @@ pub fn agent_list_names(store: &Store, agent: &str) -> Result<Vec<String>> {
 fn plugin_cmd(store: &Store, args: &[String]) -> Result<()> {
     let (head, rest) = args
         .split_first()
-        .context("usage: passbox plugin <list|add|remove|NAME> ...")?;
+        .context("usage: passbox plugin <list|add|update|remove|NAME> ...")?;
     match head.as_str() {
         "list" => plugin_list(store),
-        "add" => plugin_add(store, rest),
+        "add" => plugin_install(store, rest, false),
+        "update" => plugin_install(store, rest, true),
         "remove" => plugin_remove(store, rest),
         name => plugin_run(store, name, rest),
     }
@@ -865,7 +866,13 @@ fn plugin_list(store: &Store) -> Result<()> {
         return Ok(());
     }
     for manifest in plugins {
-        println!("{}  {}", manifest.name, manifest.description);
+        println!(
+            "{} {}  {}{}",
+            manifest.name,
+            manifest.version(),
+            manifest.description,
+            stale_note(&manifest)
+        );
         for tool in &manifest.tools {
             println!(
                 "  {} {} [{:?}]  {}",
@@ -876,24 +883,59 @@ fn plugin_list(store: &Store) -> Result<()> {
     Ok(())
 }
 
+/// A first-party plugin whose bundled version differs from the installed one can be refreshed
+#[cfg(feature = "host")]
+fn stale_note(manifest: &plugin::Manifest) -> String {
+    let Some(files) = first_party(&manifest.name) else {
+        return String::new();
+    };
+    let Some(bundled) = files
+        .iter()
+        .find(|(name, _)| *name == "plugin.toml")
+        .and_then(|(_, toml)| toml::from_str::<plugin::Manifest>(toml).ok())
+    else {
+        return String::new();
+    };
+    if bundled.version() != manifest.version() {
+        return format!(
+            "  (update available: {} -> {}, run `passbox plugin update {}`)",
+            manifest.version(),
+            bundled.version(),
+            manifest.name
+        );
+    }
+    String::new()
+}
+
 /* A plugin is a directory holding plugin.toml. Installing copies it under the store so a later
 edit to the source does not silently change what runs. The manifest is parsed first, so a broken
 one is refused before anything is copied. */
 #[cfg(feature = "host")]
-fn plugin_add(store: &Store, rest: &[String]) -> Result<()> {
+fn plugin_install(store: &Store, rest: &[String], overwrite: bool) -> Result<()> {
+    let verb = if overwrite { "update" } else { "add" };
     let arg = rest
         .first()
-        .context("usage: passbox plugin add <name|dir>")?;
+        .with_context(|| format!("usage: passbox plugin {verb} <name|dir>"))?;
+
+    // The destination is wiped before an overwrite, so a renamed or dropped file does not linger
+    let fresh = |to: &std::path::Path| -> Result<()> {
+        if to.exists() {
+            if !overwrite {
+                bail!("already installed, run `passbox plugin update` to refresh it");
+            }
+            std::fs::remove_dir_all(to)?;
+        }
+        Ok(())
+    };
+
     if let Some(files) = first_party(arg) {
         let to = store.plugins_dir().join(arg);
-        if to.exists() {
-            bail!("{arg} is already installed, remove it first");
-        }
+        fresh(&to)?;
         std::fs::create_dir_all(&to)?;
         for (name, contents) in files {
             std::fs::write(to.join(name), contents)?;
         }
-        eprintln!("installed {arg}");
+        eprintln!("{}ed {arg}", if overwrite { "updat" } else { "install" });
         return Ok(());
     }
 
@@ -902,13 +944,13 @@ fn plugin_add(store: &Store, rest: &[String]) -> Result<()> {
         .with_context(|| format!("no first-party plugin {arg}, and no plugin.toml in {arg}"))?;
     let manifest: plugin::Manifest = toml::from_str(&text).context("plugin.toml")?;
     let to = store.plugins_dir().join(&manifest.name);
-    if to.exists() {
-        bail!("{} is already installed, remove it first", manifest.name);
-    }
+    fresh(&to)?;
     copy_dir(from, &to)?;
     eprintln!(
-        "installed {} with {} tool(s)",
+        "{}ed {} {} with {} tool(s)",
+        if overwrite { "updat" } else { "install" },
         manifest.name,
+        manifest.version(),
         manifest.tools.len()
     );
     Ok(())
