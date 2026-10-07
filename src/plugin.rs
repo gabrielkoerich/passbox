@@ -236,6 +236,39 @@ mod tests {
     }
 
     #[test]
+    fn first_party_write_tools_build_the_expected_command() {
+        fn built(plugin: &str, action: &str, pairs: &[(&str, &str)]) -> Vec<String> {
+            let text = std::fs::read_to_string(format!("plugins/{plugin}/plugin.toml")).unwrap();
+            let manifest: Manifest = toml::from_str(&text).unwrap();
+            let cmd = manifest
+                .tool(action)
+                .unwrap()
+                .command(&args(pairs))
+                .unwrap();
+            let mut out = vec![cmd.get_program().to_string_lossy().into_owned()];
+            out.extend(cmd.get_args().map(|a| a.to_string_lossy().into_owned()));
+            out
+        }
+        assert_eq!(built("git", "push", &[]), vec!["git", "push"]);
+        assert_eq!(
+            built("gh", "pr", &[("title", "T"), ("body", "B")]),
+            vec!["gh", "pr", "create", "--title", "T", "--body", "B"]
+        );
+        assert_eq!(
+            built("things3", "add", &[("title", "buy milk")]),
+            vec!["things", "add", "--notes", "", "--", "buy milk"]
+        );
+        assert_eq!(
+            built(
+                "mail",
+                "send",
+                &[("to", "a@b"), ("subject", "S"), ("body", "hi")]
+            ),
+            vec!["osascript", "send.applescript", "a@b", "S", "hi"]
+        );
+    }
+
+    #[test]
     fn a_literal_brace_that_is_not_a_parameter_passes_through() {
         // AppleScript records use braces, so a literal {a, b} must survive untouched
         let mut t = tool();
