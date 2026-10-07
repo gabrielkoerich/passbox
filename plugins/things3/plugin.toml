@@ -1,5 +1,7 @@
 name = "things3"
 description = "Things 3 todos, through the things CLI"
+requires = "things"
+install = "brew install ossianhempel/tap/things3-cli"
 
 [[tool]]
 name = "add"

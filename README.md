@@ -199,6 +199,38 @@ passbox audit --tail 50
 
 Every decision is logged, encrypted, one record per line.
 
+## Plugins
+
+A plugin adds gated actions on a local app, such as Mail or Things 3. Each action is a tool with an approval mode, so an agent runs it behind the same Touch ID prompt and audit log as a secret read.
+
+```bash
+passbox plugin add mail                         # first-party, bundled in the binary
+passbox plugin list                             # installed plugins and their tools
+passbox plugin mail recent --count 5            # run a tool, approved and audited
+passbox plugin remove mail
+```
+
+The same tools appear over MCP as `mail.recent`, `mail.send` and so on, so an agent calls them through the server. The broker reads the manifest for the authoritative mode, approves and audits; the caller runs the command, so it keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
+
+First-party plugins:
+
+| Plugin | Needs | Tools |
+|---|---|---|
+| `mail` | Mail.app, nothing to install | `recent`, `search`, `send` |
+| `things3` | the `things` CLI | `add`, `inbox`, `today`, `search` |
+
+`mail` drives Mail through `osascript`, which ships with macOS. The first read raises the macOS automation prompt for Mail once.
+
+`things3` shells out to the `things` CLI, so that has to be installed:
+
+```bash
+brew install ossianhempel/tap/things3-cli
+```
+
+A tool whose command is missing is refused before it prompts, with the install line above.
+
+Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `mode` (`open`, `window`, `always`, `never`), its `params`, and a `run` command where `{param}` is one whole argument.
+
 ## Backup and sync
 
 git carries the encrypted secrets and nothing that opens them.

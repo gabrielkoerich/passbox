@@ -968,6 +968,7 @@ fn plugin_run(store: &Store, name: &str, rest: &[String]) -> Result<()> {
     let tool = manifest
         .tool(action)
         .with_context(|| format!("{name} has no action {action}"))?;
+    manifest.ensure_available()?;
     let mut command = tool.command(&parse_params(params)?)?;
     command.current_dir(store.plugins_dir().join(name));
 

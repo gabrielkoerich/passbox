@@ -192,6 +192,7 @@ fn plugin_call(store: &Store, agent: &str, name: &str, args: &Value) -> Result<S
     let tool = manifest
         .tool(action)
         .ok_or_else(|| anyhow!("no tool named {name}"))?;
+    manifest.ensure_available()?;
     let mut bound = std::collections::HashMap::new();
     if let Some(object) = args.as_object() {
         for (key, value) in object {

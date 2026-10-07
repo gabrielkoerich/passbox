@@ -15,6 +15,12 @@ use std::process::Command;
 pub struct Manifest {
     pub name: String,
     pub description: String,
+    /// A command the plugin shells out to, which must be on PATH
+    #[serde(default)]
+    pub requires: Option<String>,
+    /// How to get that command, shown when it is missing
+    #[serde(default)]
+    pub install: Option<String>,
     #[serde(default, rename = "tool")]
     pub tools: Vec<Tool>,
 }
@@ -32,7 +38,35 @@ pub struct Tool {
     pub run: Vec<String>,
 }
 
+/// Whether a command resolves, by its own path or on PATH, without running it
+fn on_path(command: &str) -> bool {
+    if command.contains('/') {
+        return std::path::Path::new(command).exists();
+    }
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(command).exists()))
+        .unwrap_or(false)
+}
+
 impl Manifest {
+    /// Refuse before prompting when a declared command is missing, and say how to get it
+    pub fn ensure_available(&self) -> Result<()> {
+        if let Some(command) = &self.requires
+            && !on_path(command)
+        {
+            let hint = self
+                .install
+                .as_deref()
+                .map(|i| format!("\ninstall it with: {i}"))
+                .unwrap_or_default();
+            bail!(
+                "the {} plugin needs `{command}`, which is not on PATH{hint}",
+                self.name
+            );
+        }
+        Ok(())
+    }
+
     pub fn tool(&self, action: &str) -> Option<&Tool> {
         self.tools.iter().find(|t| t.name == action)
     }

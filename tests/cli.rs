@@ -164,6 +164,23 @@ fn a_first_party_plugin_installs_by_name() {
     );
 }
 
+#[test]
+fn a_missing_required_command_is_refused_with_an_install_hint() {
+    let cli = Cli::new();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        "name = \"needs\"\ndescription = \"x\"\n\
+         requires = \"no-such-command-xyz\"\ninstall = \"brew install foo\"\n\n\
+         [[tool]]\nname = \"go\"\nmode = \"open\"\nrun = [\"echo\", \"hi\"]\n",
+    )
+    .unwrap();
+    cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
+    let err = cli.run(&["plugin", "needs", "go"], None).unwrap_err();
+    assert!(err.contains("needs `no-such-command-xyz`"), "{err}");
+    assert!(err.contains("brew install foo"), "{err}");
+}
+
 /// The whole store directory, not only `store/`, which is how a plaintext name list once slipped by
 #[test]
 fn nothing_on_disk_reveals_a_name() {
