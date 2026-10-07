@@ -216,16 +216,20 @@ First-party plugins:
 
 | Plugin | Needs | Tools |
 |---|---|---|
-| `mail` | Mail.app, nothing to install | `recent`, `search`, `send` |
+| `mail` | Mail.app, nothing to install | `recent`, `search`, `attachments`, `send` |
+| `calendar` | the `icalBuddy` CLI | `today`, `agenda` |
 | `things3` | the `things` CLI | `add`, `inbox`, `today`, `search` |
 
 `mail` drives Mail through `osascript`, which ships with macOS. The first read raises the macOS automation prompt for Mail once.
 
-`things3` shells out to the `things` CLI, so that has to be installed:
+`calendar` and `things3` shell out to a CLI, so each has to be installed:
 
 ```bash
-brew install ossianhempel/tap/things3-cli
+brew install ical-buddy                          # calendar
+brew install ossianhempel/tap/things3-cli        # things3
 ```
+
+`calendar` uses icalBuddy rather than raw AppleScript, because AppleScript reports a recurring event's series start instead of the occurrence date.
 
 A tool whose command is missing is refused before it prompts, with the install line above.
 

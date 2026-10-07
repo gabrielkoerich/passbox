@@ -938,6 +938,13 @@ fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
                 include_str!("../plugins/mail/send.applescript"),
             ),
         ]),
+        "calendar" => Some(&[
+            (
+                "plugin.toml",
+                include_str!("../plugins/calendar/plugin.toml"),
+            ),
+            ("agenda.sh", include_str!("../plugins/calendar/agenda.sh")),
+        ]),
         "things3" => Some(&[(
             "plugin.toml",
             include_str!("../plugins/things3/plugin.toml"),
