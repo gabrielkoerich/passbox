@@ -6,6 +6,8 @@ agent and hand back only its output, so the value never enters the transcript. *
 
 use crate::store::Store;
 use crate::{agent_read_secret, run_child};
+#[cfg(feature = "host")]
+use anyhow::Context;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -46,7 +48,7 @@ pub fn serve(store: Store) -> Result<()> {
                 }
                 Ok(initialize(&params))
             }
-            "tools/list" => Ok(tools()),
+            "tools/list" => Ok(tools(&store)),
             "tools/call" => Ok(call(&store, &agent, &params)),
             "ping" => Ok(json!({})),
             other => Err((-32601, format!("no method named {other}"))),
@@ -86,15 +88,17 @@ fn initialize(params: &Value) -> Value {
     })
 }
 
-fn tools() -> Value {
-    json!({ "tools": [
-        {
+fn tools(store: &Store) -> Value {
+    let _ = store;
+    #[cfg_attr(not(feature = "host"), allow(unused_mut))]
+    let mut list = vec![
+        json!({
             "name": "list_secrets",
             "description": "List the names of available secrets. Raises a Touch ID prompt unless \
                             one was already approved inside the window. Returns names only.",
             "inputSchema": { "type": "object", "properties": {} }
-        },
-        {
+        }),
+        json!({
             "name": "run_with_secret",
             "description": "Run a command with a secret injected, and return only the command's \
                             output. The secret value is never returned. Use this instead of \
@@ -116,8 +120,33 @@ fn tools() -> Value {
                 },
                 "required": ["secret", "command"]
             }
+        }),
+    ];
+    #[cfg(feature = "host")]
+    for manifest in crate::plugin::installed(store).unwrap_or_default() {
+        for tool in &manifest.tools {
+            list.push(plugin_tool_schema(&manifest.name, tool));
         }
-    ]})
+    }
+    json!({ "tools": list })
+}
+
+#[cfg(feature = "host")]
+fn plugin_tool_schema(plugin: &str, tool: &crate::plugin::Tool) -> Value {
+    let mut properties = serde_json::Map::new();
+    let mut required = Vec::new();
+    for param in &tool.params {
+        let bare = param.trim_end_matches('?');
+        properties.insert(bare.to_string(), json!({ "type": "string" }));
+        if !param.ends_with('?') {
+            required.push(bare.to_string());
+        }
+    }
+    json!({
+        "name": format!("{plugin}.{}", tool.name),
+        "description": tool.description,
+        "inputSchema": { "type": "object", "properties": properties, "required": required }
+    })
 }
 
 fn call(store: &Store, agent: &str, params: &Value) -> Value {
@@ -130,7 +159,7 @@ fn call(store: &Store, agent: &str, params: &Value) -> Value {
     let outcome = match name {
         "list_secrets" => list_secrets(store, agent),
         "run_with_secret" => run_with_secret(store, agent, &args),
-        other => Err(anyhow!("no tool named {other}")),
+        other => plugin_call(store, agent, other, &args),
     };
 
     // A tool failure is reported in the result, so the model can read it and adjust
@@ -149,6 +178,56 @@ fn list_secrets(store: &Store, agent: &str) -> Result<String> {
         return Ok("no secrets yet".to_string());
     }
     Ok(names.join("\n"))
+}
+
+/* A plugin tool call is approved and audited by the broker, then run here so it keeps this
+process's GUI session. Its output is the result, so there is nothing to scrub: a plugin injects
+no secret. */
+#[cfg(feature = "host")]
+fn plugin_call(store: &Store, agent: &str, name: &str, args: &Value) -> Result<String> {
+    let (plugin, action) = name
+        .split_once('.')
+        .ok_or_else(|| anyhow!("no tool named {name}"))?;
+    let manifest = crate::plugin::load(store, plugin)?;
+    let tool = manifest
+        .tool(action)
+        .ok_or_else(|| anyhow!("no tool named {name}"))?;
+    let mut bound = std::collections::HashMap::new();
+    if let Some(object) = args.as_object() {
+        for (key, value) in object {
+            let text = value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string());
+            bound.insert(key.clone(), text);
+        }
+    }
+    let mut command = tool.command(&bound)?;
+    crate::broker::plugin_approve(store, plugin, action, agent)?;
+    let output = command
+        .output()
+        .with_context(|| format!("could not run {name}"))?;
+    Ok(render_output(&output))
+}
+
+#[cfg(not(feature = "host"))]
+fn plugin_call(_store: &Store, _agent: &str, name: &str, _args: &Value) -> Result<String> {
+    Err(anyhow!("no tool named {name}"))
+}
+
+/// stdout, then stderr and the exit code when the command failed, which is what a result shows
+fn render_output(output: &std::process::Output) -> String {
+    let mut text = String::new();
+    text.push_str(&String::from_utf8_lossy(&output.stdout));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        text.push_str("\nstderr:\n");
+        text.push_str(&stderr);
+    }
+    if !output.status.success() {
+        text.push_str(&format!("\nexit: {}", output.status.code().unwrap_or(1)));
+    }
+    text
 }
 
 fn run_with_secret(store: &Store, agent: &str, args: &Value) -> Result<String> {
@@ -170,18 +249,7 @@ fn run_with_secret(store: &Store, agent: &str, args: &Value) -> Result<String> {
 
     let value = agent_read_secret(store, secret, agent)?;
     let output = run_child(&command, env_var, &value)?;
-
-    let mut text = String::new();
-    text.push_str(&String::from_utf8_lossy(&output.stdout));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stderr.trim().is_empty() {
-        text.push_str("\nstderr:\n");
-        text.push_str(&stderr);
-    }
-    if !output.status.success() {
-        text.push_str(&format!("\nexit: {}", output.status.code().unwrap_or(1)));
-    }
-    Ok(redact(&text, &value))
+    Ok(redact(&render_output(&output), &value))
 }
 
 /* A command that echoes its own secret would otherwise put it straight into the transcript.
@@ -259,7 +327,11 @@ mod tests {
 
     #[test]
     fn the_tool_list_offers_no_way_to_read_a_value() {
-        let listed = tools();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store {
+            dir: tmp.path().to_path_buf(),
+        };
+        let listed = tools(&store);
         let names: Vec<&str> = listed["tools"]
             .as_array()
             .unwrap()
@@ -267,6 +339,33 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, vec!["list_secrets", "run_with_secret"]);
+    }
+
+    #[test]
+    fn an_installed_plugin_adds_its_tools_to_the_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store {
+            dir: tmp.path().to_path_buf(),
+        };
+        let dir = store.plugins_dir().join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.toml"),
+            "name = \"demo\"\ndescription = \"x\"\n\n\
+             [[tool]]\nname = \"say\"\nmode = \"open\"\nparams = [\"msg\", \"extra?\"]\n\
+             run = [\"printf\", \"{msg}\"]\n",
+        )
+        .unwrap();
+
+        let listed = tools(&store);
+        let say = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "demo.say")
+            .expect("demo.say listed");
+        assert_eq!(say["inputSchema"]["required"], json!(["msg"]));
+        assert!(say["inputSchema"]["properties"]["extra"].is_object());
     }
 
     #[test]
