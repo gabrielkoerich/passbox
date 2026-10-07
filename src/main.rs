@@ -881,9 +881,25 @@ edit to the source does not silently change what runs. The manifest is parsed fi
 one is refused before anything is copied. */
 #[cfg(feature = "host")]
 fn plugin_add(store: &Store, rest: &[String]) -> Result<()> {
-    let from = std::path::Path::new(rest.first().context("usage: passbox plugin add <dir>")?);
+    let arg = rest
+        .first()
+        .context("usage: passbox plugin add <name|dir>")?;
+    if let Some(files) = first_party(arg) {
+        let to = store.plugins_dir().join(arg);
+        if to.exists() {
+            bail!("{arg} is already installed, remove it first");
+        }
+        std::fs::create_dir_all(&to)?;
+        for (name, contents) in files {
+            std::fs::write(to.join(name), contents)?;
+        }
+        eprintln!("installed {arg}");
+        return Ok(());
+    }
+
+    let from = std::path::Path::new(arg);
     let text = std::fs::read_to_string(from.join("plugin.toml"))
-        .with_context(|| format!("no plugin.toml in {}", from.display()))?;
+        .with_context(|| format!("no first-party plugin {arg}, and no plugin.toml in {arg}"))?;
     let manifest: plugin::Manifest = toml::from_str(&text).context("plugin.toml")?;
     let to = store.plugins_dir().join(&manifest.name);
     if to.exists() {
@@ -896,6 +912,34 @@ fn plugin_add(store: &Store, rest: &[String]) -> Result<()> {
         manifest.tools.len()
     );
     Ok(())
+}
+
+/* The first-party plugins ship inside the binary, so `plugin add mail` needs no network and no
+repo checkout. Each entry is one file written into the plugin directory on install */
+#[cfg(feature = "host")]
+fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    match name {
+        "mail" => Some(&[
+            ("plugin.toml", include_str!("../plugins/mail/plugin.toml")),
+            (
+                "recent.applescript",
+                include_str!("../plugins/mail/recent.applescript"),
+            ),
+            (
+                "search.applescript",
+                include_str!("../plugins/mail/search.applescript"),
+            ),
+            (
+                "send.applescript",
+                include_str!("../plugins/mail/send.applescript"),
+            ),
+        ]),
+        "things3" => Some(&[(
+            "plugin.toml",
+            include_str!("../plugins/things3/plugin.toml"),
+        )]),
+        _ => None,
+    }
 }
 
 #[cfg(feature = "host")]
@@ -925,6 +969,7 @@ fn plugin_run(store: &Store, name: &str, rest: &[String]) -> Result<()> {
         .tool(action)
         .with_context(|| format!("{name} has no action {action}"))?;
     let mut command = tool.command(&parse_params(params)?)?;
+    command.current_dir(store.plugins_dir().join(name));
 
     // The broker holds the biometric gate and the audit log. Without it, enforce the mode here
     // so a headless or passphrase store cannot run a forbidden or gated action unchecked

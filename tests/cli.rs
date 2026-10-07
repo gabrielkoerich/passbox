@@ -149,6 +149,21 @@ fn a_plugin_installs_runs_and_is_removed() {
     assert!(!cli.run(&["plugin", "list"], None).unwrap().contains("demo"));
 }
 
+#[test]
+fn a_first_party_plugin_installs_by_name() {
+    let cli = Cli::new();
+    cli.note(&["plugin", "add", "things3"], None);
+    let list = cli.run(&["plugin", "list"], None).unwrap();
+    assert!(list.contains("things3 add"), "{list}");
+    assert!(list.contains("things3 search"), "{list}");
+    // a second install is refused rather than silently overwriting
+    assert!(
+        cli.run(&["plugin", "add", "things3"], None)
+            .unwrap_err()
+            .contains("already installed")
+    );
+}
+
 /// The whole store directory, not only `store/`, which is how a plaintext name list once slipped by
 #[test]
 fn nothing_on_disk_reveals_a_name() {
