@@ -926,10 +926,18 @@ fn plugin_run(store: &Store, name: &str, rest: &[String]) -> Result<()> {
         .with_context(|| format!("{name} has no action {action}"))?;
     let mut command = tool.command(&parse_params(params)?)?;
 
-    // The broker holds the biometric gate. A headless or passphrase store has no sensor to ask,
-    // so the passphrase already typed is the gate, the same as for a read
+    // The broker holds the biometric gate and the audit log. Without it, enforce the mode here
+    // so a headless or passphrase store cannot run a forbidden or gated action unchecked
     if store.host().is_some() || (!headless() && store.has_se_wrap()) {
         broker::plugin_approve(store, name, action, &agent())?;
+    } else {
+        match tool.mode {
+            Mode::Never => bail!("{name} {action} is marked never, refusing"),
+            Mode::Open => {}
+            Mode::Window | Mode::Always => {
+                unlock(store, &format!("run {name} {action}"))?;
+            }
+        }
     }
     let status = command
         .status()

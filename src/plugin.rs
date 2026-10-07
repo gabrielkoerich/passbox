@@ -67,28 +67,32 @@ impl Tool {
         let (program, rest) = self.run.split_first().context("tool has no command")?;
         let mut command = Command::new(program);
         for part in rest {
-            command.arg(fill(part, args));
+            command.arg(self.bind(part, args)?);
         }
         Ok(command)
     }
-}
 
-/// Replace every `{name}` with its bound value, or the empty string for an absent optional
-fn fill(template: &str, args: &HashMap<String, String>) -> String {
-    let mut out = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(start) = rest.find('{') {
-        out.push_str(&rest[..start]);
-        let Some(end) = rest[start..].find('}') else {
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let key = &rest[start + 1..start + end];
-        out.push_str(args.get(key).map(String::as_str).unwrap_or(""));
-        rest = &rest[start + end + 1..];
+    /* A placeholder stands for a whole argument, never part of one. Each value becomes one argv
+    element, so a plugin passes it to its program as data, such as `osascript script.scpt {body}`
+    read through `on run argv`. Interpolating into a larger string would let a value break out and
+    become code when an interpreter parses it, which is the injection this refuses. */
+    fn bind(&self, part: &str, args: &HashMap<String, String>) -> Result<String> {
+        if let Some(name) = part.strip_prefix('{').and_then(|p| p.strip_suffix('}'))
+            && self.known(name)
+        {
+            return Ok(args.get(name).cloned().unwrap_or_default());
+        }
+        for param in &self.params {
+            let bare = param.trim_end_matches('?');
+            if part.contains(&format!("{{{bare}}}")) {
+                bail!(
+                    "{}: {bare} must be a whole argument, not embedded in {part:?}",
+                    self.name
+                );
+            }
+        }
+        Ok(part.to_string())
     }
-    out.push_str(rest);
-    out
 }
 
 pub fn load(store: &Store, name: &str) -> Result<Manifest> {
@@ -133,8 +137,10 @@ mod tests {
             params: vec!["to".into(), "subject".into(), "body?".into()],
             run: vec![
                 "osascript".into(),
-                "-e".into(),
-                "to={to} body={body}".into(),
+                "send.scpt".into(),
+                "{to}".into(),
+                "{subject}".into(),
+                "{body}".into(),
             ],
         }
     }
@@ -147,15 +153,30 @@ mod tests {
     }
 
     #[test]
-    fn placeholders_are_filled_and_absent_optionals_blank() {
+    fn each_value_is_a_whole_argument_and_an_absent_optional_is_empty() {
         let cmd = tool()
-            .command(&args(&[("to", "a@b.com"), ("subject", "hi")]))
+            .command(&args(&[("to", "a@b.com"), ("subject", "hi; rm -rf ~")]))
             .unwrap();
         let rendered: Vec<_> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(rendered, vec!["-e", "to=a@b.com body="]);
+        // The value with shell metacharacters is one argv element, never parsed, body blank
+        assert_eq!(rendered, vec!["send.scpt", "a@b.com", "hi; rm -rf ~", ""]);
+    }
+
+    #[test]
+    fn a_value_embedded_in_a_larger_argument_is_refused() {
+        let mut t = tool();
+        t.run = vec![
+            "osascript".into(),
+            "-e".into(),
+            "set b to \"{subject}\"".into(),
+        ];
+        let err = t
+            .command(&args(&[("to", "a"), ("subject", "b")]))
+            .unwrap_err();
+        assert!(err.to_string().contains("whole argument"), "{err}");
     }
 
     #[test]
@@ -173,7 +194,15 @@ mod tests {
     }
 
     #[test]
-    fn a_brace_with_no_close_is_left_alone() {
-        assert_eq!(fill("a {to} {oops", &args(&[("to", "x")])), "a x {oops");
+    fn a_literal_brace_that_is_not_a_parameter_passes_through() {
+        // AppleScript records use braces, so a literal {a, b} must survive untouched
+        let mut t = tool();
+        t.run = vec!["osascript".into(), "-e".into(), "{1, 2}".into()];
+        let cmd = t.command(&args(&[("to", "a"), ("subject", "b")])).unwrap();
+        let rendered: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(rendered, vec!["-e", "{1, 2}"]);
     }
 }
