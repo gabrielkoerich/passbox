@@ -144,7 +144,21 @@ impl Tool {
     }
 }
 
+/// A plugin name becomes a directory under the store, so it must not climb out of it
+pub fn valid_name(name: &str) -> Result<()> {
+    let safe = !name.is_empty()
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if !safe {
+        bail!("invalid plugin name {name:?}, use letters, digits, dash and underscore");
+    }
+    Ok(())
+}
+
 pub fn load(store: &Store, name: &str) -> Result<Manifest> {
+    valid_name(name)?;
     let path = store.plugins_dir().join(name).join("plugin.toml");
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("no plugin named {name}, run `passbox plugin add {name}`"))?;
@@ -243,36 +257,104 @@ mod tests {
     }
 
     #[test]
-    fn first_party_write_tools_build_the_expected_command() {
+    fn every_first_party_tool_builds_the_expected_command() {
         fn built(plugin: &str, action: &str, pairs: &[(&str, &str)]) -> Vec<String> {
             let text = std::fs::read_to_string(format!("plugins/{plugin}/plugin.toml")).unwrap();
             let manifest: Manifest = toml::from_str(&text).unwrap();
             let cmd = manifest
                 .tool(action)
-                .unwrap()
+                .unwrap_or_else(|| panic!("{plugin} has no {action}"))
                 .command(&args(pairs))
                 .unwrap();
             let mut out = vec![cmd.get_program().to_string_lossy().into_owned()];
             out.extend(cmd.get_args().map(|a| a.to_string_lossy().into_owned()));
             out
         }
-        assert_eq!(built("git", "push", &[]), vec!["git", "push"]);
-        assert_eq!(
-            built("gh", "pr", &[("title", "T"), ("body", "B")]),
-            vec!["gh", "pr", "create", "--title", "T", "--body", "B"]
+        type Case = (
+            &'static str,
+            &'static str,
+            &'static [(&'static str, &'static str)],
+            &'static [&'static str],
         );
-        assert_eq!(
-            built("things3", "add", &[("title", "buy milk")]),
-            vec!["things", "add", "--notes", "", "--", "buy milk"]
-        );
-        assert_eq!(
-            built(
+        let cases: &[Case] = &[
+            (
+                "mail",
+                "recent",
+                &[("count", "5")],
+                &["osascript", "recent.applescript", "5"],
+            ),
+            (
+                "mail",
+                "recent",
+                &[],
+                &["osascript", "recent.applescript", ""],
+            ),
+            (
+                "mail",
+                "search",
+                &[("query", "inv")],
+                &["osascript", "search.applescript", "inv"],
+            ),
+            (
+                "mail",
+                "attachments",
+                &[("query", "stmt"), ("dir", "/tmp/x")],
+                &["osascript", "attachments.applescript", "stmt", "/tmp/x"],
+            ),
+            (
                 "mail",
                 "send",
-                &[("to", "a@b"), ("subject", "S"), ("body", "hi")]
+                &[("to", "a@b"), ("subject", "S"), ("body", "hi")],
+                &["osascript", "send.applescript", "a@b", "S", "hi"],
             ),
-            vec!["osascript", "send.applescript", "a@b", "S", "hi"]
-        );
+            ("calendar", "today", &[], &["bash", "agenda.sh", "0"]),
+            (
+                "calendar",
+                "agenda",
+                &[("days", "3")],
+                &["bash", "agenda.sh", "3"],
+            ),
+            (
+                "things3",
+                "add",
+                &[("title", "buy")],
+                &["things", "add", "--notes", "", "--", "buy"],
+            ),
+            ("things3", "inbox", &[], &["things", "inbox"]),
+            ("things3", "today", &[], &["things", "today"]),
+            (
+                "things3",
+                "search",
+                &[("query", "q")],
+                &["things", "search", "--", "q"],
+            ),
+            ("git", "push", &[], &["git", "push"]),
+            (
+                "gh",
+                "pr",
+                &[("title", "T"), ("body", "B")],
+                &["gh", "pr", "create", "--title", "T", "--body", "B"],
+            ),
+            (
+                "gh",
+                "issue",
+                &[("title", "T")],
+                &["gh", "issue", "create", "--title", "T", "--body", ""],
+            ),
+        ];
+        for (plugin, action, pairs, expected) in cases {
+            assert_eq!(&built(plugin, action, pairs), expected, "{plugin} {action}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_climbs_out_of_the_plugins_dir_is_rejected() {
+        for bad in ["../victim", "..", "a/b", "a/../b", "", "x/../../y"] {
+            assert!(valid_name(bad).is_err(), "{bad} should be rejected");
+        }
+        for good in ["mail", "things3", "my-plugin", "my_plugin", "a.b"] {
+            assert!(valid_name(good).is_ok(), "{good} should be allowed");
+        }
     }
 
     #[test]

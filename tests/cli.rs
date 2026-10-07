@@ -165,6 +165,24 @@ fn a_first_party_plugin_installs_by_name() {
 }
 
 #[test]
+fn a_plugin_name_cannot_delete_outside_the_plugins_directory() {
+    let cli = Cli::new();
+    cli.note(&["plugin", "add", "things3"], None);
+    let victim = cli.path().join("victim");
+    std::fs::create_dir_all(&victim).unwrap();
+    std::fs::write(victim.join("keep.txt"), "important").unwrap();
+    // ../victim resolves outside plugins/, and remove must refuse it
+    let err = cli
+        .run(&["plugin", "remove", "../victim"], None)
+        .unwrap_err();
+    assert!(err.contains("invalid plugin name"), "{err}");
+    assert!(
+        victim.join("keep.txt").exists(),
+        "the traversal deleted a directory"
+    );
+}
+
+#[test]
 fn plugin_update_overwrites_an_installed_plugin() {
     let cli = Cli::new();
     let src = tempfile::tempdir().unwrap();

@@ -1002,6 +1002,7 @@ fn plugin_remove(store: &Store, rest: &[String]) -> Result<()> {
     let name = rest
         .first()
         .context("usage: passbox plugin remove <name>")?;
+    plugin::valid_name(name)?;
     let dir = store.plugins_dir().join(name);
     if !dir.exists() {
         bail!("no plugin named {name}");
