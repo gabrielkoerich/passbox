@@ -204,7 +204,9 @@ fn plugin_call(store: &Store, agent: &str, name: &str, args: &Value) -> Result<S
         }
     }
     let mut command = tool.command(&bound)?;
-    command.current_dir(store.plugins_dir().join(plugin));
+    if !manifest.runs_in_caller_dir() {
+        command.current_dir(store.plugins_dir().join(plugin));
+    }
     crate::broker::plugin_approve(store, plugin, action, agent)?;
     let output = command
         .output()

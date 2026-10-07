@@ -219,6 +219,8 @@ First-party plugins:
 | `mail` | Mail.app, nothing to install | `recent`, `search`, `attachments`, `send` |
 | `calendar` | the `icalBuddy` CLI | `today`, `agenda` |
 | `things3` | the `things` CLI | `add`, `inbox`, `today`, `search` |
+| `git` | git | `push` |
+| `gh` | the `gh` CLI | `pr`, `issue` |
 
 `mail` drives Mail through `osascript`, which ships with macOS. The first read raises the macOS automation prompt for Mail once.
 
@@ -230,6 +232,8 @@ brew install ossianhempel/tap/things3-cli        # things3
 ```
 
 `calendar` uses icalBuddy rather than raw AppleScript, because AppleScript reports a recurring event's series start instead of the occurrence date.
+
+`git` and `gh` run in the directory you call them from, not the plugin directory, so they act on the current repository. Both prompt on every call, so an agent cannot push or open a PR without your fingerprint.
 
 A tool whose command is missing is refused before it prompts, with the install line above.
 

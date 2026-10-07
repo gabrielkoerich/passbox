@@ -21,6 +21,9 @@ pub struct Manifest {
     /// How to get that command, shown when it is missing
     #[serde(default)]
     pub install: Option<String>,
+    /// "caller" runs tools in the invoking directory, the default runs them in the plugin dir
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default, rename = "tool")]
     pub tools: Vec<Tool>,
 }
@@ -65,6 +68,11 @@ impl Manifest {
             );
         }
         Ok(())
+    }
+
+    /// Whether tools run where they were invoked rather than in the plugin directory
+    pub fn runs_in_caller_dir(&self) -> bool {
+        self.cwd.as_deref() == Some("caller")
     }
 
     pub fn tool(&self, action: &str) -> Option<&Tool> {

@@ -165,6 +165,26 @@ fn a_first_party_plugin_installs_by_name() {
 }
 
 #[test]
+fn a_caller_cwd_plugin_runs_where_it_was_invoked() {
+    let cli = Cli::new();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        "name = \"here\"\ndescription = \"x\"\ncwd = \"caller\"\n\n\
+         [[tool]]\nname = \"pwd\"\nmode = \"open\"\nrun = [\"pwd\"]\n",
+    )
+    .unwrap();
+    cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
+    // With cwd = caller it prints the invoking directory, not the plugin's install directory
+    let out = cli.run(&["plugin", "here", "pwd"], None).unwrap();
+    assert_eq!(
+        out.trim(),
+        std::env::current_dir().unwrap().to_str().unwrap(),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_missing_required_command_is_refused_with_an_install_hint() {
     let cli = Cli::new();
     let src = tempfile::tempdir().unwrap();

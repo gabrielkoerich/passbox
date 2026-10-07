@@ -949,6 +949,8 @@ fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
             "plugin.toml",
             include_str!("../plugins/things3/plugin.toml"),
         )]),
+        "git" => Some(&[("plugin.toml", include_str!("../plugins/git/plugin.toml"))]),
+        "gh" => Some(&[("plugin.toml", include_str!("../plugins/gh/plugin.toml"))]),
         _ => None,
     }
 }
@@ -981,7 +983,9 @@ fn plugin_run(store: &Store, name: &str, rest: &[String]) -> Result<()> {
         .with_context(|| format!("{name} has no action {action}"))?;
     manifest.ensure_available()?;
     let mut command = tool.command(&parse_params(params)?)?;
-    command.current_dir(store.plugins_dir().join(name));
+    if !manifest.runs_in_caller_dir() {
+        command.current_dir(store.plugins_dir().join(name));
+    }
 
     // The broker holds the biometric gate and the audit log. Without it, enforce the mode here
     // so a headless or passphrase store cannot run a forbidden or gated action unchecked
