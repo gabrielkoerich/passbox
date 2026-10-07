@@ -930,6 +930,10 @@ fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
                 include_str!("../plugins/mail/search.applescript"),
             ),
             (
+                "attachments.applescript",
+                include_str!("../plugins/mail/attachments.applescript"),
+            ),
+            (
                 "send.applescript",
                 include_str!("../plugins/mail/send.applescript"),
             ),

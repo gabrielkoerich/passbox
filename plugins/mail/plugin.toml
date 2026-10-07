@@ -16,6 +16,13 @@ params = ["query"]
 run = ["osascript", "search.applescript", "{query}"]
 
 [[tool]]
+name = "attachments"
+description = "Save attachments from inbox messages matching a subject query, to a directory"
+mode = "window"
+params = ["query", "dir?"]
+run = ["osascript", "attachments.applescript", "{query}", "{dir}"]
+
+[[tool]]
 name = "send"
 description = "Send a new mail to one address"
 mode = "always"
