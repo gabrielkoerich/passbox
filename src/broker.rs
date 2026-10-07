@@ -83,6 +83,8 @@ pub enum Op {
     List,
     /// Approve a set of secrets once and hand back a token that opens only those
     Grant,
+    /// Approve one plugin action, named by `name` and `action`
+    Plugin,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -101,6 +103,9 @@ pub struct Request {
     /// Names or namespaces a Grant covers. A job rarely wants exactly one namespace
     #[serde(default)]
     pub names: Vec<String>,
+    /// The tool a Plugin op runs, such as `search` under plugin `mail`
+    #[serde(default)]
+    pub action: String,
 }
 
 #[cfg(feature = "host")]
@@ -245,7 +250,40 @@ impl Broker {
             Op::Get => self.handle_get(request, caller, cwd),
             Op::List => self.handle_list(request, caller),
             Op::Grant => self.handle_grant(request, caller),
+            Op::Plugin => self.handle_plugin(request, caller),
         }
+    }
+
+    /* A plugin action is gated by the mode in its manifest, which the broker reads itself so a
+    caller cannot claim a softer mode. Approval and audit are the whole job here. The caller runs
+    the command, because it holds the GUI session the broker does not. */
+    #[cfg(feature = "host")]
+    fn handle_plugin(&mut self, request: &Request, caller: &str) -> Result<String> {
+        let manifest = crate::plugin::load(&self.store, &request.name)?;
+        let tool = manifest
+            .tool(&request.action)
+            .ok_or_else(|| anyhow!("{} has no action {}", request.name, request.action))?;
+        let slot_name = format!("plugin:{}.{}", request.name, request.action);
+        let approved = self
+            .approvals
+            .get(&(request.agent.clone(), slot_name.clone()))
+            .copied();
+        let outcome = match decide(tool.mode, DEFAULT_WINDOW_SECS, approved, store::now()) {
+            Decision::Deny => {
+                self.audit_by(&request.agent, &slot_name, "denied", caller)?;
+                bail!("{slot_name} is marked never, refusing");
+            }
+            Decision::Prompt => {
+                self.ask(&format!("run {slot_name} for {}", request.agent))?;
+                self.approvals
+                    .insert((request.agent.clone(), slot_name.clone()), store::now());
+                "approved"
+            }
+            Decision::Allow if tool.mode == Mode::Open => "open",
+            Decision::Allow => "within window",
+        };
+        self.audit_by(&request.agent, &slot_name, outcome, caller)?;
+        Ok("ok".to_string())
     }
 
     /// Names are inside the ciphertext, so listing needs the key and therefore a prompt.
@@ -694,6 +732,7 @@ pub fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
             token: std::env::var("PASSBOX_TOKEN").unwrap_or_default(),
             ttl: 0,
             names: Vec::new(),
+            action: String::new(),
         },
     )
 }
@@ -709,6 +748,7 @@ pub fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
             token: String::new(),
             ttl: 0,
             names: Vec::new(),
+            action: String::new(),
         },
     )?;
     Ok(names.lines().map(str::to_string).collect())
@@ -725,8 +765,27 @@ pub fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<S
             token: String::new(),
             ttl,
             names: names.to_vec(),
+            action: String::new(),
         },
     )
+}
+
+/// Ask the broker to approve one plugin action. The caller runs the command once this returns ok
+#[cfg(feature = "host")]
+pub fn plugin_approve(store: &Store, name: &str, action: &str, agent: &str) -> Result<()> {
+    ask_broker(
+        store,
+        Request {
+            name: name.to_string(),
+            agent: agent.to_string(),
+            op: Op::Plugin,
+            token: String::new(),
+            ttl: 0,
+            names: Vec::new(),
+            action: action.to_string(),
+        },
+    )
+    .map(|_| ())
 }
 
 /// Ask a running broker, starting one if the socket is dead.

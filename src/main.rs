@@ -4,6 +4,8 @@ mod crypto;
 mod import;
 mod mcp;
 #[cfg(feature = "host")]
+mod plugin;
+#[cfg(feature = "host")]
 mod project;
 #[cfg(feature = "host")]
 mod se;
@@ -153,6 +155,12 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Install, list, remove and run plugins, such as mail and things3
+    #[cfg(feature = "host")]
+    Plugin {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        args: Vec<String>,
+    },
     /// Serve MCP over stdio, so an agent asks through tools rather than a shell
     Mcp,
     /// Run git inside the store, for `passbox git init`, `remote add`, `log` and the rest
@@ -212,6 +220,8 @@ fn run() -> Result<()> {
             force,
         } => import_pass(&store, prefix.as_deref(), mode, force)
             .inspect(|()| written(&store, "import from pass")),
+        #[cfg(feature = "host")]
+        Command::Plugin { args } => plugin_cmd(&store, &args),
         Command::Mcp => mcp::serve(store),
         Command::Git { args } => git(&store, &args),
         #[cfg(feature = "host")]
@@ -832,6 +842,134 @@ pub fn agent_list_names(store: &Store, agent: &str) -> Result<Vec<String>> {
     }
     let key = unlock(store, "list your secret names")?;
     store.names(&key)
+}
+
+#[cfg(feature = "host")]
+fn plugin_cmd(store: &Store, args: &[String]) -> Result<()> {
+    let (head, rest) = args
+        .split_first()
+        .context("usage: passbox plugin <list|add|remove|NAME> ...")?;
+    match head.as_str() {
+        "list" => plugin_list(store),
+        "add" => plugin_add(store, rest),
+        "remove" => plugin_remove(store, rest),
+        name => plugin_run(store, name, rest),
+    }
+}
+
+#[cfg(feature = "host")]
+fn plugin_list(store: &Store) -> Result<()> {
+    let plugins = plugin::installed(store)?;
+    if plugins.is_empty() {
+        println!("no plugins, add one with `passbox plugin add <dir>`");
+        return Ok(());
+    }
+    for manifest in plugins {
+        println!("{}  {}", manifest.name, manifest.description);
+        for tool in &manifest.tools {
+            println!(
+                "  {} {} [{:?}]  {}",
+                manifest.name, tool.name, tool.mode, tool.description
+            );
+        }
+    }
+    Ok(())
+}
+
+/* A plugin is a directory holding plugin.toml. Installing copies it under the store so a later
+edit to the source does not silently change what runs. The manifest is parsed first, so a broken
+one is refused before anything is copied. */
+#[cfg(feature = "host")]
+fn plugin_add(store: &Store, rest: &[String]) -> Result<()> {
+    let from = std::path::Path::new(rest.first().context("usage: passbox plugin add <dir>")?);
+    let text = std::fs::read_to_string(from.join("plugin.toml"))
+        .with_context(|| format!("no plugin.toml in {}", from.display()))?;
+    let manifest: plugin::Manifest = toml::from_str(&text).context("plugin.toml")?;
+    let to = store.plugins_dir().join(&manifest.name);
+    if to.exists() {
+        bail!("{} is already installed, remove it first", manifest.name);
+    }
+    copy_dir(from, &to)?;
+    eprintln!(
+        "installed {} with {} tool(s)",
+        manifest.name,
+        manifest.tools.len()
+    );
+    Ok(())
+}
+
+#[cfg(feature = "host")]
+fn plugin_remove(store: &Store, rest: &[String]) -> Result<()> {
+    let name = rest
+        .first()
+        .context("usage: passbox plugin remove <name>")?;
+    let dir = store.plugins_dir().join(name);
+    if !dir.exists() {
+        bail!("no plugin named {name}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    eprintln!("removed {name}");
+    Ok(())
+}
+
+/* Run one tool: validate the parameters, let the broker approve and audit, then run the command
+here so it keeps this process's GUI session. The child inherits stdio, so the user sees its
+output and the exit code carries through. */
+#[cfg(feature = "host")]
+fn plugin_run(store: &Store, name: &str, rest: &[String]) -> Result<()> {
+    let (action, params) = rest
+        .split_first()
+        .context("usage: passbox plugin <name> <action> [--key value]")?;
+    let manifest = plugin::load(store, name)?;
+    let tool = manifest
+        .tool(action)
+        .with_context(|| format!("{name} has no action {action}"))?;
+    let mut command = tool.command(&parse_params(params)?)?;
+
+    // The broker holds the biometric gate. A headless or passphrase store has no sensor to ask,
+    // so the passphrase already typed is the gate, the same as for a read
+    if store.host().is_some() || (!headless() && store.has_se_wrap()) {
+        broker::plugin_approve(store, name, action, &agent())?;
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("could not run {name} {action}"))?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+#[cfg(feature = "host")]
+fn parse_params(rest: &[String]) -> Result<std::collections::HashMap<String, String>> {
+    let mut out = std::collections::HashMap::new();
+    let mut tokens = rest.iter();
+    while let Some(token) = tokens.next() {
+        let key = token
+            .strip_prefix("--")
+            .with_context(|| format!("expected --key, got {token}"))?;
+        if let Some((k, v)) = key.split_once('=') {
+            out.insert(k.to_string(), v.to_string());
+        } else {
+            let value = tokens
+                .next()
+                .with_context(|| format!("--{key} needs a value"))?;
+            out.insert(key.to_string(), value.clone());
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "host")]
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 /// Captures the child's output instead of inheriting, which is what a tool result needs

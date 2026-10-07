@@ -115,6 +115,40 @@ fn add_get_and_list() {
     );
 }
 
+#[test]
+fn a_plugin_installs_runs_and_is_removed() {
+    let cli = Cli::new();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        "name = \"demo\"\ndescription = \"test\"\n\n\
+         [[tool]]\nname = \"say\"\nmode = \"open\"\nparams = [\"msg\"]\n\
+         run = [\"printf\", \"%s\", \"{msg}\"]\n",
+    )
+    .unwrap();
+
+    cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
+    assert!(
+        cli.run(&["plugin", "list"], None)
+            .unwrap()
+            .contains("demo say")
+    );
+    // open mode takes the passphrase path in a test, so no prompt, and params substitute
+    assert_eq!(
+        cli.run(&["plugin", "demo", "say", "--msg", "hi"], None)
+            .unwrap(),
+        "hi"
+    );
+    // a missing required parameter is refused before anything runs
+    assert!(
+        cli.run(&["plugin", "demo", "say"], None)
+            .unwrap_err()
+            .contains("needs --msg")
+    );
+    cli.note(&["plugin", "remove", "demo"], None);
+    assert!(!cli.run(&["plugin", "list"], None).unwrap().contains("demo"));
+}
+
 /// The whole store directory, not only `store/`, which is how a plaintext name list once slipped by
 #[test]
 fn nothing_on_disk_reveals_a_name() {
