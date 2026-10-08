@@ -55,13 +55,13 @@ class Passbox < Formula
   end
 
   # A user agent, not a system daemon, so it runs in the login session and can raise Touch ID.
-  # PATH carries Homebrew's bin, so the broker finds tailscale and the plugins' CLIs
+  # PATH carries Homebrew's bin and /usr/local/bin, so the broker finds tailscale and the plugin CLIs
   service do
     run [opt_bin/"passbox", "broker"]
     keep_alive true
     log_path "#{var}/log/passbox-broker.log"
     error_log_path "#{var}/log/passbox-broker.log"
-    environment_variables PATH: std_service_path_env
+    environment_variables PATH: "#{std_service_path_env}:/usr/local/bin"
   end
 
   test do
