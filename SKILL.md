@@ -162,7 +162,7 @@ The caller is not identified: traffic through `serve` has a loopback peer, so `w
 
 ## Gotchas
 
-**An upgrade leaves a stale broker.** `brew upgrade passbox` does not restart the running broker, so the old one keeps serving the old protocol. The symptom is a parse error naming a command the new binary has and the old one does not, such as `unknown variant \`grant\``. Restart it: `pkill -f "passbox broker"`.
+**An upgrade leaves a stale broker.** `brew upgrade gabrielkoerich/tap/passbox` does not restart the running broker, so the old one keeps serving the old protocol. The symptom is a parse error naming a command the new binary has and the old one does not, such as `unknown variant \`grant\``. Restart it: `pkill -f "passbox broker"`.
 
 **GPG steals the smart card.** If a YubiKey wrap is involved, `gpg-agent`'s `scdaemon` opens the card exclusively and breaks `age-plugin-yubikey` mid-operation with a misleading `authentication error`. Stop it first: `gpgconf --kill scdaemon`. Anything calling `pass` restarts it.
 
