@@ -36,14 +36,14 @@ passbox get github/token
 
 ## Plugins
 
-A plugin action runs on the Mac too. The container names the tool, the broker on the Mac approves it with Touch ID, runs it against the local app, and sends the output back.
+A plugin runs on the Mac, even when a client asks for it. The container names the tool, the broker on the Mac approves it with Touch ID, runs it against the local app, and sends the output back.
 
 ```bash
 passbox plugin things3 today
 passbox plugin mail search --query invoice
 ```
 
-Only the Mac has Mail, Things and the plugin files. The container just names the tool and its parameters, so a plugin needs nothing installed here. A tool that acts on the caller's own directory, such as `git` or `gh`, is refused: there is no repo here to act on.
+Only the Mac has Mail, Things and the plugin files. The container names the tool and its parameters, so it needs nothing installed here. A tool that acts on the caller's own directory, such as `git` or `gh`, is refused: there is no repo here to act on.
 
 Run the opt-in plugin check in the smoke test with `PASSBOX_DEMO_PLUGINS=1 ./smoke.sh <a-secret-name>`.
 
