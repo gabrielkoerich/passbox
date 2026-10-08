@@ -165,6 +165,25 @@ fn a_first_party_plugin_installs_by_name() {
 }
 
 #[test]
+fn a_plugin_runs_only_its_defined_actions() {
+    let cli = Cli::new();
+    cli.note(&["plugin", "add", "things3"], None);
+    // An action the manifest does not define is refused, never run
+    let err = cli
+        .run(&["plugin", "things3", "delete-everything"], None)
+        .unwrap_err();
+    assert!(err.contains("has no action delete-everything"), "{err}");
+    // So is an undefined parameter on a real action
+    let err = cli
+        .run(
+            &["plugin", "things3", "search", "--query", "q", "--evil", "x"],
+            None,
+        )
+        .unwrap_err();
+    assert!(err.contains("no parameter evil"), "{err}");
+}
+
+#[test]
 fn a_plugin_name_cannot_delete_outside_the_plugins_directory() {
     let cli = Cli::new();
     cli.note(&["plugin", "add", "things3"], None);

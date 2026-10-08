@@ -345,6 +345,26 @@ mod tests {
         assert_eq!(names, vec!["list_secrets", "run_with_secret"]);
     }
 
+    #[cfg(feature = "host")]
+    #[test]
+    fn a_plugin_call_for_an_undefined_action_is_refused_before_the_broker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store {
+            dir: tmp.path().to_path_buf(),
+        };
+        let dir = store.plugins_dir().join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.toml"),
+            "name = \"demo\"\ndescription = \"x\"\n\n\
+             [[tool]]\nname = \"say\"\nmode = \"open\"\nrun = [\"echo\", \"hi\"]\n",
+        )
+        .unwrap();
+        // An undefined action errors at the tool lookup, before any broker approval
+        let err = plugin_call(&store, "agent", "demo.bogus", &json!({})).unwrap_err();
+        assert!(err.to_string().contains("no tool named"), "{err}");
+    }
+
     #[test]
     fn an_installed_plugin_adds_its_tools_to_the_list() {
         let tmp = tempfile::tempdir().unwrap();
