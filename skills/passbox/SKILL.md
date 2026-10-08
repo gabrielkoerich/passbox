@@ -62,7 +62,7 @@ pkill -f "passbox broker"
 
 ### There are no long-lived tokens, and that is deliberate
 
-24 hours is the ceiling and it cannot be raised from the command line. A token that never lapses is the same as a password, and a token exists so that access ends.
+24 hours is the ceiling and it cannot be raised from the command line. A token that never lapses is the same as a password.
 
 So a token is the wrong tool for something that must run untended indefinitely. Use injection, above, for that. Use a token when a process needs several secrets over a bounded run, or when the value must not sit in an environment where `ps eww` finds it.
 
