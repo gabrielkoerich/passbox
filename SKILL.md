@@ -9,6 +9,28 @@ An agentic password manager. An agent asks for a secret, macOS raises a Touch ID
 
 Store lives at `~/.passbox` (`PASSBOX_DIR` overrides). Every secret is one age file with a random id; the name and policy are inside the ciphertext.
 
+## Setup
+
+Install passbox and create the store:
+
+```bash
+brew install gabrielkoerich/tap/passbox
+passbox init
+```
+
+Let an agent reach it through MCP, which cannot hand back a value:
+
+```bash
+claude mcp add passbox -- passbox mcp        # Claude Code
+codex mcp add passbox -- passbox mcp         # Codex
+```
+
+Install this skill where the agent looks for it:
+
+```bash
+mkdir -p ~/.claude/skills/passbox && cp SKILL.md ~/.claude/skills/passbox/
+```
+
 ## Reading a secret
 
 ```bash
