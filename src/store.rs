@@ -139,6 +139,10 @@ impl Store {
     pub fn socket_path(&self) -> PathBuf {
         self.dir.join("broker.sock")
     }
+    /// Installed plugins, one directory each. Local and machine specific, so sync skips it
+    pub fn plugins_dir(&self) -> PathBuf {
+        self.dir.join("plugins")
+    }
     /// Per machine, so two Macs never append to the same file through a syncer
     pub fn audit_path(&self) -> PathBuf {
         self.dir.join(format!("audit-{}.log", hostname()))

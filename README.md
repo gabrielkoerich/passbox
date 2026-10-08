@@ -199,6 +199,48 @@ passbox audit --tail 50
 
 Every decision is logged, encrypted, one record per line.
 
+## Plugins
+
+A plugin adds gated actions on a local app, such as Mail or Things 3. Each action is a tool with an approval mode, so an agent runs it behind the same Touch ID prompt and audit log as a secret read.
+
+```bash
+passbox plugin add mail                         # first-party, bundled in the binary
+passbox plugin list                             # installed plugins and their tools
+passbox plugin mail recent --count 5            # run a tool, approved and audited
+passbox plugin remove mail
+```
+
+The same tools appear over MCP as `mail.recent`, `mail.send` and so on, so an agent calls them through the server. The broker reads the manifest for the authoritative mode, approves and audits; the caller runs the command, so it keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
+
+First-party plugins:
+
+| Plugin | Needs | Tools |
+|---|---|---|
+| `mail` | Mail.app, nothing to install | `recent`, `search`, `attachments`, `send` |
+| `calendar` | the `icalBuddy` CLI | `today`, `agenda` |
+| `things3` | the `things` CLI | `add`, `inbox`, `today`, `search` |
+| `git` | git | `push` |
+| `gh` | the `gh` CLI | `pr`, `issue` |
+
+`mail` drives Mail through `osascript`, which ships with macOS. The first read raises the macOS automation prompt for Mail once.
+
+`calendar` and `things3` shell out to a CLI, so each has to be installed:
+
+```bash
+brew install ical-buddy                          # calendar
+brew install ossianhempel/tap/things3-cli        # things3
+```
+
+`calendar` uses icalBuddy rather than raw AppleScript, because AppleScript reports a recurring event's series start instead of the occurrence date.
+
+`git` and `gh` run in the directory you call them from, not the plugin directory, so they act on the current repository. Both prompt on every call, so an agent cannot push or open a PR without your fingerprint.
+
+A tool whose command is missing is refused before it prompts, with the install line above.
+
+Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `mode` (`open`, `window`, `always`, `never`), its `params`, and a `run` command where `{param}` is one whole argument.
+
+Each plugin carries a `version`. `passbox plugin update <name|dir>` refreshes an installed plugin, and `plugin list` flags a first-party plugin whose bundled version is newer than the installed copy, which is what happens after a `brew upgrade`.
+
 ## Backup and sync
 
 git carries the encrypted secrets and nothing that opens them.
@@ -489,7 +531,7 @@ Give the container a real tun device. `tailscaled --tun=userspace-networking` re
 
 **The caller is not identified.** The broker runs `tailscale whois` on the peer, which the control plane authenticates, but traffic arriving through `serve` has a loopback peer address, so it resolves to nothing and the prompt says `an unidentified tailnet peer`. `PASSBOX_AGENT` is still whatever the caller claims.
 
-**The Mac must be awake, unlocked, and its lid open.** Nothing can answer a prompt otherwise, and a closed lid fails with `canEvaluatePolicy` false rather than anything clearer.
+**The Mac must be awake, unlocked, and its lid open.** Nothing can answer a prompt otherwise. A closed lid fails, and the error says so: Touch ID is unavailable, open the lid or use the recovery passphrase.
 
 **Nobody is there at 3am.** A scheduled job wants injection or a grant, not a prompt. See [Unattended](README.md#unattended).
 
@@ -598,7 +640,7 @@ passbox was built next to [pass](https://www.passwordstore.org), and both can st
 | Platforms | anywhere GPG runs | macOS holds the store, Linux asks it |
 | Ecosystem | browser, mobile, dmenu, otp, import | Python, Rust and TypeScript clients, and an MCP server |
 | Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on, then a passphrase or a YubiKey opens it |
-| Reading the source | 721 lines of shell | 3,798 lines of Rust and Swift, plus a daemon |
+| Reading the source | 721 lines of shell | about 5,100 lines of Rust and Swift, plus a daemon |
 
 The first eight rows are why passbox exists. In the rest, `pass` is the better tool: it is older, it runs everywhere, and you can lose your only machine without losing your secrets.
 

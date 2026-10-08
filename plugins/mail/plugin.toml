@@ -1,0 +1,31 @@
+name = "mail"
+description = "Apple Mail: read, search and send"
+version = "1.0.0"
+
+[[tool]]
+name = "recent"
+description = "Most recent inbox messages: date, sender, subject"
+mode = "window"
+params = ["count?"]
+run = ["osascript", "recent.applescript", "{count}"]
+
+[[tool]]
+name = "search"
+description = "Search inbox subjects for a query"
+mode = "window"
+params = ["query"]
+run = ["osascript", "search.applescript", "{query}"]
+
+[[tool]]
+name = "attachments"
+description = "Save attachments from inbox messages matching a subject query, to a directory"
+mode = "window"
+params = ["query", "dir?"]
+run = ["osascript", "attachments.applescript", "{query}", "{dir}"]
+
+[[tool]]
+name = "send"
+description = "Send a new mail to one address"
+mode = "always"
+params = ["to", "subject", "body"]
+run = ["osascript", "send.applescript", "{to}", "{subject}", "{body}"]

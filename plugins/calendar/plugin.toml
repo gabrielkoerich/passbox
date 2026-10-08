@@ -1,0 +1,19 @@
+name = "calendar"
+description = "Apple Calendar agenda, through icalBuddy"
+version = "1.0.0"
+requires = "icalBuddy"
+install = "brew install ical-buddy"
+
+[[tool]]
+name = "today"
+description = "Today's events: time, title, location, calendar"
+mode = "window"
+params = []
+run = ["bash", "agenda.sh", "0"]
+
+[[tool]]
+name = "agenda"
+description = "Events from today through the next N days, default today only"
+mode = "window"
+params = ["days?"]
+run = ["bash", "agenda.sh", "{days}"]

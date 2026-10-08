@@ -68,6 +68,7 @@ fn skip(relative: &Path) -> bool {
     text == "broker.sock"
         || text == "remote"
         || text == "names"
+        || text == "plugins"
         // A repo is this machine's history. Copying it into a shared directory would put two
         // machines' git internals in one place, and the remote is a mirror, not a clone.
         || text == ".git"

@@ -1,0 +1,11 @@
+name = "git"
+description = "Gated git push in the current repository"
+version = "1.0.0"
+cwd = "caller"
+
+[[tool]]
+name = "push"
+description = "Push the current branch to its remote"
+mode = "always"
+params = []
+run = ["git", "push"]
