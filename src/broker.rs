@@ -106,6 +106,12 @@ pub struct Request {
     /// The tool a Plugin op runs, such as `search` under plugin `mail`
     #[serde(default)]
     pub action: String,
+    /// Bound parameters for a Plugin op the broker runs itself
+    #[serde(default)]
+    pub params: Vec<(String, String)>,
+    /// When set, the broker runs the Plugin tool and returns its output, for a remote client
+    #[serde(default)]
+    pub run: bool,
 }
 
 #[cfg(feature = "host")]
@@ -283,7 +289,19 @@ impl Broker {
             Decision::Allow => "within window",
         };
         self.audit_by(&request.agent, &slot_name, outcome, caller)?;
-        Ok("ok".to_string())
+        if !request.run {
+            return Ok("ok".to_string());
+        }
+
+        // A caller-directory tool acts on the caller's repo, which does not exist on the host
+        if manifest.runs_in_caller_dir() {
+            bail!("{} runs on the caller, not on the host", request.name);
+        }
+        manifest.ensure_available()?;
+        let bound: HashMap<String, String> = request.params.iter().cloned().collect();
+        let mut command = tool.command(&bound)?;
+        command.current_dir(self.store.plugins_dir().join(&request.name));
+        run_plugin_command(command)
     }
 
     /// Names are inside the ciphertext, so listing needs the key and therefore a prompt.
@@ -733,6 +751,8 @@ pub fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
             ttl: 0,
             names: Vec::new(),
             action: String::new(),
+            params: Vec::new(),
+            run: false,
         },
     )
 }
@@ -749,6 +769,8 @@ pub fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
             ttl: 0,
             names: Vec::new(),
             action: String::new(),
+            params: Vec::new(),
+            run: false,
         },
     )?;
     Ok(names.lines().map(str::to_string).collect())
@@ -766,6 +788,8 @@ pub fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<S
             ttl,
             names: names.to_vec(),
             action: String::new(),
+            params: Vec::new(),
+            run: false,
         },
     )
 }
@@ -783,9 +807,35 @@ pub fn plugin_approve(store: &Store, name: &str, action: &str, agent: &str) -> R
             ttl: 0,
             names: Vec::new(),
             action: action.to_string(),
+            params: Vec::new(),
+            run: false,
         },
     )
     .map(|_| ())
+}
+
+/// Ask the host to run a plugin tool and return its output, for a client with no local app
+pub fn plugin_run_remote(
+    store: &Store,
+    name: &str,
+    action: &str,
+    params: &[(String, String)],
+    agent: &str,
+) -> Result<String> {
+    ask_broker(
+        store,
+        Request {
+            name: name.to_string(),
+            agent: agent.to_string(),
+            op: Op::Plugin,
+            token: String::new(),
+            ttl: 0,
+            names: Vec::new(),
+            action: action.to_string(),
+            params: params.to_vec(),
+            run: true,
+        },
+    )
 }
 
 /// Ask a running broker, starting one if the socket is dead.
@@ -865,11 +915,43 @@ fn spawn(store: &Store) -> Result<()> {
     bail!("the broker never opened its socket")
 }
 
+// Run a built plugin command and return stdout, with stderr and the exit code on failure
+#[cfg(feature = "host")]
+fn run_plugin_command(mut command: std::process::Command) -> Result<String> {
+    let out = command
+        .output()
+        .context("could not run the plugin command")?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !err.trim().is_empty() {
+        text.push_str("\nstderr:\n");
+        text.push_str(&err);
+    }
+    if !out.status.success() {
+        text.push_str(&format!("\nexit: {}", out.status.code().unwrap_or(1)));
+    }
+    Ok(text)
+}
+
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
 
     const WINDOW: u64 = 300;
+
+    #[test]
+    fn run_plugin_command_returns_output_then_stderr_and_exit() {
+        let mut ok = std::process::Command::new("printf");
+        ok.args(["%s", "hello"]);
+        assert_eq!(run_plugin_command(ok).unwrap(), "hello");
+
+        let mut bad = std::process::Command::new("sh");
+        bad.args(["-c", "printf out; printf oops >&2; exit 3"]);
+        let text = run_plugin_command(bad).unwrap();
+        assert!(text.contains("out"), "{text}");
+        assert!(text.contains("stderr:") && text.contains("oops"), "{text}");
+        assert!(text.contains("exit: 3"), "{text}");
+    }
 
     #[test]
     fn open_never_asks() {

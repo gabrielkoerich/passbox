@@ -34,6 +34,19 @@ passbox get github/token
 
 `PASSBOX_HOST` is the Mac's tailnet name, or `name:port` for a port other than 8787. It can also live in `~/.passbox/host`, which is what the entrypoint writes.
 
+## Plugins
+
+A plugin action runs on the Mac too. The container names the tool, the broker on the Mac approves it with Touch ID, runs it against the local app, and sends the output back.
+
+```bash
+passbox plugin things3 today
+passbox plugin mail search --query invoice
+```
+
+Only the Mac has Mail, Things and the plugin files. The container just names the tool and its parameters, so a plugin needs nothing installed here. A tool that acts on the caller's own directory, such as `git` or `gh`, is refused: there is no repo here to act on.
+
+Run the opt-in plugin check in the smoke test with `PASSBOX_DEMO_PLUGINS=1 ./smoke.sh <a-secret-name>`.
+
 ## What this does not give you
 
 **The client cannot list.** `ls` needs names, which needs the store key, which lives on the Mac. Ask for a name you know.
