@@ -167,16 +167,23 @@ fn a_first_party_plugin_installs_by_name() {
 #[test]
 fn a_plugin_runs_only_its_defined_actions() {
     let cli = Cli::new();
-    cli.note(&["plugin", "add", "things3"], None);
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        "name = \"demo\"\ndescription = \"x\"\n\n\
+         [[tool]]\nname = \"say\"\nmode = \"open\"\nparams = [\"msg\"]\nrun = [\"echo\", \"{msg}\"]\n",
+    )
+    .unwrap();
+    cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
     // An action the manifest does not define is refused, never run
     let err = cli
-        .run(&["plugin", "things3", "delete-everything"], None)
+        .run(&["plugin", "demo", "delete-everything"], None)
         .unwrap_err();
     assert!(err.contains("has no action delete-everything"), "{err}");
     // So is an undefined parameter on a real action
     let err = cli
         .run(
-            &["plugin", "things3", "search", "--query", "q", "--evil", "x"],
+            &["plugin", "demo", "say", "--msg", "hi", "--evil", "x"],
             None,
         )
         .unwrap_err();
