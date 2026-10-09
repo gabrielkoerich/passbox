@@ -156,7 +156,6 @@ enum Command {
         force: bool,
     },
     /// Install, list, remove and run plugins, such as mail and things3
-    #[cfg(feature = "host")]
     Plugin {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
@@ -220,7 +219,6 @@ fn run() -> Result<()> {
             force,
         } => import_pass(&store, prefix.as_deref(), mode, force)
             .inspect(|()| written(&store, "import from pass")),
-        #[cfg(feature = "host")]
         Command::Plugin { args } => plugin_cmd(&store, &args),
         Command::Mcp => mcp::serve(store),
         Command::Git { args } => git(&store, &args),
@@ -844,18 +842,31 @@ pub fn agent_list_names(store: &Store, agent: &str) -> Result<Vec<String>> {
     store.names(&key)
 }
 
-#[cfg(feature = "host")]
 fn plugin_cmd(store: &Store, args: &[String]) -> Result<()> {
     let (head, rest) = args
         .split_first()
         .context("usage: passbox plugin <list|add|update|remove|NAME> ...")?;
     match head.as_str() {
+        "list" | "add" | "update" | "remove" => plugin_manage(store, head, rest),
+        name => plugin_run(store, name, rest),
+    }
+}
+
+// Installing and listing read and write plugin files, which live only on the host
+#[cfg(feature = "host")]
+fn plugin_manage(store: &Store, verb: &str, rest: &[String]) -> Result<()> {
+    match verb {
         "list" => plugin_list(store),
         "add" => plugin_install(store, rest, false),
         "update" => plugin_install(store, rest, true),
         "remove" => plugin_remove(store, rest),
-        name => plugin_run(store, name, rest),
+        _ => unreachable!(),
     }
+}
+
+#[cfg(not(feature = "host"))]
+fn plugin_manage(_store: &Store, _verb: &str, _rest: &[String]) -> Result<()> {
+    bail!("manage plugins on the Mac that holds them, not on a client")
 }
 
 #[cfg(feature = "host")]
@@ -1012,27 +1023,53 @@ fn plugin_remove(store: &Store, rest: &[String]) -> Result<()> {
     Ok(())
 }
 
-/* Run one tool: validate the parameters, let the broker approve and audit, then run the command
-here so it keeps this process's GUI session. The child inherits stdio, so the user sees its
-output and the exit code carries through. */
-#[cfg(feature = "host")]
+// A remote client has the host run the tool and return its output, otherwise it runs here
 fn plugin_run(store: &Store, name: &str, rest: &[String]) -> Result<()> {
-    let (action, params) = rest
+    let (action, rest) = rest
         .split_first()
         .context("usage: passbox plugin <name> <action> [--key value]")?;
+    let params = parse_params(rest)?;
+
+    if store.host().is_some() {
+        let pairs: Vec<(String, String)> = params.into_iter().collect();
+        let output = broker::plugin_run_remote(store, name, action, &pairs, &agent())?;
+        print!("{output}");
+        if !output.ends_with('\n') {
+            println!();
+        }
+        return Ok(());
+    }
+
+    #[cfg(feature = "host")]
+    {
+        plugin_run_local(store, name, action, params)
+    }
+    #[cfg(not(feature = "host"))]
+    {
+        let _ = (name, action, params);
+        bail!("no host set, put a Mac's tailnet address in ~/.passbox/host")
+    }
+}
+
+// The broker approves and audits, then the command runs here, keeping this process's GUI session
+#[cfg(feature = "host")]
+fn plugin_run_local(
+    store: &Store,
+    name: &str,
+    action: &str,
+    params: std::collections::HashMap<String, String>,
+) -> Result<()> {
     let manifest = plugin::load(store, name)?;
     let tool = manifest
         .tool(action)
         .with_context(|| format!("{name} has no action {action}"))?;
     manifest.ensure_available()?;
-    let mut command = tool.command(&parse_params(params)?)?;
+    let mut command = tool.command(&params)?;
     if !manifest.runs_in_caller_dir() {
         command.current_dir(store.plugins_dir().join(name));
     }
 
-    // The broker holds the biometric gate and the audit log. Without it, enforce the mode here
-    // so a headless or passphrase store cannot run a forbidden or gated action unchecked
-    if store.host().is_some() || (!headless() && store.has_se_wrap()) {
+    if !headless() && store.has_se_wrap() {
         broker::plugin_approve(store, name, action, &agent())?;
     } else {
         match tool.mode {
@@ -1049,7 +1086,6 @@ fn plugin_run(store: &Store, name: &str, rest: &[String]) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-#[cfg(feature = "host")]
 fn parse_params(rest: &[String]) -> Result<std::collections::HashMap<String, String>> {
     let mut out = std::collections::HashMap::new();
     let mut tokens = rest.iter();

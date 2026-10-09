@@ -9,6 +9,28 @@ An agentic password manager. An agent asks for a secret, macOS raises a Touch ID
 
 Store lives at `~/.passbox` (`PASSBOX_DIR` overrides). Every secret is one age file with a random id; the name and policy are inside the ciphertext.
 
+## Setup
+
+Install passbox and create the store:
+
+```bash
+brew install gabrielkoerich/tap/passbox
+passbox init
+```
+
+Let an agent reach it through MCP, which cannot hand back a value:
+
+```bash
+claude mcp add passbox -- passbox mcp        # Claude Code
+codex mcp add passbox -- passbox mcp         # Codex
+```
+
+Install this skill where the agent looks for it:
+
+```bash
+mkdir -p ~/.claude/skills/passbox && cp SKILL.md ~/.claude/skills/passbox/
+```
+
 ## Reading a secret
 
 ```bash
@@ -62,7 +84,7 @@ pkill -f "passbox broker"
 
 ### There are no long-lived tokens, and that is deliberate
 
-24 hours is the ceiling and it cannot be raised from the command line. A token that never lapses is the same as a password, and a token exists so that access ends.
+24 hours is the ceiling and it cannot be raised from the command line. A token that never lapses is the same as a password.
 
 So a token is the wrong tool for something that must run untended indefinitely. Use injection, above, for that. Use a token when a process needs several secrets over a bounded run, or when the value must not sit in an environment where `ps eww` finds it.
 
@@ -140,7 +162,7 @@ The caller is not identified: traffic through `serve` has a loopback peer, so `w
 
 ## Gotchas
 
-**An upgrade leaves a stale broker.** `brew upgrade passbox` does not restart the running broker, so the old one keeps serving the old protocol. The symptom is a parse error naming a command the new binary has and the old one does not, such as `unknown variant \`grant\``. Restart it: `pkill -f "passbox broker"`.
+**An upgrade leaves a stale broker.** `brew upgrade gabrielkoerich/tap/passbox` does not restart the running broker, so the old one keeps serving the old protocol. The symptom is a parse error naming a command the new binary has and the old one does not, such as `unknown variant \`grant\``. Restart it: `pkill -f "passbox broker"`.
 
 **GPG steals the smart card.** If a YubiKey wrap is involved, `gpg-agent`'s `scdaemon` opens the card exclusively and breaks `age-plugin-yubikey` mid-operation with a misleading `authentication error`. Stop it first: `gpgconf --kill scdaemon`. Anything calling `pass` restarts it.
 

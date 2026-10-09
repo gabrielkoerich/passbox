@@ -52,6 +52,17 @@ esac
 # The caller never sees it in its own environment
 check "the value is not in the caller's environment" "" "${V:-}"
 
+# Plugins run on the Mac and return their output here. They prompt there, so they are opt-in
+if [ "${PASSBOX_DEMO_PLUGINS:-0}" = "1" ]; then
+    echo
+    echo "plugins (the Mac runs these, and prompts there)"
+    out=$(PASSBOX_AGENT="$AGENT" passbox plugin things3 today 2>&1)
+    case "$out" in
+        *"passbox:"*) printf '  FAIL  things3 today\n    %s\n' "$out"; fail=$((fail + 1)) ;;
+        *) printf '  ok    things3 today ran on the host\n'; pass=$((pass + 1)) ;;
+    esac
+fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -618,7 +618,7 @@ The library runs the `passbox` binary on `PATH`, so it works on a Mac and on a L
 
 [`examples/`](examples) also holds [Python](examples/python) and [TypeScript](examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
 
-For agents specifically, see [AGENTS.md](AGENTS.md), and the skill in [`skills/passbox`](skills/passbox) that teaches a coding agent to use passbox correctly.
+For agents specifically, see [AGENTS.md](AGENTS.md), and the [`SKILL.md`](SKILL.md) that teaches a coding agent to use passbox correctly.
 
 ## Comparisons
 

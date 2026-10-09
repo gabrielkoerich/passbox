@@ -263,7 +263,7 @@ It needs an iOS app, push infrastructure, a credential the phone can unwrap with
 
 So the full feature is an app, sync, push, and device key management. That is the part of a password manager other people have spent a decade on, and it is not the part passbox is for.
 
-passbox does something narrow: a secret goes into one child process rather than into an agent's context, the prompt names which agent wants which secret, and the audit log says what was released to whom. None of that is a phone feature.
+passbox does something narrow: a secret goes into one child process rather than into an agent's context, the prompt names which agent wants which secret, and the audit log says what was released to whom.
 
 The sharper version of the problem this was meant to solve is "nobody is awake at 3am", not "approve from my phone". Injection at launch and a scoped grant already answer that, and they answer it better, because they need no one at all.
 
@@ -279,7 +279,7 @@ This file is where features get argued with before anyone agrees to them. Answer
 
 **Is it the largest missing thing?** Not the most interesting one. The tailnet client shipped because a Linux box could not read a secret at all. A phone approver is a convenience for a problem already solved another way.
 
-Two failure modes: building a feature because it is fun, and keeping a mechanism beside its replacement. The lease was removed once grants existed, because two answers to one question is how documentation goes wrong.
+Two failure modes: building a feature because it is fun, and keeping a mechanism beside its replacement. The lease was removed once grants existed, to avoid two answers to one question.
 
 ## Remote capabilities, a later idea
 

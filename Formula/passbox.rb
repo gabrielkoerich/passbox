@@ -47,7 +47,21 @@ class Passbox < Formula
 
       Install rclone only if you choose an rclone remote. iCloud Drive, a plain
       directory and a git remote need no extra tools.
+
+      To keep the broker running, start it as a user service, not with sudo:
+        brew services start passbox
+      A sudo service runs with no login session and cannot raise Touch ID.
     EOS
+  end
+
+  # A user agent, not a system daemon, so it runs in the login session and can raise Touch ID.
+  # PATH carries Homebrew's bin and /usr/local/bin, so the broker finds tailscale and the plugin CLIs
+  service do
+    run [opt_bin/"passbox", "broker"]
+    keep_alive true
+    log_path "#{var}/log/passbox-broker.log"
+    error_log_path "#{var}/log/passbox-broker.log"
+    environment_variables PATH: "#{std_service_path_env}:/usr/local/bin"
   end
 
   test do
