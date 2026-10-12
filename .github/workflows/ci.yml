@@ -155,11 +155,13 @@ jobs:
             BUMP="minor"
           fi
 
+          # A breaking change is the conventional-commits `!` marker or a BREAKING CHANGE footer,
+          # never the word "breaking" in prose, which any commit mentioning it would trip
           HAS_BREAKING=false
-          if echo "$COMMITS" | grep -qiE '\bbreaking\b'; then
+          if echo "$COMMITS" | grep -qE '^[a-z]+(\(.*\))?!:'; then
             HAS_BREAKING=true
           fi
-          if [ -n "$LAST_TAG" ] && git log "$LAST_TAG"..HEAD --pretty=format:"%b" | grep -qiE '\bbreaking\b'; then
+          if [ -n "$LAST_TAG" ] && git log "$LAST_TAG"..HEAD --pretty=format:"%b" | grep -qE '^BREAKING[ -]CHANGE:'; then
             HAS_BREAKING=true
           fi
           if [ "$HAS_BREAKING" = true ]; then
@@ -318,7 +320,7 @@ jobs:
           while IFS='|' read -r msg hash; do
             [ -n "$msg" ] || continue
             entry="- ${msg} (${hash})"
-            if echo "$msg" | grep -qiE '\bbreaking\b'; then
+            if echo "$msg" | grep -qE '^[a-z]+(\(.*\))?!:'; then
               BREAKING+="${entry}"$'\n'
             elif echo "$msg" | grep -qiE '^feat(\(.*\))?!?:'; then
               FEATURES+="${entry}"$'\n'
