@@ -289,6 +289,40 @@ fn a_missing_required_command_is_refused_with_an_install_hint() {
     assert!(err.contains("brew install foo"), "{err}");
 }
 
+#[test]
+fn a_headless_read_is_audited() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/one"], Some("v1")).unwrap();
+    cli.run(&["add", "a/two"], Some("v2")).unwrap();
+    cli.run(&["get", "a/one"], None).unwrap();
+    cli.run(
+        &["exec", "--env", "X=a/one", "--env", "Y=a/two", "--", "true"],
+        None,
+    )
+    .unwrap();
+    let log = cli.run(&["audit", "--tail", "50"], None).unwrap();
+    // one release from get, two from the exec
+    let released = log
+        .lines()
+        .filter(|l| l.contains("\"decision\":\"released\""))
+        .count();
+    assert_eq!(released, 3, "{log}");
+}
+
+#[test]
+fn a_never_secret_read_by_an_agent_is_audited_as_denied() {
+    let cli = Cli::new();
+    cli.run(&["add", "banking/login", "--mode", "never"], Some("s"))
+        .unwrap();
+    assert!(
+        cli.run(&["exec", "--env", "V=banking/login", "--", "true"], None)
+            .is_err()
+    );
+    let log = cli.run(&["audit", "--tail", "50"], None).unwrap();
+    assert!(log.contains("\"decision\":\"denied\""), "{log}");
+    assert!(log.contains("banking/login"), "{log}");
+}
+
 /// The whole store directory, not only `store/`, which is how a plaintext name list once slipped by
 #[test]
 fn nothing_on_disk_reveals_a_name() {

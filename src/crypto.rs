@@ -27,7 +27,6 @@ pub fn encrypt(plaintext: &[u8], recipients: &[Box<dyn Recipient + Send>]) -> Re
     Ok(out)
 }
 
-#[cfg(feature = "host")]
 /// One record per line, hex rather than armour because age armour spans several lines
 pub fn encrypt_line(plaintext: &[u8], recipient: &age::x25519::Recipient) -> Result<String> {
     Ok(hex::encode(encrypt(
