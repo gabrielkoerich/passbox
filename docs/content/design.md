@@ -46,7 +46,7 @@ Rejected: a Secure Enclave recipient per secret. It gives hardware enforcement o
 
 Rejected: the age plugin protocol. With wraps the Enclave key never appears as an age recipient, so there is no plugin at runtime and the prompt text stays ours.
 
-Cost: one key opens everything, so passbox enforces per-secret modes in software. Cost: adding a Mac needs the recovery passphrase once.
+Cost: one key opens everything, so the Touch ID prompt is the gate on a read, not the key. Cost: adding a Mac needs the recovery passphrase once.
 
 The public key sits in the clear at `wraps/recipient`. Writing a secret therefore needs no unlock and raises no prompt. Reading is what costs a prompt.
 
@@ -78,23 +78,21 @@ A single process serving a unix socket at 0600, one connection at a time. No asy
 
 It holds the store key for 300 seconds of inactivity and then exits. Exiting is how the key is dropped.
 
-Approval is keyed on the pair of agent and secret. The window runs from the prompt, not from the last read, so a busy agent still asks again when it expires.
+Every read raises the prompt. A grant token is the only way to skip it: the broker holds the granted values in memory and releases them without asking again until the token lapses.
 
-Inside the window the broker process is the boundary, so it is hardened to hold it. It refuses a same-user debugger with `PT_DENY_ATTACH`, takes no core dump, and runs under a global allocator that wipes every freed block, so a decrypted secret does not linger in freed memory. The binary and the Enclave helper are signed with the hardened runtime, which needs no developer account. Root still gets past all of this.
+Rejected: per-secret modes and a per-agent approval window. An earlier version let a secret be marked open, approved for a window after one prompt, or blocked with a never flag. One rule is simpler, and a never flag gave false assurance, because one key opens the whole store and any process running as the user reads around a software flag. Cost: a secret an agent reads often now needs a grant or injection at launch.
 
-Cost: the window holds the key in memory to save a prompt on every read. The hardening stops a reader running as the same user. Root still reaches the key.
+While the broker holds the key it is the boundary, so it is hardened to hold it. It refuses a same-user debugger with `PT_DENY_ATTACH`, takes no core dump, and runs under a global allocator that wipes every freed block, so a decrypted secret does not linger in freed memory. The binary and the Enclave helper are signed with the hardened runtime, which needs no developer account. Root still gets past all of this.
 
-`decide(mode, window, approved_at, now)` is a pure function with unit tests over every mode, window expiry, a zero window, and an approval stamped in the future.
+Cost: the broker holds the key in memory while it runs, so a grant can release its secrets without asking again. The hardening stops a reader running as the same user. Root still reaches the key.
 
 ## Project manifests
 
-A project lists the secrets it needs in `.passbox.toml`, and one prompt approves the whole list for a window.
+A project lists the secrets it needs in `.passbox.toml`, and one prompt grants the whole list for that directory.
 
-The file cannot be the authority. An agent working in the directory can write it, so a manifest that granted access would let any agent grant itself anything. It is a request: nothing is approved without a fingerprint, and the approval is bound to the SHA-256 of the file. Editing the manifest changes the hash and voids the grant, which is what stops an agent quietly adding a line and widening its own access.
+The file cannot be the authority. An agent working in the directory can write it, so a manifest that granted access would let any agent grant itself anything. It is a request: nothing is granted without a fingerprint, and the grant is bound to the SHA-256 of the file. Editing the manifest changes the hash and voids the grant, which is what stops an agent quietly adding a line and widening its own access.
 
 The kernel supplies the directory, through the caller's pid and `lsof`. A caller that could name its own working directory could point at a manifest it had approved somewhere else.
-
-`never` is never covered, because the deny arm is reached before any manifest is consulted.
 
 Grants are written to `grants-<host>.age`, encrypted to the store key so a local process cannot forge one, and excluded from sync. A grant that travelled would let a machine you have never touched inherit an approval given here.
 
@@ -104,7 +102,7 @@ Grants are written to `grants-<host>.age`, encrypted to the store key so a local
 
 `--env` is what every tool supports. `--stdin` is safer, because any process running as you can read a child's environment with `ps eww`.
 
-`passbox get` prints to stdout for interactive use. A `never` secret is refused when the caller is an agent.
+`passbox get` prints to stdout for interactive use.
 
 ## Sync
 
@@ -126,7 +124,7 @@ Cost: the winner is chosen by file modification time, so a tool that rewrites mt
 
 ## Listing costs a prompt
 
-`ls` and the MCP `list_secrets` go through the broker like a read: approved with Touch ID, recorded in the audit log, and good for 300 seconds per agent.
+`ls` and the MCP `list_secrets` go through the broker like a read: approved with Touch ID and recorded in the audit log.
 
 Rejected: a plaintext list at `~/.passbox/names`, shipped until 0.13.42. It let `ls` answer with no key, but any process running as the user could read every name with no prompt and no audit entry, which undid [No index](#no-index). Version 0.13.43 deletes the file on its first run.
 
@@ -134,7 +132,7 @@ Rejected: an encrypted list. Reading it needs the store key, which is the same c
 
 Listing decrypts each file to read its name, but parses only the name, so the value is never built into a string. The decrypted bytes wipe themselves when dropped.
 
-Cost: listing takes a fingerprint, and leaves the store key warm in the broker for 300 seconds. A namespace grant is refused before the prompt only when the key is already warm, and after it otherwise.
+Cost: listing takes a fingerprint, the same as a read. A grant is the only way to skip the prompt.
 
 ## Fields are a read-time parse
 

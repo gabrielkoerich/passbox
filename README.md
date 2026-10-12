@@ -12,6 +12,8 @@ Secrets are ordinary [age](https://age-encryption.org) files. The broker decides
 
 It runs without an Apple Developer Program membership.
 
+**Beta.** This is a new way to store passwords, a fingerprint releases one or more secrets into one process. It is young and may have bugs. Keep another copy of anything you cannot lose.
+
 ## Install
 
 ```bash
@@ -134,7 +136,7 @@ The server inherits the environment of whatever launched it, which for an editor
 }
 ```
 
-The cost is a bearer token in a config file. It is worth it for an agent that reads the same few secrets all day and is otherwise prompting on every call. It is not worth it for one that reads a secret occasionally: take the prompt.
+The cost is a bearer token in a config file. Worth it for an agent that reads the same few secrets all day and otherwise prompts on every call. For an agent that reads a secret now and then, take the prompt instead.
 
 [`examples/mcp`](examples/mcp) speaks the protocol to `passbox mcp` from Python with no SDK, and holds a project `.mcp.json`. Models that need the whole MCP guide in one place can read [`llms.txt`](llms.txt).
 
@@ -219,7 +221,7 @@ brew install ossianhempel/tap/things3-cli        # things3
 
 A tool whose command is missing is refused before it prompts, with the install line above.
 
-Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `mode` (`open`, `window`, `always`, `never`), its `params`, and a `run` command where `{param}` is one whole argument.
+Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument.
 
 Each plugin carries a `version`. `passbox plugin update <name|dir>` refreshes an installed plugin, and `plugin list` flags a first-party plugin whose bundled version is newer than the installed copy, which is what happens after a `brew upgrade`.
 
@@ -232,7 +234,7 @@ passbox git init
 passbox git remote add origin git@github.com:you/passbox-store.git
 ```
 
-After that every write commits on its own, the way `pass` does: `add`, `rm`, `mode`, `restore` and `import-pass`. `sync` pushes, since pushing on every write would be slow. Nothing happens until you run `git init`.
+After that every write commits on its own, the way `pass` does: `add`, `rm`, `restore` and `import-pass`. `sync` pushes, since pushing on every write would be slow. Nothing happens until you run `git init`.
 
 **A write also updates the copy.** Once `sync --enable` has chosen a directory, every write copies to it, because nobody remembers to run `sync`, and a secret that exists only on this Mac can be lost. A delete travels too, as a tombstone.
 
@@ -612,7 +614,7 @@ passbox was built next to [pass](https://www.passwordstore.org), and both can st
 |---|---|---|
 | Private key at rest | a portable file under a passphrase, attackable offline | sealed to the Secure Enclave, inert on any other machine |
 | Entry names | plaintext filenames, and in git commit subjects | inside the ciphertext |
-| Authorisation | one GPG passphrase, then the agent caches it | per agent and per secret, with modes and windows |
+| Authorisation | one GPG passphrase, then the agent caches it | every read prompts, and a grant scopes named secrets for a time |
 | Who asked for it | unknowable | named in the prompt and in the audit log |
 | Giving one to an agent | prints to stdout | injected into one child, and scrubbed from its output |
 | Asking from an agent | a shell command it composes | MCP tools that cannot return a value |
