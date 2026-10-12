@@ -151,7 +151,7 @@ jobs:
           fi
 
           BUMP="patch"
-          if echo "$COMMITS" | grep -qiE '^feat(\(.*\))?!?:'; then
+          if echo "$COMMITS" | grep -qiE '^(feat|refactor)(\(.*\))?!?:'; then
             BUMP="minor"
           fi
 
