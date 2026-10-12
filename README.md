@@ -153,7 +153,7 @@ window_secs = 3600
 
 The first time an agent working in that directory asks for one of them, passbox shows a single prompt covering the whole list, and does not ask again for the window. The default is an hour and the cap is twelve.
 
-**The file is a request, not a grant.** An agent can write one itself, so nothing is approved until you put your finger on the sensor. The approval is bound to the file's SHA-256: add a secret to the list and the hash changes, so it asks again. A secret set to `never` is refused no matter what the manifest says.
+**The file is a request, not a grant.** An agent can write one itself, so nothing is approved until you put your finger on the sensor. The approval is bound to the file's SHA-256: add a secret to the list and the hash changes, so it asks again.
 
 The project is the caller's working directory, read from the kernel rather than taken from the request, so a caller cannot point at a manifest somewhere else. Grants live in `grants-<host>.age`, encrypted, and never sync.
 
@@ -173,24 +173,6 @@ The `.toml` is a **request**: it changes how often you are asked. The `.env` is 
 
 If a project uses both, the `.toml` covers the same names the `.env` maps, so the one prompt covers the whole startup.
 
-### Permission modes
-
-Every secret carries one.
-
-| Mode | Behaviour |
-|---|---|
-| `open` | No prompt, for a token an agent reads all day |
-| `window` | One prompt per agent and secret per window, the default |
-| `always` | A prompt on every read |
-| `never` | Never released to an agent, interactive `get` only |
-
-```bash
-passbox mode banking/login never
-passbox add github/token --mode window --window 600
-```
-
-A new value never widens access. Adding over an existing secret keeps the mode it already had unless you pass `--mode`.
-
 ### Seeing what was released
 
 ```bash
@@ -201,7 +183,7 @@ Every decision is logged, encrypted, one record per line.
 
 ## Plugins
 
-A plugin adds gated actions on a local app, such as Mail or Things 3. Each action is a tool with an approval mode, so an agent runs it behind the same Touch ID prompt and audit log as a secret read.
+A plugin adds gated actions on a local app, such as Mail or Things 3. Each action is a tool, so an agent runs it behind the same Touch ID prompt and audit log as a secret read.
 
 ```bash
 passbox plugin add mail                         # first-party, bundled in the binary
@@ -210,7 +192,7 @@ passbox plugin mail recent --count 5            # run a tool, approved and audit
 passbox plugin remove mail
 ```
 
-The same tools appear over MCP as `mail.recent`, `mail.send` and so on, so an agent calls them through the server. The broker reads the manifest for the authoritative mode, approves and audits; the caller runs the command, so it keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
+The same tools appear over MCP as `mail.recent`, `mail.send` and so on, so an agent calls them through the server. Every call prompts. The broker approves and audits, the caller runs the command, so it keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
 
 First-party plugins:
 

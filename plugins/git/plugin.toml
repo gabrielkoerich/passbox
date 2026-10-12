@@ -6,6 +6,5 @@ cwd = "caller"
 [[tool]]
 name = "push"
 description = "Push the current branch to its remote"
-mode = "always"
 params = []
 run = ["git", "push"]

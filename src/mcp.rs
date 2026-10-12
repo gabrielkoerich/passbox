@@ -357,7 +357,7 @@ mod tests {
         std::fs::write(
             dir.join("plugin.toml"),
             "name = \"demo\"\ndescription = \"x\"\n\n\
-             [[tool]]\nname = \"say\"\nmode = \"open\"\nrun = [\"echo\", \"hi\"]\n",
+             [[tool]]\nname = \"say\"\nrun = [\"echo\", \"hi\"]\n",
         )
         .unwrap();
         // An undefined action errors at the tool lookup, before any broker approval
@@ -376,7 +376,7 @@ mod tests {
         std::fs::write(
             dir.join("plugin.toml"),
             "name = \"demo\"\ndescription = \"x\"\n\n\
-             [[tool]]\nname = \"say\"\nmode = \"open\"\nparams = [\"msg\", \"extra?\"]\n\
+             [[tool]]\nname = \"say\"\nparams = [\"msg\", \"extra?\"]\n\
              run = [\"printf\", \"{msg}\"]\n",
         )
         .unwrap();

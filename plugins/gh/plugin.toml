@@ -8,13 +8,11 @@ cwd = "caller"
 [[tool]]
 name = "pr"
 description = "Open a pull request from the current branch"
-mode = "always"
 params = ["title", "body?"]
 run = ["gh", "pr", "create", "--title", "{title}", "--body", "{body}"]
 
 [[tool]]
 name = "issue"
 description = "Open an issue"
-mode = "always"
 params = ["title", "body?"]
 run = ["gh", "issue", "create", "--title", "{title}", "--body", "{body}"]

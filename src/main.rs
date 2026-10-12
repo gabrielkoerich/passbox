@@ -46,7 +46,7 @@ unsafe impl GlobalAlloc for WipeOnFree {
 static ALLOCATOR: WipeOnFree = WipeOnFree;
 use secrecy::SecretString;
 use std::io::{IsTerminal, Read, Write};
-use store::{DEFAULT_WINDOW_SECS, Mode, Secret, Store};
+use store::{Secret, Store};
 
 const PASSPHRASE_ENV: &str = "PASSBOX_PASSPHRASE";
 const MIN_PASSPHRASE: usize = 12;
@@ -67,13 +67,7 @@ enum Command {
     /// Create the store, bound to this Mac's Secure Enclave and nothing else
     Init,
     /// Add or replace a secret, reading the value from stdin or a prompt
-    Add {
-        name: String,
-        #[arg(long)]
-        mode: Option<Mode>,
-        #[arg(long)]
-        window: Option<u64>,
-    },
+    Add { name: String },
     /// Print a secret
     Get {
         name: String,
@@ -94,13 +88,6 @@ enum Command {
     Ls,
     /// Delete a secret, leaving a tombstone so the delete survives a sync
     Rm { name: String },
-    /// Change the permission mode of a secret
-    Mode {
-        name: String,
-        mode: Mode,
-        #[arg(long)]
-        window: Option<u64>,
-    },
     /// List or restore earlier versions of a secret
     Restore {
         name: String,
@@ -149,8 +136,6 @@ enum Command {
     ImportPass {
         /// A namespace such as `acme`, or one entry. Everything, if omitted.
         prefix: Option<String>,
-        #[arg(long)]
-        mode: Option<Mode>,
         /// Overwrite entries that are already in the store
         #[arg(long)]
         force: bool,
@@ -187,15 +172,11 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Init => init(&store),
-        Command::Add { name, mode, window } => {
-            add(&store, &name, mode, window).inspect(|()| written(&store, "add a secret"))
-        }
+        Command::Add { name } => add(&store, &name).inspect(|()| written(&store, "add a secret")),
         Command::Get { name, field } => get(&store, &name, field.as_deref()),
         Command::Grant { names, r#for } => grant(&store, &names, r#for),
         Command::Ls => ls(&store),
         Command::Rm { name } => rm(&store, &name).inspect(|()| written(&store, "remove a secret")),
-        Command::Mode { name, mode, window } => set_mode(&store, &name, mode, window)
-            .inspect(|()| written(&store, "change a permission mode")),
         Command::Restore { name, index } => restore(&store, &name, index)
             .inspect(|()| written(&store, "restore an earlier version")),
         #[cfg(feature = "host")]
@@ -213,11 +194,7 @@ fn run() -> Result<()> {
         #[cfg(feature = "host")]
         Command::Sync { remote, enable } => run_sync(&store, remote.as_deref(), enable),
         #[cfg(feature = "host")]
-        Command::ImportPass {
-            prefix,
-            mode,
-            force,
-        } => import_pass(&store, prefix.as_deref(), mode, force)
+        Command::ImportPass { prefix, force } => import_pass(&store, prefix.as_deref(), force)
             .inspect(|()| written(&store, "import from pass")),
         Command::Plugin { args } => plugin_cmd(&store, &args),
         Command::Mcp => mcp::serve(store),
@@ -394,11 +371,8 @@ fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Re
     let (_, secret) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
+    let _ = for_agent;
     let caller = broker::ancestry(std::process::id() as libc::pid_t);
-    if for_agent && secret.mode == Mode::Never {
-        broker::append_audit(store, agent, name, "denied", &caller)?;
-        bail!("{name} is marked never, refusing");
-    }
     broker::append_audit(store, agent, name, "released", &caller)?;
     Ok(secret.value.clone())
 }
@@ -716,7 +690,7 @@ fn ask(prompt: &str) -> Result<String> {
     }
 }
 
-fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Result<()> {
+fn add(store: &Store, name: &str) -> Result<()> {
     let recipient = store.recipient()?;
     let value = read_value()?;
     if value.is_empty() {
@@ -728,44 +702,26 @@ fn add(store: &Store, name: &str, mode: Option<Mode>, window: Option<u64>) -> Re
         None
     } else {
         let key = unlock(store, &format!("replace {name}"))?;
-        store
-            .find(name, &key)?
-            .map(|(id, s)| (id, s.created, s.mode, s.window_secs))
+        store.find(name, &key)?.map(|(id, s)| (id, s.created))
     };
 
-    // A new value must never widen access, so an unnamed mode keeps what the secret already had
-    let secret = match existing {
-        Some((id, created, old_mode, old_window)) => (
-            id,
-            Secret {
-                name: name.to_string(),
-                mode: mode.unwrap_or(old_mode),
-                window_secs: window.unwrap_or(old_window),
-                value,
-                created,
-                updated: store::now(),
-            },
-        ),
-        None => (
-            store::new_id(),
-            Secret {
-                name: name.to_string(),
-                mode: mode.unwrap_or(Mode::Window),
-                window_secs: window.unwrap_or(DEFAULT_WINDOW_SECS),
-                value,
-                created: store::now(),
-                updated: store::now(),
-            },
-        ),
+    let (id, created) = match existing {
+        Some((id, created)) => (id, created),
+        None => (store::new_id(), store::now()),
     };
-    let (id, secret) = secret;
+    let secret = Secret {
+        name: name.to_string(),
+        value,
+        created,
+        updated: store::now(),
+    };
     store.put(&id, &secret, &recipient)?;
-    eprintln!("stored {name} as {}", secret.mode);
+    eprintln!("stored {name}");
     Ok(())
 }
 
 #[cfg(feature = "host")]
-fn import_pass(store: &Store, prefix: Option<&str>, mode: Option<Mode>, force: bool) -> Result<()> {
+fn import_pass(store: &Store, prefix: Option<&str>, force: bool) -> Result<()> {
     let dir = import::store_dir();
     let all = import::entries(&dir)?;
     if all.is_empty() {
@@ -789,13 +745,7 @@ fn import_pass(store: &Store, prefix: Option<&str>, mode: Option<Mode>, force: b
         Some(unlock(store, "import entries from pass")?)
     };
 
-    let report = import::import(
-        store,
-        &picked,
-        key.as_ref(),
-        mode.unwrap_or(Mode::Window),
-        force,
-    )?;
+    let report = import::import(store, &picked, key.as_ref(), force)?;
     eprintln!("imported {}, skipped {}", report.imported, report.skipped);
     Ok(())
 }
@@ -888,10 +838,7 @@ fn plugin_list(store: &Store) -> Result<()> {
             stale_note(&manifest)
         );
         for tool in &manifest.tools {
-            println!(
-                "  {} {} [{:?}]  {}",
-                manifest.name, tool.name, tool.mode, tool.description
-            );
+            println!("  {} {}  {}", manifest.name, tool.name, tool.description);
         }
     }
     Ok(())
@@ -1075,13 +1022,7 @@ fn plugin_run_local(
     if !headless() && store.has_se_wrap() {
         broker::plugin_approve(store, name, action, &agent())?;
     } else {
-        match tool.mode {
-            Mode::Never => bail!("{name} {action} is marked never, refusing"),
-            Mode::Open => {}
-            Mode::Window | Mode::Always => {
-                unlock(store, &format!("run {name} {action}"))?;
-            }
-        }
+        unlock(store, &format!("run {name} {action}"))?;
     }
     let status = command
         .status()
@@ -1207,33 +1148,6 @@ fn rm(store: &Store, name: &str) -> Result<()> {
     store.delete(&id)?;
     store.prune_tombs()?;
     eprintln!("deleted {name}, recoverable with `passbox restore {name}`");
-    Ok(())
-}
-
-/* A name, or a namespace. Setting a mode one secret at a time costs a fingerprint each, which
-for a project with twenty entries is twenty prompts to do one thing. One unlock covers the lot. */
-fn set_mode(store: &Store, name: &str, mode: Mode, window: Option<u64>) -> Result<()> {
-    let key = unlock(store, &format!("change the permission mode of {name}"))?;
-    let recipient = store.recipient()?;
-
-    let matched = store::select(&store.names(&key)?, Some(name));
-    if matched.is_empty() {
-        bail!("no secret named {name}, and nothing under {name}/");
-    }
-
-    for each in &matched {
-        let (id, mut secret) = store
-            .find(each, &key)?
-            .with_context(|| format!("no secret named {each}"))?;
-        secret.mode = mode;
-        if let Some(w) = window {
-            secret.window_secs = w;
-        }
-        secret.updated = store::now();
-        store.put(&id, &secret, &recipient)?;
-        eprintln!("{each} is now {mode}");
-    }
-
     Ok(())
 }
 

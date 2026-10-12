@@ -1,11 +1,10 @@
 /*! Plugins add gated actions on local apps, such as Mail and Things3.
 
 A plugin is a directory under `~/.passbox/plugins/<name>/` holding a `plugin.toml`. Each tool
-names a command template and an approval mode. The broker approves and audits a call; the
-caller runs the command, so the command keeps the caller's GUI session and the broker never
-drives an app itself. */
+names a command template. The broker prompts and audits a call; the caller runs the command, so
+it keeps the caller's GUI session and the broker never drives an app itself. */
 
-use crate::store::{Mode, Store};
+use crate::store::Store;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -36,7 +35,6 @@ pub struct Tool {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    pub mode: Mode,
     /// Parameter names in call order. A trailing `?` marks one optional
     #[serde(default)]
     pub params: Vec<String>,
@@ -196,7 +194,6 @@ mod tests {
         Tool {
             name: "send".into(),
             description: String::new(),
-            mode: Mode::Always,
             params: vec!["to".into(), "subject".into(), "body?".into()],
             run: vec![
                 "osascript".into(),
