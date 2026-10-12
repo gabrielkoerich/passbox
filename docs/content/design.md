@@ -66,7 +66,7 @@ Cost: a second language, and `swiftc` at build time.
 
 **The secret name in the prompt is trustworthy. The agent name is not.**
 
-The caller sets the agent name with `PASSBOX_AGENT`. The broker cannot verify it, because the peer on the socket is always `passbox` itself and the real agent sits somewhere up the process tree behind a shell. The broker reads the peer pid from the kernel with `LOCAL_PEERPID`, walks the process ancestry, and records it in the audit log.
+The caller sets the agent name with `PASSBOX_AGENT`. The broker cannot verify it, because the peer on the socket is always `passbox` itself and the real agent sits somewhere up the process tree behind a shell. The broker reads the peer pid from the kernel with `LOCAL_PEERPID`, walks the process ancestry, and records it in the audit log. When `PASSBOX_AGENT` is unset, the prompt name comes from that ancestry: the first process that is not passbox and not a shell. It is still a label, as unverified as the variable it replaces.
 
 Two things hold: no agent gets a secret without a finger on the sensor, and the prompt names the secret that gets read.
 

@@ -530,11 +530,32 @@ too, so it is not gated behind the host feature. */
 pub const TAILNET_PORT: u16 = 8787;
 
 #[cfg(feature = "host")]
+/// The caller's process chain names the agent when none was given: the first ancestor that is
+/// not passbox and not a shell, such as claude or codex, or passbox when the chain has none
+fn prompt_agent(chain: &str) -> String {
+    const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "fish", "dash", "ksh"];
+    for comm in chain.split(" < ") {
+        let name = comm
+            .trim()
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches('-');
+        if name.is_empty() || name == "unknown" || name == "passbox" || SHELLS.contains(&name) {
+            continue;
+        }
+        return name.to_string();
+    }
+    "passbox".to_string()
+}
+
+#[cfg(feature = "host")]
 fn reply<S: std::io::Read + Write>(
     broker: &std::sync::Mutex<Broker>,
     stream: &mut S,
     caller: &str,
     cwd: Option<&std::path::Path>,
+    local: bool,
 ) -> Result<()> {
     let mut line = String::new();
     let mut reader = BufReader::new(&mut *stream);
@@ -544,18 +565,28 @@ fn reply<S: std::io::Read + Write>(
     }
     eprintln!("read {} bytes of request", line.len());
     let response = match serde_json::from_str::<Request>(&line) {
-        Ok(request) => match broker.lock().expect("broker").handle(&request, caller, cwd) {
-            Ok(value) => Response {
-                ok: true,
-                value: Some(value),
-                error: None,
-            },
-            Err(e) => Response {
-                ok: false,
-                value: None,
-                error: Some(format!("{e:#}")),
-            },
-        },
+        Ok(mut request) => {
+            // An unset agent is named from the caller's own process chain, so the prompt says who
+            if request.agent.is_empty() {
+                request.agent = if local {
+                    prompt_agent(caller)
+                } else {
+                    "passbox".to_string()
+                };
+            }
+            match broker.lock().expect("broker").handle(&request, caller, cwd) {
+                Ok(value) => Response {
+                    ok: true,
+                    value: Some(value),
+                    error: None,
+                },
+                Err(e) => Response {
+                    ok: false,
+                    value: None,
+                    error: Some(format!("{e:#}")),
+                },
+            }
+        }
         Err(e) => Response {
             ok: false,
             value: None,
@@ -586,7 +617,7 @@ fn serve_tailnet(
             .and_then(|a| crate::tailnet::whois(a.ip()))
             .unwrap_or_else(|| "an unidentified tailnet peer".to_string());
         eprintln!("tailnet request from {caller}");
-        if let Err(e) = reply(&broker, &mut stream, &caller, None) {
+        if let Err(e) = reply(&broker, &mut stream, &caller, None, false) {
             eprintln!("tailnet request failed: {e:#}");
         }
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
@@ -657,7 +688,7 @@ pub fn serve(store: Store) -> Result<()> {
         let pid = peer_pid(&stream);
         let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
         let cwd = pid.and_then(caller_cwd);
-        let _ = reply(&broker, &mut stream, &caller, cwd.as_deref());
+        let _ = reply(&broker, &mut stream, &caller, cwd.as_deref(), true);
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
     }
     Ok(())
@@ -938,6 +969,16 @@ mod tests {
     use super::*;
 
     const WINDOW: u64 = 300;
+
+    #[test]
+    fn the_prompt_name_comes_from_the_first_real_ancestor() {
+        assert_eq!(prompt_agent("passbox < zsh < claude < login"), "claude");
+        assert_eq!(prompt_agent("passbox < -zsh < codex"), "codex");
+        assert_eq!(prompt_agent("passbox < /bin/bash < node"), "node");
+        // Only passbox and a shell means there is no better name than passbox
+        assert_eq!(prompt_agent("passbox < zsh"), "passbox");
+        assert_eq!(prompt_agent("unknown"), "passbox");
+    }
 
     #[test]
     fn run_plugin_command_returns_output_then_stderr_and_exit() {

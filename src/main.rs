@@ -370,7 +370,7 @@ fn git_push(store: &Store) {
 
 /// Advisory, since the broker cannot verify it. The prompt shows it beside the secret name.
 fn agent() -> String {
-    std::env::var("PASSBOX_AGENT").unwrap_or_else(|_| "passbox".to_string())
+    std::env::var("PASSBOX_AGENT").unwrap_or_default()
 }
 
 fn read_secret(store: &Store, name: &str, for_agent: bool) -> Result<String> {
