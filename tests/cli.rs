@@ -184,7 +184,7 @@ fn a_plugin_runs_only_its_defined_actions() {
     std::fs::write(
         src.path().join("plugin.toml"),
         "name = \"demo\"\ndescription = \"x\"\n\n\
-         [[tool]]\nname = \"say\"\nmode = \"open\"\nparams = [\"msg\"]\nrun = [\"echo\", \"{msg}\"]\n",
+         [[tool]]\nname = \"say\"\nparams = [\"msg\"]\nrun = [\"echo\", \"{msg}\"]\n",
     )
     .unwrap();
     cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
@@ -230,7 +230,7 @@ fn plugin_update_overwrites_an_installed_plugin() {
             src.path().join("plugin.toml"),
             format!(
                 "name = \"demo\"\ndescription = \"{desc}\"\nversion = \"{version}\"\n\n\
-                 [[tool]]\nname = \"say\"\nmode = \"open\"\nrun = [\"echo\", \"hi\"]\n"
+                 [[tool]]\nname = \"say\"\nrun = [\"echo\", \"hi\"]\n"
             ),
         )
         .unwrap();
@@ -272,7 +272,7 @@ fn a_caller_cwd_plugin_runs_where_it_was_invoked() {
     std::fs::write(
         src.path().join("plugin.toml"),
         "name = \"here\"\ndescription = \"x\"\ncwd = \"caller\"\n\n\
-         [[tool]]\nname = \"pwd\"\nmode = \"open\"\nrun = [\"pwd\"]\n",
+         [[tool]]\nname = \"pwd\"\nrun = [\"pwd\"]\n",
     )
     .unwrap();
     cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
@@ -293,7 +293,7 @@ fn a_missing_required_command_is_refused_with_an_install_hint() {
         src.path().join("plugin.toml"),
         "name = \"needs\"\ndescription = \"x\"\n\
          requires = \"no-such-command-xyz\"\ninstall = \"brew install foo\"\n\n\
-         [[tool]]\nname = \"go\"\nmode = \"open\"\nrun = [\"echo\", \"hi\"]\n",
+         [[tool]]\nname = \"go\"\nrun = [\"echo\", \"hi\"]\n",
     )
     .unwrap();
     cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
