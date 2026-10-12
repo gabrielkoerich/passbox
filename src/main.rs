@@ -394,9 +394,12 @@ fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Re
     let (_, secret) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
+    let caller = broker::ancestry(std::process::id() as libc::pid_t);
     if for_agent && secret.mode == Mode::Never {
+        broker::append_audit(store, agent, name, "denied", &caller)?;
         bail!("{name} is marked never, refusing");
     }
+    broker::append_audit(store, agent, name, "released", &caller)?;
     Ok(secret.value.clone())
 }
 

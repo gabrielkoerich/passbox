@@ -1,8 +1,6 @@
 //! Decides who may open a secret, holds the approval windows, and writes the audit log.
 
 #[cfg(feature = "host")]
-use crate::crypto;
-#[cfg(feature = "host")]
 use crate::project::{self, Grant};
 use crate::store::Store;
 #[cfg(feature = "host")]
@@ -148,7 +146,6 @@ pub fn decide(mode: Mode, window_secs: u64, approved_at: Option<u64>, now: u64) 
     }
 }
 
-#[cfg(feature = "host")]
 #[derive(Serialize)]
 struct AuditRecord<'a> {
     at: u64,
@@ -507,20 +504,7 @@ impl Broker {
         decision: &str,
         caller: &str,
     ) -> Result<()> {
-        let record = AuditRecord {
-            at: store::now(),
-            agent,
-            secret,
-            decision,
-            caller,
-        };
-        let line = crypto::encrypt_line(&serde_json::to_vec(&record)?, to)?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.store.audit_path())?;
-        writeln!(file, "{line}")?;
-        Ok(())
+        append_audit_to(&self.store, to, agent, secret, decision, caller)
     }
 }
 
@@ -715,8 +699,43 @@ fn caller_cwd(pid: libc::pid_t) -> Option<std::path::PathBuf> {
 }
 
 /// Walk up the process tree, because the caller is `passbox` and the agent is somewhere above it
-#[cfg(feature = "host")]
-fn ancestry(pid: libc::pid_t) -> String {
+// One encrypted record per line, appended with O_APPEND so the broker and a CLI read can both
+// write without a lock. The same format the broker writes, so `passbox audit` reads either
+pub(crate) fn append_audit(
+    store: &Store,
+    agent: &str,
+    secret: &str,
+    decision: &str,
+    caller: &str,
+) -> Result<()> {
+    append_audit_to(store, &store.recipient()?, agent, secret, decision, caller)
+}
+
+fn append_audit_to(
+    store: &Store,
+    to: &age::x25519::Recipient,
+    agent: &str,
+    secret: &str,
+    decision: &str,
+    caller: &str,
+) -> Result<()> {
+    let record = AuditRecord {
+        at: crate::store::now(),
+        agent,
+        secret,
+        decision,
+        caller,
+    };
+    let line = crate::crypto::encrypt_line(&serde_json::to_vec(&record)?, to)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(store.audit_path())?;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
+pub(crate) fn ancestry(pid: libc::pid_t) -> String {
     let mut chain = Vec::new();
     let mut current = pid;
     for _ in 0..6 {
