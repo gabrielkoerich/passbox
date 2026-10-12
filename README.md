@@ -12,6 +12,8 @@ Secrets are ordinary [age](https://age-encryption.org) files. The broker decides
 
 It runs without an Apple Developer Program membership.
 
+**Beta.** This is a new way to store passwords, a fingerprint releases one or more secrets into one process. It is young and may have bugs. Keep another copy of anything you cannot lose.
+
 ## Install
 
 ```bash
@@ -134,7 +136,7 @@ The server inherits the environment of whatever launched it, which for an editor
 }
 ```
 
-The cost is a bearer token in a config file. It is worth it for an agent that reads the same few secrets all day and is otherwise prompting on every call. It is not worth it for one that reads a secret occasionally: take the prompt.
+The cost is a bearer token in a config file. Worth it for an agent that reads the same few secrets all day and otherwise prompts on every call. For an agent that reads a secret now and then, take the prompt instead.
 
 [`examples/mcp`](examples/mcp) speaks the protocol to `passbox mcp` from Python with no SDK, and holds a project `.mcp.json`. Models that need the whole MCP guide in one place can read [`llms.txt`](llms.txt).
 
@@ -153,7 +155,7 @@ window_secs = 3600
 
 The first time an agent working in that directory asks for one of them, passbox shows a single prompt covering the whole list, and does not ask again for the window. The default is an hour and the cap is twelve.
 
-**The file is a request, not a grant.** An agent can write one itself, so nothing is approved until you put your finger on the sensor. The approval is bound to the file's SHA-256: add a secret to the list and the hash changes, so it asks again. A secret set to `never` is refused no matter what the manifest says.
+**The file is a request, not a grant.** An agent can write one itself, so nothing is approved until you put your finger on the sensor. The approval is bound to the file's SHA-256: add a secret to the list and the hash changes, so it asks again.
 
 The project is the caller's working directory, read from the kernel rather than taken from the request, so a caller cannot point at a manifest somewhere else. Grants live in `grants-<host>.age`, encrypted, and never sync.
 
@@ -173,24 +175,6 @@ The `.toml` is a **request**: it changes how often you are asked. The `.env` is 
 
 If a project uses both, the `.toml` covers the same names the `.env` maps, so the one prompt covers the whole startup.
 
-### Permission modes
-
-Every secret carries one.
-
-| Mode | Behaviour |
-|---|---|
-| `open` | No prompt, for a token an agent reads all day |
-| `window` | One prompt per agent and secret per window, the default |
-| `always` | A prompt on every read |
-| `never` | Never released to an agent, interactive `get` only |
-
-```bash
-passbox mode banking/login never
-passbox add github/token --mode window --window 600
-```
-
-A new value never widens access. Adding over an existing secret keeps the mode it already had unless you pass `--mode`.
-
 ### Seeing what was released
 
 ```bash
@@ -201,7 +185,7 @@ Every decision is logged, encrypted, one record per line.
 
 ## Plugins
 
-A plugin adds gated actions on a local app, such as Mail or Things 3. Each action is a tool with an approval mode, so an agent runs it behind the same Touch ID prompt and audit log as a secret read.
+A plugin adds gated actions on a local app, such as Mail or Things 3. Each action is a tool, so an agent runs it behind the same Touch ID prompt and audit log as a secret read.
 
 ```bash
 passbox plugin add mail                         # first-party, bundled in the binary
@@ -210,7 +194,7 @@ passbox plugin mail recent --count 5            # run a tool, approved and audit
 passbox plugin remove mail
 ```
 
-The same tools appear over MCP as `mail.recent`, `mail.send` and so on, so an agent calls them through the server. The broker reads the manifest for the authoritative mode, approves and audits; the caller runs the command, so it keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
+The same tools appear over MCP as `mail.recent`, `mail.send` and so on, so an agent calls them through the server. Every call prompts. The broker approves and audits, the caller runs the command, so it keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
 
 First-party plugins:
 
@@ -237,7 +221,7 @@ brew install ossianhempel/tap/things3-cli        # things3
 
 A tool whose command is missing is refused before it prompts, with the install line above.
 
-Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `mode` (`open`, `window`, `always`, `never`), its `params`, and a `run` command where `{param}` is one whole argument.
+Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument.
 
 Each plugin carries a `version`. `passbox plugin update <name|dir>` refreshes an installed plugin, and `plugin list` flags a first-party plugin whose bundled version is newer than the installed copy, which is what happens after a `brew upgrade`.
 
@@ -250,7 +234,7 @@ passbox git init
 passbox git remote add origin git@github.com:you/passbox-store.git
 ```
 
-After that every write commits on its own, the way `pass` does: `add`, `rm`, `mode`, `restore` and `import-pass`. `sync` pushes, since pushing on every write would be slow. Nothing happens until you run `git init`.
+After that every write commits on its own, the way `pass` does: `add`, `rm`, `restore` and `import-pass`. `sync` pushes, since pushing on every write would be slow. Nothing happens until you run `git init`.
 
 **A write also updates the copy.** Once `sync --enable` has chosen a directory, every write copies to it, because nobody remembers to run `sync`, and a secret that exists only on this Mac can be lost. A delete travels too, as a tombstone.
 
@@ -630,7 +614,7 @@ passbox was built next to [pass](https://www.passwordstore.org), and both can st
 |---|---|---|
 | Private key at rest | a portable file under a passphrase, attackable offline | sealed to the Secure Enclave, inert on any other machine |
 | Entry names | plaintext filenames, and in git commit subjects | inside the ciphertext |
-| Authorisation | one GPG passphrase, then the agent caches it | per agent and per secret, with modes and windows |
+| Authorisation | one GPG passphrase, then the agent caches it | every read prompts, and a grant scopes named secrets for a time |
 | Who asked for it | unknowable | named in the prompt and in the audit log |
 | Giving one to an agent | prints to stdout | injected into one child, and scrubbed from its output |
 | Asking from an agent | a shell command it composes | MCP tools that cannot return a value |

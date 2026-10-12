@@ -115,6 +115,19 @@ fn add_get_and_list() {
     );
 }
 
+/// One behaviour, no modes: a read works, and the old mode flag and subcommand are gone
+#[test]
+fn there_are_no_modes() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    assert_eq!(cli.run(&["get", "a/b"], None).unwrap(), "v");
+    assert!(
+        cli.run(&["add", "a/b", "--mode", "never"], Some("v"))
+            .is_err()
+    );
+    assert!(cli.run(&["mode", "a/b", "never"], None).is_err());
+}
+
 #[test]
 fn a_plugin_installs_runs_and_is_removed() {
     let cli = Cli::new();
@@ -122,7 +135,7 @@ fn a_plugin_installs_runs_and_is_removed() {
     std::fs::write(
         src.path().join("plugin.toml"),
         "name = \"demo\"\ndescription = \"test\"\n\n\
-         [[tool]]\nname = \"say\"\nmode = \"open\"\nparams = [\"msg\"]\n\
+         [[tool]]\nname = \"say\"\nparams = [\"msg\"]\n\
          run = [\"printf\", \"%s\", \"{msg}\"]\n",
     )
     .unwrap();
@@ -133,7 +146,7 @@ fn a_plugin_installs_runs_and_is_removed() {
             .unwrap()
             .contains("demo say")
     );
-    // open mode takes the passphrase path in a test, so no prompt, and params substitute
+    // a headless store takes the passphrase path, so no prompt, and params substitute
     assert_eq!(
         cli.run(&["plugin", "demo", "say", "--msg", "hi"], None)
             .unwrap(),
@@ -171,7 +184,7 @@ fn a_plugin_runs_only_its_defined_actions() {
     std::fs::write(
         src.path().join("plugin.toml"),
         "name = \"demo\"\ndescription = \"x\"\n\n\
-         [[tool]]\nname = \"say\"\nmode = \"open\"\nparams = [\"msg\"]\nrun = [\"echo\", \"{msg}\"]\n",
+         [[tool]]\nname = \"say\"\nparams = [\"msg\"]\nrun = [\"echo\", \"{msg}\"]\n",
     )
     .unwrap();
     cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
@@ -217,7 +230,7 @@ fn plugin_update_overwrites_an_installed_plugin() {
             src.path().join("plugin.toml"),
             format!(
                 "name = \"demo\"\ndescription = \"{desc}\"\nversion = \"{version}\"\n\n\
-                 [[tool]]\nname = \"say\"\nmode = \"open\"\nrun = [\"echo\", \"hi\"]\n"
+                 [[tool]]\nname = \"say\"\nrun = [\"echo\", \"hi\"]\n"
             ),
         )
         .unwrap();
@@ -259,7 +272,7 @@ fn a_caller_cwd_plugin_runs_where_it_was_invoked() {
     std::fs::write(
         src.path().join("plugin.toml"),
         "name = \"here\"\ndescription = \"x\"\ncwd = \"caller\"\n\n\
-         [[tool]]\nname = \"pwd\"\nmode = \"open\"\nrun = [\"pwd\"]\n",
+         [[tool]]\nname = \"pwd\"\nrun = [\"pwd\"]\n",
     )
     .unwrap();
     cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
@@ -280,7 +293,7 @@ fn a_missing_required_command_is_refused_with_an_install_hint() {
         src.path().join("plugin.toml"),
         "name = \"needs\"\ndescription = \"x\"\n\
          requires = \"no-such-command-xyz\"\ninstall = \"brew install foo\"\n\n\
-         [[tool]]\nname = \"go\"\nmode = \"open\"\nrun = [\"echo\", \"hi\"]\n",
+         [[tool]]\nname = \"go\"\nrun = [\"echo\", \"hi\"]\n",
     )
     .unwrap();
     cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
@@ -307,20 +320,6 @@ fn a_headless_read_is_audited() {
         .filter(|l| l.contains("\"decision\":\"released\""))
         .count();
     assert_eq!(released, 3, "{log}");
-}
-
-#[test]
-fn a_never_secret_read_by_an_agent_is_audited_as_denied() {
-    let cli = Cli::new();
-    cli.run(&["add", "banking/login", "--mode", "never"], Some("s"))
-        .unwrap();
-    assert!(
-        cli.run(&["exec", "--env", "V=banking/login", "--", "true"], None)
-            .is_err()
-    );
-    let log = cli.run(&["audit", "--tail", "50"], None).unwrap();
-    assert!(log.contains("\"decision\":\"denied\""), "{log}");
-    assert!(log.contains("banking/login"), "{log}");
 }
 
 /// The whole store directory, not only `store/`, which is how a plaintext name list once slipped by
@@ -356,27 +355,6 @@ fn nothing_on_disk_reveals_a_name() {
             );
         }
     }
-}
-
-/// Replacing a value must not widen access, which is the bug the first smoke run found
-#[test]
-fn replacing_a_value_keeps_the_mode() {
-    let cli = Cli::new();
-    cli.run(&["add", "banking/login", "--mode", "never"], Some("old"))
-        .unwrap();
-    let out = cli.note(&["add", "banking/login"], Some("new"));
-
-    assert!(out.contains("never"), "mode was reset: {out}");
-    assert_eq!(cli.run(&["get", "banking/login"], None).unwrap(), "new");
-}
-
-#[test]
-fn an_explicit_mode_still_wins() {
-    let cli = Cli::new();
-    cli.run(&["add", "db/pass"], Some("v")).unwrap();
-    cli.run(&["mode", "db/pass", "never"], None).unwrap();
-    let out = cli.note(&["add", "db/pass", "--mode", "open"], Some("v2"));
-    assert!(out.contains("open"), "{out}");
 }
 
 #[test]
@@ -458,39 +436,6 @@ fn exec_pipes_a_secret_on_stdin() {
         .run(&["exec", "--stdin", "db/password", "--", "cat"], None)
         .unwrap();
     assert_eq!(out, "swordfish");
-}
-
-/// The mode is enforced by passbox, not by the Enclave, so it holds with no hardware
-#[test]
-fn exec_refuses_a_never_secret() {
-    let cli = Cli::new();
-    cli.run(
-        &["add", "banking/login", "--mode", "never"],
-        Some("swordfish"),
-    )
-    .unwrap();
-
-    let err = cli
-        .run(
-            &[
-                "exec",
-                "--env",
-                "P=banking/login",
-                "--",
-                "sh",
-                "-c",
-                "echo $P",
-            ],
-            None,
-        )
-        .unwrap_err();
-    assert!(err.contains("never"), "{err}");
-    assert!(!err.contains("swordfish"));
-
-    assert_eq!(
-        cli.run(&["get", "banking/login"], None).unwrap(),
-        "swordfish"
-    );
 }
 
 #[test]

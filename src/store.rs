@@ -12,53 +12,12 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroize;
 
-pub const DEFAULT_WINDOW_SECS: u64 = 300;
 const KEEP_VERSIONS: usize = 5;
 pub const TOMB_TTL_SECS: u64 = 90 * 24 * 60 * 60;
-
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    /// No prompt, for a token an agent reads all day
-    Open,
-    /// One prompt per agent and secret per window
-    Window,
-    /// A prompt on every read
-    Always,
-    /// Never released to an agent, interactive `get` only
-    Never,
-}
-
-impl FromStr for Mode {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "open" => Ok(Mode::Open),
-            "window" => Ok(Mode::Window),
-            "always" => Ok(Mode::Always),
-            "never" => Ok(Mode::Never),
-            other => bail!("unknown mode {other}, expected open, window, always or never"),
-        }
-    }
-}
-
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Mode::Open => "open",
-            Mode::Window => "window",
-            Mode::Always => "always",
-            Mode::Never => "never",
-        };
-        f.write_str(s)
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 pub struct Secret {
     pub name: String,
-    pub mode: Mode,
-    pub window_secs: u64,
     pub value: String,
     pub created: u64,
     pub updated: u64,
@@ -79,6 +38,7 @@ pub fn now() -> u64 {
 
 /* A name, or everything under a namespace. The trailing slash is what stops `acme` dragging
 in `acmecorp`. Lives here rather than in `import` because the client build has no `import`. */
+#[cfg(feature = "host")]
 pub fn select(all: &[String], prefix: Option<&str>) -> Vec<String> {
     let Some(prefix) = prefix else {
         return all.to_vec();
@@ -595,8 +555,6 @@ mod tests {
     fn secret(name: &str, value: &str) -> Secret {
         Secret {
             name: name.to_string(),
-            mode: Mode::Window,
-            window_secs: DEFAULT_WINDOW_SECS,
             value: value.to_string(),
             created: now(),
             updated: now(),

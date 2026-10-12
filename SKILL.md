@@ -101,24 +101,7 @@ Symptom: repeated prompts for the same secret in a loop or per request. Check th
 
 ### A failed grant must never stop the job
 
-Minting is an optimisation. If it fails, fall back to prompting or to whatever the job did before; never let it abort the start. A cancelled Touch ID prompt taking down a daemon is worse than the prompts it was avoiding.
-
-## Modes
-
-Set inside the encrypted file, never in a plaintext policy file.
-
-| Mode | Behaviour |
-|---|---|
-| `open` | No prompt |
-| `window` | One prompt per agent and secret per window. Default |
-| `always` | A prompt on every read |
-| `never` | Agents never get it, interactive `get` only |
-
-```bash
-passbox mode api/key window --window 3600
-```
-
-`open` does **not** give unattended operation on its own. The mode lives inside the encrypted file, so the broker needs the store key to read it, and a cold broker still prompts. Inject at launch, or mint a token.
+Minting is an optimisation. If it fails, fall back to prompting or to whatever the job did before; never let it abort the start.
 
 ## Fields in one entry
 

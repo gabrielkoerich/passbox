@@ -34,7 +34,7 @@ Any client that speaks MCP over stdio works; the command is always `passbox mcp`
 | `list_secrets` | names only |
 | `run_with_secret` | the command's output, with the value scrubbed out |
 
-There is deliberately no `get_secret`. A tool result lands in the model's context, where it is logged and sent onward, so the tools run the command for you instead. If the command prints the secret anyway, passbox replaces it in the output first.
+There is no `get_secret`. A tool result lands in the model's context, where it is logged and sent onward, so the tools run the command for you instead. If the command prints the secret anyway, passbox replaces it in the output first.
 
 The agent name in the prompt comes from the MCP handshake, so it is the client's own `clientInfo.name`.
 

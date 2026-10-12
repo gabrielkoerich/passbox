@@ -2,9 +2,9 @@
 
 #[cfg(feature = "host")]
 use crate::project::{self, Grant};
-use crate::store::Store;
 #[cfg(feature = "host")]
-use crate::store::{self, DEFAULT_WINDOW_SECS, Mode};
+use crate::store;
+use crate::store::Store;
 #[cfg(feature = "host")]
 use age::x25519;
 use anyhow::{Context, Result, anyhow, bail};
@@ -112,38 +112,11 @@ pub struct Request {
     pub run: bool,
 }
 
-#[cfg(feature = "host")]
-/// Listing gets its own approval slot. A name cannot hold a NUL, so nothing collides with it.
-const LIST_SLOT: &str = "\u{0}list";
-
 #[derive(Serialize, Deserialize)]
 pub struct Response {
     pub ok: bool,
     pub value: Option<String>,
     pub error: Option<String>,
-}
-
-#[cfg(feature = "host")]
-#[derive(PartialEq, Eq, Debug)]
-pub enum Decision {
-    Allow,
-    Prompt,
-    Deny,
-}
-
-#[cfg(feature = "host")]
-/// The one piece of logic that must not be wrong, so it stays pure and tested
-pub fn decide(mode: Mode, window_secs: u64, approved_at: Option<u64>, now: u64) -> Decision {
-    match mode {
-        Mode::Open => Decision::Allow,
-        Mode::Never => Decision::Deny,
-        Mode::Always => Decision::Prompt,
-        // An approval stamped in the future means the clock moved, so make them ask again
-        Mode::Window => match approved_at {
-            Some(at) if at <= now && now - at < window_secs => Decision::Allow,
-            _ => Decision::Prompt,
-        },
-    }
 }
 
 #[derive(Serialize)]
@@ -163,7 +136,6 @@ struct Broker {
     quickly; a token covers only the secrets it was granted, to whoever holds it. */
     tokens: HashMap<String, TokenGrant>,
     key_at: u64,
-    approvals: HashMap<(String, String), u64>,
     #[cfg(feature = "host")]
     grants: Vec<Grant>,
 }
@@ -176,7 +148,6 @@ impl Broker {
             key: None,
             key_at: 0,
             tokens: HashMap::new(),
-            approvals: HashMap::new(),
             #[cfg(feature = "host")]
             grants: Vec::new(),
         }
@@ -257,8 +228,7 @@ impl Broker {
         }
     }
 
-    /* A plugin action is gated by the mode in its manifest, which the broker reads itself so a
-    caller cannot claim a softer mode. Approval and audit are the whole job here. The caller runs
+    /* A plugin action always prompts. Approval and audit are the whole job here, the caller runs
     the command, because it holds the GUI session the broker does not. */
     #[cfg(feature = "host")]
     fn handle_plugin(&mut self, request: &Request, caller: &str) -> Result<String> {
@@ -267,25 +237,8 @@ impl Broker {
             .tool(&request.action)
             .ok_or_else(|| anyhow!("{} has no action {}", request.name, request.action))?;
         let slot_name = format!("plugin:{}.{}", request.name, request.action);
-        let approved = self
-            .approvals
-            .get(&(request.agent.clone(), slot_name.clone()))
-            .copied();
-        let outcome = match decide(tool.mode, DEFAULT_WINDOW_SECS, approved, store::now()) {
-            Decision::Deny => {
-                self.audit_by(&request.agent, &slot_name, "denied", caller)?;
-                bail!("{slot_name} is marked never, refusing");
-            }
-            Decision::Prompt => {
-                self.ask(&format!("run {slot_name} for {}", request.agent))?;
-                self.approvals
-                    .insert((request.agent.clone(), slot_name.clone()), store::now());
-                "approved"
-            }
-            Decision::Allow if tool.mode == Mode::Open => "open",
-            Decision::Allow => "within window",
-        };
-        self.audit_by(&request.agent, &slot_name, outcome, caller)?;
+        self.ask(&format!("run {slot_name} for {}", request.agent))?;
+        self.audit_by(&request.agent, &slot_name, "approved", caller)?;
         if !request.run {
             return Ok("ok".to_string());
         }
@@ -304,28 +257,9 @@ impl Broker {
     /// Names are inside the ciphertext, so listing needs the key and therefore a prompt.
     /// It gets its own window: riding a `get` approval would turn one secret into all of them.
     fn handle_list(&mut self, request: &Request, caller: &str) -> Result<String> {
-        let slot = (request.agent.clone(), LIST_SLOT.to_string());
-        let approved = self.approvals.get(&slot).copied();
-        let reason = format!("list your secret names for {}", request.agent);
-
-        let mut asked = false;
-        if self.cached_key().is_none() {
-            self.ask(&reason)?;
-            asked = true;
-        }
-        if !asked
-            && decide(Mode::Window, DEFAULT_WINDOW_SECS, approved, store::now()) == Decision::Prompt
-        {
-            self.ask(&reason)?;
-            asked = true;
-        }
-        if asked {
-            self.approvals.insert(slot, store::now());
-        }
-
+        self.ask(&format!("list your secret names for {}", request.agent))?;
         let key = self.key.clone().expect("just unlocked");
-        let outcome = if asked { "approved" } else { "within window" };
-        self.audit(&key, &request.agent, "<list>", outcome, caller)?;
+        self.audit(&key, &request.agent, "<list>", "approved", caller)?;
         let names = self.store.names(&key)?;
         Ok(names.join("\n"))
     }
@@ -333,11 +267,7 @@ impl Broker {
     /* One approval covers a name or a whole namespace, and yields a token that opens exactly
     those. Asking for twenty secrets one at a time is twenty prompts to do one thing. */
     fn handle_grant(&mut self, request: &Request, caller: &str) -> Result<String> {
-        let asked = if request.ttl == 0 {
-            DEFAULT_WINDOW_SECS
-        } else {
-            request.ttl
-        };
+        let asked = if request.ttl == 0 { 300 } else { request.ttl };
         let ttl = asked.min(MAX_GRANT_SECS);
         if ttl < asked {
             eprintln!("capped {asked}s at {MAX_GRANT_SECS}s");
@@ -367,10 +297,6 @@ impl Broker {
             let Some((_, secret)) = self.store.find(name, &key)? else {
                 continue;
             };
-            // `never` is never released to anything holding a token either
-            if secret.mode == Mode::Never {
-                continue;
-            }
             values.insert(name.clone(), secret.value.clone());
         }
         if values.is_empty() {
@@ -408,11 +334,6 @@ impl Broker {
         caller: &str,
         cwd: Option<&std::path::Path>,
     ) -> Result<String> {
-        let approved = self
-            .approvals
-            .get(&(request.agent.clone(), request.name.clone()))
-            .copied();
-
         // A token is the narrowest thing that can answer, so it is tried first
         if !request.token.is_empty()
             && let Some(value) = self.value_for_token(&request.token, &request.name)
@@ -421,61 +342,24 @@ impl Broker {
             return Ok(value);
         }
 
-        // Reading the policy needs the key, so a cold broker asks before it can decide
-        let mut asked = false;
-        if self.cached_key().is_none() {
+        // A read prompts every time. The only way past the prompt is a token or, for the
+        // caller's own directory, a project manifest that already covers this secret
+        let covered = (self.cached_key().is_some() && self.granted(&request.name, cwd))
+            || (self.cached_key().is_none() && self.grant_manifest(request, cwd)?);
+        let outcome = if covered {
+            "project grant"
+        } else {
             self.prompt(&request.agent, &request.name)?;
-            asked = true;
-        }
-        let key = self.key.clone().expect("just unlocked");
+            "released"
+        };
 
-        let found = self.store.find(&request.name, &key)?;
-        let Some((_, secret)) = found else {
+        let key = self.key.clone().expect("just unlocked");
+        let Some((_, secret)) = self.store.find(&request.name, &key)? else {
             self.audit(&key, &request.agent, &request.name, "unknown", caller)?;
             bail!("no secret named {}", request.name);
         };
-
-        let outcome = match decide(secret.mode, secret.window_secs, approved, store::now()) {
-            // A manifest never covers `never`, because Deny is not reached from here
-            Decision::Deny => {
-                self.audit(&key, &request.agent, &request.name, "denied", caller)?;
-                bail!("{} is marked never, refusing", request.name);
-            }
-            #[cfg(feature = "host")]
-            Decision::Prompt if self.granted(&request.name, cwd) => "project grant",
-            Decision::Prompt => {
-                // The unlock a moment ago was itself the prompt, so do not ask twice for one read
-                if !asked {
-                    #[cfg(feature = "host")]
-                    let by_manifest = self.grant_manifest(request, cwd)?;
-                    #[cfg(not(feature = "host"))]
-                    let by_manifest = false;
-                    if by_manifest {
-                        "project grant"
-                    } else {
-                        self.prompt(&request.agent, &request.name)?;
-                        self.stamp(request);
-                        "approved"
-                    }
-                } else {
-                    self.stamp(request);
-                    "approved"
-                }
-            }
-            Decision::Allow if asked => {
-                self.stamp(request);
-                "approved"
-            }
-            // The window runs from the prompt, so a busy agent still asks again when it expires
-            Decision::Allow => "within window",
-        };
         self.audit(&key, &request.agent, &request.name, outcome, caller)?;
         Ok(secret.value.clone())
-    }
-
-    fn stamp(&mut self, request: &Request) {
-        self.approvals
-            .insert((request.agent.clone(), request.name.clone()), store::now());
     }
 
     /* A token read has no key by design, and the audit line only ever needed the public half,
@@ -987,8 +871,6 @@ fn run_plugin_command(mut command: std::process::Command) -> Result<String> {
 mod tests {
     use super::*;
 
-    const WINDOW: u64 = 300;
-
     #[test]
     fn the_prompt_name_comes_from_the_first_real_ancestor() {
         assert_eq!(prompt_agent("passbox < zsh < claude < login"), "claude");
@@ -1011,25 +893,6 @@ mod tests {
         assert!(text.contains("out"), "{text}");
         assert!(text.contains("stderr:") && text.contains("oops"), "{text}");
         assert!(text.contains("exit: 3"), "{text}");
-    }
-
-    #[test]
-    fn open_never_asks() {
-        assert_eq!(decide(Mode::Open, WINDOW, None, 1000), Decision::Allow);
-    }
-
-    #[test]
-    fn never_is_always_refused() {
-        assert_eq!(decide(Mode::Never, WINDOW, None, 1000), Decision::Deny);
-        assert_eq!(decide(Mode::Never, WINDOW, Some(999), 1000), Decision::Deny);
-    }
-
-    #[test]
-    fn always_asks_even_inside_a_window() {
-        assert_eq!(
-            decide(Mode::Always, WINDOW, Some(999), 1000),
-            Decision::Prompt
-        );
     }
 
     fn grant_of(pairs: &[(&str, &str)], expires: u64) -> TokenGrant {
@@ -1116,50 +979,5 @@ mod tests {
         let asked: u64 = 7 * 86_400;
         assert_eq!(asked.min(MAX_GRANT_SECS), MAX_GRANT_SECS);
         assert_eq!(600u64.min(MAX_GRANT_SECS), 600);
-    }
-
-    #[test]
-    fn a_window_holds_until_it_expires() {
-        assert_eq!(decide(Mode::Window, WINDOW, None, 1000), Decision::Prompt);
-        assert_eq!(
-            decide(Mode::Window, WINDOW, Some(1000), 1000),
-            Decision::Allow
-        );
-        assert_eq!(
-            decide(Mode::Window, WINDOW, Some(1000), 1299),
-            Decision::Allow
-        );
-        assert_eq!(
-            decide(Mode::Window, WINDOW, Some(1000), 1300),
-            Decision::Prompt
-        );
-        assert_eq!(
-            decide(Mode::Window, WINDOW, Some(1000), 9999),
-            Decision::Prompt
-        );
-    }
-
-    /// Listing rides its own slot, so a `get` approval cannot be spent on enumerating everything
-    #[test]
-    fn the_list_slot_cannot_hold_a_real_name() {
-        assert!(LIST_SLOT.contains('\u{0}'));
-        assert_eq!(Op::default(), Op::Get);
-    }
-
-    #[test]
-    fn a_zero_window_asks_every_time() {
-        assert_eq!(decide(Mode::Window, 0, Some(1000), 1000), Decision::Prompt);
-    }
-
-    #[test]
-    fn an_approval_from_the_future_is_not_trusted() {
-        assert_eq!(
-            decide(Mode::Window, WINDOW, Some(2000), 1000),
-            Decision::Prompt
-        );
-        assert_eq!(
-            decide(Mode::Never, WINDOW, Some(2000), 1000),
-            Decision::Deny
-        );
     }
 }

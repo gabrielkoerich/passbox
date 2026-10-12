@@ -1,6 +1,6 @@
 //! Bring entries across from `pass`, decrypting through GPG and re-encrypting to the store key.
 
-use crate::store::{DEFAULT_WINDOW_SECS, Mode, Secret, Store, new_id, now};
+use crate::store::{Secret, Store, new_id, now};
 use age::x25519;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -76,7 +76,6 @@ pub fn import(
     store: &Store,
     names: &[String],
     key: Option<&x25519::Identity>,
-    mode: Mode,
     force: bool,
 ) -> Result<Report> {
     let recipient = store.recipient()?;
@@ -99,8 +98,6 @@ pub fn import(
         let mut value = show(name)?;
         let secret = Secret {
             name: name.clone(),
-            mode,
-            window_secs: DEFAULT_WINDOW_SECS,
             value: value.clone(),
             created: now(),
             updated: now(),

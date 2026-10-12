@@ -15,7 +15,7 @@ Non-test lines, measured 2026-09-24 at v0.13.1. Tests are excluded because a mod
 | Module | Lines | What it is |
 |---|---|---|
 | `main.rs` | 863 | the CLI |
-| `broker.rs` | 585 | approvals, windows, audit |
+| `broker.rs` | 585 | approvals, grants, audit |
 | `store.rs` | 512 | the file format and versions |
 | `sync.rs` | 197 | the union copy |
 | `mcp.rs` | 181 | the MCP server |
@@ -42,7 +42,7 @@ The first is cheap here and worth doing early. The second is the rest of this do
 
 `pass` sources an extension into its own shell process, so the extension inherits everything pass can do. That is why user extensions are gated behind `PASSWORD_STORE_ENABLE_EXTENSIONS=true`.
 
-passbox does not need that trade, because the broker already is the extension API. A `passbox-otp` asks the broker over the socket exactly as any agent does, and gets the same prompt, the same window and the same audit line. It never holds the store key, so it is not in the trust base the way a backend plugin is.
+passbox does not need that trade, because the broker already is the extension API. A `passbox-otp` asks the broker over the socket exactly as any agent does, and gets the same prompt and the same audit line. It never holds the store key, so it is not in the trust base the way a backend plugin is.
 
 Only dispatch is missing: `passbox foo` should exec `passbox-foo` from `PATH` when `foo` is not a built-in verb. That is roughly twenty lines, and it buys the ecosystem shape that grew `pass`.
 
@@ -58,7 +58,7 @@ Everything that does is the product and stays. Everything that does not can be a
 |---|---|
 | `crypto.rs`, `store.rs` | the file format |
 | `se.rs` | the Enclave and the prompt |
-| `broker.rs` | approvals, windows, audit |
+| `broker.rs` | approvals, grants, audit |
 | `project.rs` | grants, which the broker reads |
 | `init`, `add`, `get`, `ls`, `rm`, `exec` | the idea itself |
 
@@ -295,6 +295,6 @@ Transport, in order of preference:
 - **Tailscale.** Stable per node identity, which is a better caller identity than the self declared agent name, and no ports to manage.
 - Rejected: **Cloudflare Tunnel.** Built for public exposure, which is the wrong shape for a personal broker, and it puts a third party in the path.
 
-It never offers a remote shell. The Mac declares named capabilities such as `things.today` and `things.add`, each carrying the same mode a secret carries, and each raising the same prompt naming the caller and the capability.
+It never offers a remote shell. The Mac declares named capabilities such as `things.today` and `things.add`, and each raises the same prompt naming the caller and the capability.
 
 A capability provider never needs the store key, so it is a subcommand extension rather than a backend plugin, and it inherits the broker's policy unchanged.

@@ -205,7 +205,7 @@ pub fn sync_via_rclone(store: &Store, remote: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{DEFAULT_WINDOW_SECS, Mode, Secret, new_id, now};
+    use crate::store::{Secret, new_id, now};
     use secrecy::SecretString;
 
     fn store(dir: &Path) -> (Store, age::x25519::Identity) {
@@ -223,8 +223,6 @@ mod tests {
     fn secret(name: &str, value: &str) -> Secret {
         Secret {
             name: name.to_string(),
-            mode: Mode::Window,
-            window_secs: DEFAULT_WINDOW_SECS,
             value: value.to_string(),
             created: now(),
             updated: now(),
