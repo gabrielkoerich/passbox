@@ -76,7 +76,7 @@ passbox exec --stdin db/password -- psql
 
 Prefer `--stdin` where the tool accepts it. Any process running as you can read a child's environment with `ps eww`.
 
-Set `PASSBOX_AGENT` so the prompt names the caller.
+Set `PASSBOX_AGENT` to name the caller in the prompt. Without it, passbox reads the process chain and uses the first ancestor that is not a shell, such as `claude` or `codex`.
 
 ```bash
 PASSBOX_AGENT=claude-code passbox exec --env GH_TOKEN=github/token -- gh pr list
