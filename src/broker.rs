@@ -175,7 +175,8 @@ impl Broker {
         error: anyhow::Error,
         caller: &str,
     ) -> anyhow::Error {
-        let decision = if format!("{error:#}").contains("denied") {
+        // The helper's own message, so a secret name in some outer context cannot change the label
+        let decision = if error.root_cause().to_string().starts_with("denied") {
             "denied"
         } else {
             "prompt failed"

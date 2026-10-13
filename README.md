@@ -190,8 +190,9 @@ Every decision is logged, encrypted, one record per line, with the agent, the se
 | `granted` | A grant was approved for this name |
 | `project grant` | A `.passbox.toml` grant covered the read |
 | `approved` | A listing or a plugin run was approved |
+| `unknown` | The prompt was approved, and no secret has that name |
 | `denied` | The prompt was refused |
-| `prompt failed` | No prompt could be shown, such as with the lid closed |
+| `prompt failed` | No prompt could be shown, such as with the lid closed, or it did not complete |
 
 ## Plugins
 
