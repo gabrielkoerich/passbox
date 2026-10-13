@@ -7,6 +7,11 @@ on:
 permissions:
   contents: write
 
+# A newer push replaces the run in progress, so two runs never wait on macOS runners together
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
