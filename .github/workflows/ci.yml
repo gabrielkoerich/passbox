@@ -287,33 +287,14 @@ jobs:
           path: passbox-${{ matrix.target }}.tar.gz
           retention-days: 1
 
-  # The site is generated from README.md and AGENTS.md, so it cannot drift from them.
-  site:
-    needs: [lint]
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page-url }}
-    steps:
-      - uses: actions/checkout@v5
-      - id: deployment
-        uses: gabrielkoerich/zola-docs-action@v1
-        with:
-          path: docs
-          zola-version: "0.22.1"
-          build-command: ./build.sh
-          deploy: "true"
-          cloudflare-token: ${{ secrets.CF_API_TOKEN }}
-
   release:
     needs: [lint, gitleaks, test-macos, client-build, version, binaries]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Starts pages.yml, which a release made with GITHUB_TOKEN would not trigger
+      actions: write
     # Two pushes close together raced and both computed the same next tag. Queue instead.
     concurrency:
       group: release
@@ -406,6 +387,14 @@ jobs:
         run: |
           ls -l artifacts
           gh release create "$VERSION" --title "$VERSION" --notes "$CHANGELOG" artifacts/*.tar.gz
+
+      # The docs describe this release, so they go out after it and are built from its tag
+      - name: Publish the docs for this release
+        if: needs.version.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main -f ref="$VERSION"
 
       - name: Update Homebrew formula
         if: needs.version.outputs.skip == 'false'
