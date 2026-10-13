@@ -675,8 +675,7 @@ pub(crate) fn ancestry(pid: libc::pid_t) -> String {
 }
 
 pub fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
-    let token = std::env::var("PASSBOX_TOKEN").unwrap_or_default();
-    request_token(store, name, agent, &token)
+    request_token(store, name, agent, crate::held_token().unwrap_or_default())
 }
 
 /// A read carrying a token the caller already holds, such as the one exec mints for its batch

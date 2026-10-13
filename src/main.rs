@@ -51,6 +51,79 @@ use store::{Secret, Store};
 const PASSPHRASE_ENV: &str = "PASSBOX_PASSPHRASE";
 const MIN_PASSPHRASE: usize = 12;
 
+// A token opens its grants and the passphrase opens the whole store, so a command passbox runs
+// for someone else inherits neither, or it could print them into a transcript
+pub fn without_credentials(command: &mut std::process::Command) -> &mut std::process::Command {
+    command
+        .env_remove("PASSBOX_TOKEN")
+        .env_remove(PASSPHRASE_ENV)
+}
+
+struct Held {
+    token: Option<zeroize::Zeroizing<String>>,
+    passphrase: Option<zeroize::Zeroizing<String>>,
+}
+
+static HELD: std::sync::OnceLock<Held> = std::sync::OnceLock::new();
+
+/**
+ * Moves the token and the passphrase out of the environment before anything else runs, so nothing
+ * passbox starts can inherit them, git and the broker included. Unsetting a variable leaves its
+ * bytes where exec placed them, and `ps eww` and `/proc/<pid>/environ` read that original block,
+ * so the value is overwritten in place first
+ **/
+fn take_credentials() {
+    let _ = HELD.set(Held {
+        token: take_env("PASSBOX_TOKEN"),
+        passphrase: take_env(PASSPHRASE_ENV),
+    });
+}
+
+fn take_env(name: &str) -> Option<zeroize::Zeroizing<String>> {
+    let value = zeroize::Zeroizing::new(std::env::var(name).ok()?);
+    wipe_env_value(name);
+    // SAFETY: called first thing in main, while this is the only thread
+    unsafe { std::env::remove_var(name) };
+    Some(value)
+}
+
+fn wipe_env_value(name: &str) {
+    use zeroize::Zeroize;
+    #[cfg(target_os = "macos")]
+    // SAFETY: the C runtime's own pointer to the environment table
+    let mut entry = unsafe { *libc::_NSGetEnviron() };
+    #[cfg(not(target_os = "macos"))]
+    // SAFETY: the C runtime's own pointer to the environment table
+    let mut entry = unsafe { environ };
+    let prefix = format!("{name}=");
+
+    // SAFETY: walks the NUL terminated table and only writes inside the matched entry's value
+    unsafe {
+        while !(*entry).is_null() {
+            let bytes = std::ffi::CStr::from_ptr(*entry).to_bytes();
+            if let Some(value) = bytes.strip_prefix(prefix.as_bytes()) {
+                let start = (*entry).add(prefix.len()).cast::<u8>();
+                std::slice::from_raw_parts_mut(start, value.len()).zeroize();
+            }
+            entry = entry.add(1);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+unsafe extern "C" {
+    static environ: *mut *mut libc::c_char;
+}
+
+/// The token this process was started with, held outside the environment
+pub fn held_token() -> Option<&'static str> {
+    HELD.get()?.token.as_deref().map(String::as_str)
+}
+
+fn held_passphrase() -> Option<&'static str> {
+    HELD.get()?.passphrase.as_deref().map(String::as_str)
+}
+
 #[derive(Parser)]
 #[command(
     name = "passbox",
@@ -159,6 +232,7 @@ enum Command {
 }
 
 fn main() {
+    take_credentials();
     if let Err(e) = run() {
         eprintln!("passbox: {e:#}");
         std::process::exit(1);
@@ -389,7 +463,7 @@ fn batch_token(store: &Store, names: &[&str]) -> Option<String> {
     let mut names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
     names.sort();
     names.dedup();
-    if names.len() < 2 || !brokered(store) || std::env::var_os("PASSBOX_TOKEN").is_some() {
+    if names.len() < 2 || !brokered(store) || held_token().is_some() {
         return None;
     }
 
@@ -400,7 +474,8 @@ fn batch_token(store: &Store, names: &[&str]) -> Option<String> {
 fn exec(store: &Store, envs: &[String], stdin: Option<&str>, command: &[String]) -> Result<()> {
     let (program, args) = command.split_first().context("no command to run")?;
     let mut child = std::process::Command::new(program);
-    child.args(args);
+    // Before the injected secrets, so an explicit --env PASSBOX_TOKEN=name still reaches the child
+    without_credentials(&mut child).args(args);
 
     let mut pairs = Vec::new();
     for pair in envs {
@@ -667,7 +742,7 @@ fn bind_machine(store: &Store, key: &age::x25519::Identity) -> bool {
 
 /// `PASSBOX_PASSPHRASE` says nobody is at the keyboard, and a fingerprint needs somebody
 fn headless() -> bool {
-    std::env::var_os(PASSPHRASE_ENV).is_some()
+    held_passphrase().is_some()
 }
 
 fn unlock(store: &Store, reason: &str) -> Result<age::x25519::Identity> {
@@ -716,9 +791,9 @@ fn machine_add(store: &Store) -> Result<()> {
 
 /// `PASSBOX_PASSPHRASE` exists for CI and for headless use, where there is no terminal to type at
 fn ask(prompt: &str) -> Result<String> {
-    match std::env::var(PASSPHRASE_ENV) {
-        Ok(pass) => Ok(pass),
-        Err(_) => Ok(rpassword::prompt_password(prompt)?),
+    match held_passphrase() {
+        Some(pass) => Ok(pass.to_string()),
+        None => Ok(rpassword::prompt_password(prompt)?),
     }
 }
 
@@ -1104,7 +1179,7 @@ pub fn run_child(
 ) -> Result<std::process::Output> {
     let (program, args) = command.split_first().context("no command to run")?;
     let mut child = std::process::Command::new(program);
-    child
+    without_credentials(&mut child)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());

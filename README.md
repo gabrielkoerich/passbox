@@ -559,6 +559,10 @@ The filename is a random id. Names live inside the ciphertext, so nothing on dis
 | `PASSBOX_AGENT` | Name shown in the prompt beside the secret |
 | `PASSBOX_NO_AUTOSYNC` | Set to stop a write copying to the configured directory |
 | `PASSBOX_PASSPHRASE` | Supplies the passphrase for CI and headless use, and turns off the Enclave path |
+| `PASSBOX_TOKEN` | A grant token, used for reads it covers |
+| `PASSBOX_NO_ENCLAVE` | Refuses any Secure Enclave operation. The tests and CI set it, so a bug fails them instead of asking for a fingerprint |
+
+passbox moves `PASSBOX_TOKEN` and `PASSBOX_PASSPHRASE` out of its environment when it starts and overwrites their bytes, so `ps eww` cannot read them and nothing it runs inherits them: not the `exec` child, a plugin, an MCP command, git or the broker. A secret injected under one of those names with `--env` still reaches the child.
 
 ### Building
 

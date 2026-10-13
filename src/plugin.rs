@@ -113,6 +113,8 @@ impl Tool {
         }
         let (program, rest) = self.run.split_first().context("tool has no command")?;
         let mut command = Command::new(program);
+        // Every plugin run, local, MCP or remote, starts here, so this one call covers them all
+        crate::without_credentials(&mut command);
         for part in rest {
             command.arg(self.bind(part, args)?);
         }
@@ -237,6 +239,26 @@ mod tests {
             .command(&args(&[("to", "a"), ("subject", "b")]))
             .unwrap_err();
         assert!(err.to_string().contains("whole argument"), "{err}");
+    }
+
+    #[test]
+    fn a_plugin_command_never_inherits_the_token_or_the_passphrase() {
+        let cmd = tool()
+            .command(&args(&[("to", "a"), ("subject", "b")]))
+            .unwrap();
+        let removed: Vec<_> = cmd
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            removed.contains(&"PASSBOX_TOKEN".to_string()),
+            "{removed:?}"
+        );
+        assert!(
+            removed.contains(&"PASSBOX_PASSPHRASE".to_string()),
+            "{removed:?}"
+        );
     }
 
     #[test]

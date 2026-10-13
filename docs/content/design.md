@@ -106,6 +106,10 @@ Grants are written to `grants-<host>.age`, encrypted to the store key so a local
 
 Rejected: a batch read op in the broker. The grant already approves a list of names with one prompt and works from a client over the tailnet, so a second path would duplicate it.
 
+`PASSBOX_TOKEN` and `PASSBOX_PASSPHRASE` leave the environment at startup. passbox copies them into memory it owns, overwrites the original bytes, because `ps eww` and `/proc/<pid>/environ` read the block exec wrote rather than the live table, and unsets them. A command passbox runs for someone else, an `exec` child, a plugin or an MCP command, also has both removed. Without this an agent could ask `run_with_secret` to print `$PASSBOX_TOKEN` and read the token, or the whole-store passphrase, in the tool result.
+
+Rejected: removing them only from each child. It covers the commands an agent picks, and misses `ps eww` and every subprocess added later. Startup removal covers both, and the per-child removal stays as a second layer.
+
 `passbox get` prints to stdout for interactive use.
 
 ## Sync

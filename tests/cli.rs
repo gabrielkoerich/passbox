@@ -44,6 +44,8 @@ impl Cli {
         cmd.env("PASSBOX_PASSPHRASE", passphrase);
         // A one second KDF per store is the right default and the wrong thing to pay here
         cmd.env("PASSBOX_SCRYPT_LOG_N", "10");
+        // A test must never reach the developer's fingerprint, whatever else breaks
+        cmd.env("PASSBOX_NO_ENCLAVE", "1");
         cmd
     }
 
@@ -838,4 +840,168 @@ fn exec_with_one_secret_or_a_held_token_mints_no_grant() {
             .all(|r| r["op"] == "get" && r["token"] == "held"),
         "{seen:?}"
     );
+}
+
+/// Prints the two credential variables as the child sees them, so an empty pair means it got neither
+const SHOW_CREDENTIALS: &str = "printf '[%s][%s]' \"$PASSBOX_TOKEN\" \"$PASSBOX_PASSPHRASE\"";
+
+fn with_token(cli: &Cli, args: &[&str]) -> std::process::Output {
+    cli.cmd(PASSPHRASE)
+        .env("PASSBOX_TOKEN", "tok-leak")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn exec_children_never_see_the_token_or_the_passphrase() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+
+    let out = with_token(
+        &cli,
+        &["exec", "--env", "A=a/b", "--", "sh", "-c", SHOW_CREDENTIALS],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "[][]");
+
+    // Asking for a secret under that name on purpose still works
+    let out = with_token(
+        &cli,
+        &[
+            "exec",
+            "--env",
+            "PASSBOX_TOKEN=a/b",
+            "--",
+            "sh",
+            "-c",
+            SHOW_CREDENTIALS,
+        ],
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "[v][]");
+}
+
+#[test]
+fn passbox_wipes_the_credentials_from_its_own_environment() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+
+    // The child reads its parent's environment the way any process running as the user can
+    let out = with_token(
+        &cli,
+        &[
+            "exec",
+            "--env",
+            "A=a/b",
+            "--",
+            "sh",
+            "-c",
+            "ps eww -o command= -p $PPID",
+        ],
+    );
+    let seen = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        seen.contains("PASSBOX_DIR="),
+        "ps did not show the environment: {seen}"
+    );
+    assert!(
+        !seen.contains("tok-leak"),
+        "the token is still in the environment: {seen}"
+    );
+    assert!(
+        !seen.contains(PASSPHRASE),
+        "the passphrase is still in the environment: {seen}"
+    );
+}
+
+#[test]
+fn plugin_commands_never_see_the_token_or_the_passphrase() {
+    let cli = Cli::new();
+    let src = tempfile::tempdir().unwrap();
+    let manifest = format!(
+        "name = \"envcheck\"\ndescription = \"test\"\n\n[[tool]]\nname = \"show\"\nrun = [\"sh\", \"-c\", {}]\n",
+        toml_string(SHOW_CREDENTIALS)
+    );
+    std::fs::write(src.path().join("plugin.toml"), manifest).unwrap();
+    cli.note(&["plugin", "add", src.path().to_str().unwrap()], None);
+
+    let out = with_token(&cli, &["plugin", "envcheck", "show"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[][]");
+}
+
+#[test]
+fn mcp_run_with_secret_never_hands_the_token_or_the_passphrase_to_the_agent() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v-secret")).unwrap();
+
+    let script = format!("{SHOW_CREDENTIALS}; printf '[%s]' \"$S\"");
+    let call = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "run_with_secret", "arguments": {
+            "secret": "a/b", "env_var": "S", "command": ["sh", "-c", script]
+        }}
+    });
+    let mut child = cli
+        .cmd(PASSPHRASE)
+        .env("PASSBOX_TOKEN", "tok-leak")
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{call}").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let reply = String::from_utf8_lossy(&out.stdout);
+
+    assert!(reply.contains("[][][[redacted by passbox]]"), "{reply}");
+    assert!(
+        !reply.contains("tok-leak"),
+        "the token reached the agent: {reply}"
+    );
+    assert!(
+        !reply.contains(PASSPHRASE),
+        "the passphrase reached the agent: {reply}"
+    );
+}
+
+/// A TOML basic string holding `text`, so a shell script with quotes survives the manifest
+fn toml_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[test]
+fn a_test_can_never_reach_the_secure_enclave() {
+    use std::os::unix::process::CommandExt;
+
+    let cli = Cli::empty();
+    let mut cmd = cli.cmd(PASSPHRASE);
+    // No passphrase makes init try to bind the Enclave, which is what a broken headless check does
+    cmd.env_remove("PASSBOX_PASSPHRASE")
+        .arg("init")
+        .stdin(Stdio::null());
+    // No controlling terminal, so the passphrase init falls back to cannot wait on a keyboard
+    // SAFETY: setsid is async-signal-safe and touches nothing in this process
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let out = cmd.output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("disabled by PASSBOX_NO_ENCLAVE"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("bound to this Mac"), "{stderr}");
 }

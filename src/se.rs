@@ -73,8 +73,17 @@ fn run(args: &[&str], stdin: Option<&[u8]>) -> Result<Zeroizing<Vec<u8>>> {
     Ok(out)
 }
 
+// The tests set this, so a broken headless check fails them instead of asking for a fingerprint
+fn ensure_enabled() -> Result<()> {
+    if std::env::var_os("PASSBOX_NO_ENCLAVE").is_some() {
+        bail!("the Secure Enclave is disabled by PASSBOX_NO_ENCLAVE");
+    }
+    Ok(())
+}
+
 /// Wrap the store key to a new Secure Enclave key. Neither step raises a prompt.
 pub fn wrap(plaintext: &[u8]) -> Result<SeWrap> {
+    ensure_enabled()?;
     let pair: KeyPair = serde_json::from_slice(&run(&["keygen"], None)?)?;
     let request = serde_json::json!({
         "public_key": pair.public_key,
@@ -95,6 +104,7 @@ pub fn wrap(plaintext: &[u8]) -> Result<SeWrap> {
 "<binary> is trying to <reason>.", so `reason` has to be a verb phrase that finishes that
 sentence, such as "release the password for github/token to claude-code". */
 pub fn unwrap(wrap: &SeWrap, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
+    ensure_enabled()?;
     let request = serde_json::json!({
         "key_blob": wrap.key_blob,
         "ephemeral": wrap.ephemeral,
