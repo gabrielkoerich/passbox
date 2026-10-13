@@ -385,9 +385,22 @@ fn nothing_on_disk_reveals_a_name() {
 }
 
 #[test]
-fn an_overwrite_is_recoverable() {
+fn add_refuses_an_existing_name() {
     let cli = Cli::new();
     cli.run(&["add", "github/token"], Some("good")).unwrap();
+    let err = cli.run(&["add", "github/token"], Some("bad")).unwrap_err();
+    assert!(err.contains("already exists"), "{err}");
+    assert_eq!(
+        cli.run(&["get", "--reveal", "github/token"], None).unwrap(),
+        "good"
+    );
+}
+
+#[test]
+fn a_replaced_value_is_recoverable() {
+    let cli = Cli::new();
+    cli.run(&["add", "github/token"], Some("good")).unwrap();
+    cli.run(&["rm", "github/token"], None).unwrap();
     cli.run(&["add", "github/token"], Some("bad")).unwrap();
     assert_eq!(
         cli.run(&["get", "--reveal", "github/token"], None).unwrap(),

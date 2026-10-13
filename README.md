@@ -60,6 +60,8 @@ passbox copy github/token     # to the clipboard, cleared after a few seconds
 
 `get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. A deliberate capture passes `--reveal`. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after a few seconds. For a command use `exec`.
 
+`add` refuses a name that already exists. To change a value, `passbox rm` it and add it again. The old value stays in its versions, so `passbox restore` brings it back.
+
 ### Coming from pass
 
 ```bash
@@ -68,7 +70,7 @@ passbox import-pass acme        # one namespace
 passbox import-pass acme/token  # one entry
 ```
 
-Each entry is decrypted through GPG and re-encrypted to the store key. The whole body is kept, so the `key: value` lines many pass entries carry under the password survive. Entries already in the store are skipped unless you pass `--force`, and nothing in `pass` is changed or removed.
+Each entry is decrypted through GPG and re-encrypted to the store key. The whole body is kept, so the `key: value` lines many pass entries carry under the password survive. Entries already in the store are skipped, and nothing in `pass` is changed or removed.
 
 ### Giving a secret to an agent
 

@@ -139,7 +139,7 @@ struct Cli {
 enum Command {
     /// Create the store, bound to this Mac's Secure Enclave and nothing else
     Init,
-    /// Add or replace a secret, reading the value from stdin or a prompt
+    /// Add a secret, reading the value from stdin or a prompt. An existing name is refused
     Add { name: String },
     /// Print a secret
     Get {
@@ -222,9 +222,6 @@ enum Command {
     ImportPass {
         /// A namespace such as `acme`, or one entry. Everything, if omitted.
         prefix: Option<String>,
-        /// Overwrite entries that are already in the store
-        #[arg(long)]
-        force: bool,
     },
     /// Install, list, remove and run plugins, such as mail and things3
     Plugin {
@@ -310,7 +307,7 @@ fn run() -> Result<()> {
         #[cfg(feature = "host")]
         Command::Sync { remote, enable } => run_sync(&store, remote.as_deref(), enable),
         #[cfg(feature = "host")]
-        Command::ImportPass { prefix, force } => import_pass(&store, prefix.as_deref(), force)
+        Command::ImportPass { prefix } => import_pass(&store, prefix.as_deref())
             .inspect(|()| written(&store, "import from pass")),
         Command::Plugin { args } => plugin_cmd(&store, &args),
         Command::Mcp => mcp::serve(store),
@@ -846,22 +843,22 @@ fn add(store: &Store, name: &str) -> Result<()> {
         bail!("refusing to store an empty value");
     }
 
-    // Replacing needs the name to id map, which only the key can produce
-    let existing = if store.ids()?.is_empty() {
-        None
+    // Spotting a duplicate needs the name to id map, which only the key can produce
+    let id = if store.ids_with_files()?.is_empty() && !store.versions_dir().exists() {
+        store::new_id()
     } else {
-        let key = unlock(store, &format!("replace {name}"))?;
-        store.find(name, &key)?.map(|(id, s)| (id, s.created))
+        let key = unlock(store, &format!("add {name}"))?;
+        if store.find(name, &key)?.is_some() {
+            bail!("{name} already exists, run `passbox rm {name}` first to replace it");
+        }
+        // A name added back after rm keeps its id, so restore still reaches the old versions
+        find_deleted(store, name, &key).unwrap_or_else(|_| store::new_id())
     };
 
-    let (id, created) = match existing {
-        Some((id, created)) => (id, created),
-        None => (store::new_id(), store::now()),
-    };
     let secret = Secret {
         name: name.to_string(),
         value,
-        created,
+        created: store::now(),
         updated: store::now(),
     };
     store.put(&id, &secret, &recipient)?;
@@ -870,7 +867,7 @@ fn add(store: &Store, name: &str) -> Result<()> {
 }
 
 #[cfg(feature = "host")]
-fn import_pass(store: &Store, prefix: Option<&str>, force: bool) -> Result<()> {
+fn import_pass(store: &Store, prefix: Option<&str>) -> Result<()> {
     let dir = import::store_dir();
     let all = import::entries(&dir)?;
     if all.is_empty() {
@@ -894,7 +891,7 @@ fn import_pass(store: &Store, prefix: Option<&str>, force: bool) -> Result<()> {
         Some(unlock(store, "import entries from pass")?)
     };
 
-    let report = import::import(store, &picked, key.as_ref(), force)?;
+    let report = import::import(store, &picked, key.as_ref())?;
     eprintln!("imported {}, skipped {}", report.imported, report.skipped);
     Ok(())
 }

@@ -76,7 +76,6 @@ pub fn import(
     store: &Store,
     names: &[String],
     key: Option<&x25519::Identity>,
-    force: bool,
 ) -> Result<Report> {
     let recipient = store.recipient()?;
     let mut report = Report {
@@ -86,10 +85,10 @@ pub fn import(
 
     for name in names {
         let existing = match key {
-            Some(key) => store.find(name, key)?.map(|(id, _)| id),
+            Some(key) => store.find(name, key)?,
             None => None,
         };
-        if existing.is_some() && !force {
+        if existing.is_some() {
             eprintln!("skipping {name}, already in the store");
             report.skipped += 1;
             continue;
@@ -104,7 +103,7 @@ pub fn import(
         };
         value.zeroize();
 
-        store.put(&existing.unwrap_or_else(new_id), &secret, &recipient)?;
+        store.put(&new_id(), &secret, &recipient)?;
         report.imported += 1;
     }
     Ok(report)
