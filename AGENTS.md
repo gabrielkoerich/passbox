@@ -58,7 +58,7 @@ A namespace is refused: name what the job reads. See the [README](README.md#a-jo
 
 - Read a secret without the user approving it, unless a token or an injected variable already covers it.
 - Grant yourself more than you were given. A token opens the names it was granted.
-- Escape the audit log. Every release is recorded, and `passbox audit` shows it.
+- Escape the audit log. Every release and every refused prompt is recorded, and `passbox audit` shows it.
 
 ## If you are asked to store a secret
 

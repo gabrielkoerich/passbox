@@ -181,7 +181,18 @@ If a project uses both, the `.toml` covers the same names the `.env` maps, so th
 passbox audit --tail 50
 ```
 
-Every decision is logged, encrypted, one record per line.
+Every decision is logged, encrypted, one record per line, with the agent, the secret and the caller's process chain.
+
+| Decision | Meaning |
+|---|---|
+| `released` | A prompt was approved and the value went out |
+| `by token` | A grant token covered the read, no prompt |
+| `granted` | A grant was approved for this name |
+| `project grant` | A `.passbox.toml` grant covered the read |
+| `approved` | A listing or a plugin run was approved |
+| `unknown` | The prompt was approved, and no secret has that name |
+| `denied` | The prompt was refused |
+| `prompt failed` | No prompt could be shown, such as with the lid closed, or it did not complete |
 
 ## Plugins
 
@@ -438,7 +449,7 @@ pkill -f "passbox broker"
 
 ### Mint once per process
 
-A token caches on the client that minted it. A factory that builds a fresh client per call mints a fresh grant per call, and each one is a fingerprint. Memoise it. The symptom is repeated `approved` for one secret and one agent in `passbox audit`.
+A token caches on the client that minted it. A factory that builds a fresh client per call mints a fresh grant per call, and each one is a fingerprint. Memoise it. The symptom is repeated `granted` for one secret and one agent in `passbox audit`.
 
 ## Another machine
 
@@ -567,9 +578,11 @@ passbox moves `PASSBOX_TOKEN` and `PASSBOX_PASSPHRASE` out of its environment wh
 ### Building
 
 ```bash
-cargo test
-cargo test -- --ignored   # the Secure Enclave round trip, needs a finger
+cargo test --features mock-enclave                  # everything, the broker through a fake enclave
+cargo test secure_enclave_round_trip -- --ignored   # the real Enclave, needs a finger
 ```
+
+`mock-enclave` swaps the Secure Enclave helper for a fake that prompts nobody and logs each prompt a person would have seen, so the tests can count them. It is for tests only: a release build with it does not compile, and a build with it aborts outside a cargo target directory. A plain `cargo test` skips the tests that need it.
 
 `build.rs` compiles the Swift helper with `swiftc` from the Command Line Tools.
 

@@ -31,8 +31,35 @@ struct Sealed {
     ciphertext: String,
 }
 
+/**
+ * The test fake that replaces the helper, which exists only in a `mock-enclave` build. It has no
+ * Enclave behind it, so it refuses any store outside the temp directory, where every test store
+ * lives, and aborts rather than returning an error a caller could fall past
+ **/
+#[cfg(feature = "mock-enclave")]
+fn fake_helper() -> Option<PathBuf> {
+    let fake = std::env::var_os("PASSBOX_SE_HELPER")?;
+    let store = std::env::var_os("PASSBOX_DIR").and_then(|d| std::fs::canonicalize(d).ok());
+    let temp = std::fs::canonicalize(std::env::temp_dir()).ok();
+    match (store, temp) {
+        (Some(store), Some(temp)) if store.starts_with(&temp) => Some(PathBuf::from(fake)),
+        _ => {
+            eprintln!("passbox: PASSBOX_SE_HELPER is set for a store outside the temp directory");
+            std::process::abort();
+        }
+    }
+}
+
+#[cfg(not(feature = "mock-enclave"))]
+fn fake_helper() -> Option<PathBuf> {
+    None
+}
+
 /// Unpacked next to the caches rather than in the store, so it never reaches a syncer
 fn helper() -> Result<PathBuf> {
+    if let Some(fake) = fake_helper() {
+        return Ok(fake);
+    }
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
     let dir = PathBuf::from(home).join("Library/Caches/passbox");
     std::fs::create_dir_all(&dir)?;
@@ -73,8 +100,12 @@ fn run(args: &[&str], stdin: Option<&[u8]>) -> Result<Zeroizing<Vec<u8>>> {
     Ok(out)
 }
 
-// The tests set this, so a broken headless check fails them instead of asking for a fingerprint
+// The tests set this, so a broken headless check fails them instead of asking for a fingerprint.
+// The fake is not an Enclave, so it still runs
 fn ensure_enabled() -> Result<()> {
+    if fake_helper().is_some() {
+        return Ok(());
+    }
     if std::env::var_os("PASSBOX_NO_ENCLAVE").is_some() {
         bail!("the Secure Enclave is disabled by PASSBOX_NO_ENCLAVE");
     }

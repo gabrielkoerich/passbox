@@ -1,6 +1,7 @@
 target/
 /.claude
 /local
+.DS_Store
 
 # Generated from README.md and AGENTS.md by docs/build.sh
 /docs/content/*.md

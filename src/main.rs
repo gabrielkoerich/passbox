@@ -231,7 +231,31 @@ enum Command {
     Broker,
 }
 
+#[cfg(all(feature = "mock-enclave", not(debug_assertions)))]
+compile_error!(
+    "mock-enclave swaps the Secure Enclave for a fake, it is for tests and never builds in release"
+);
+
+/**
+ * The fallback if a `mock-enclave` build ships anyway. Cargo writes `CACHEDIR.TAG` at the root of
+ * every target directory, so a test build always has one above it, and an installed binary never
+ * does. It aborts rather than panicking, since a panic on a broker thread ends only that thread
+ **/
+#[cfg(feature = "mock-enclave")]
+fn refuse_outside_cargo() {
+    let inside = std::env::current_exe().ok().is_some_and(|exe| {
+        exe.ancestors()
+            .any(|dir| dir.join("CACHEDIR.TAG").is_file())
+    });
+    if !inside {
+        eprintln!("passbox: this mock-enclave test build is outside a cargo target directory");
+        std::process::abort();
+    }
+}
+
 fn main() {
+    #[cfg(feature = "mock-enclave")]
+    refuse_outside_cargo();
     take_credentials();
     if let Err(e) = run() {
         eprintln!("passbox: {e:#}");
