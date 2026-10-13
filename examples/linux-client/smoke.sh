@@ -28,25 +28,19 @@ echo
 check "no store on this machine" "" "$(ls ~/.passbox/store 2>/dev/null)"
 check "no wraps on this machine" "" "$(ls ~/.passbox/wraps 2>/dev/null)"
 
-out=$(PASSBOX_AGENT="$AGENT" passbox get "$SECRET" 2>&1)
-if [ -n "$out" ] && ! printf '%s' "$out" | grep -q '^passbox:'; then
-    printf '  ok    read %s (%s bytes)\n' "$SECRET" "${#out}"; pass=$((pass + 1))
-else
-    printf '  FAIL  read %s\n    %s\n' "$SECRET" "$out"; fail=$((fail + 1))
-fi
-
 # A name that is not there must say so, not hang or return something
-out=$(PASSBOX_AGENT="$AGENT" passbox get "no/such/secret" 2>&1 | tail -1)
+out=$(PASSBOX_AGENT="$AGENT" passbox exec --env V=no/such/secret -- true 2>&1 | tail -1)
 case "$out" in
     *"no secret named"*) printf '  ok    an unknown name is refused\n'; pass=$((pass + 1)) ;;
     *) printf '  FAIL  an unknown name is refused\n    %s\n' "$out"; fail=$((fail + 1)) ;;
 esac
 
-# Injection is the point: the value reaches the child and not the caller
+# The read goes through the host into a child, so this script never holds the value
+# shellcheck disable=SC2016 # the child expands $V, not this script
 out=$(PASSBOX_AGENT="$AGENT" passbox exec --env V="$SECRET" -- sh -c 'printf %s "${#V}"' 2>&1)
 case "$out" in
-    ''|*[!0-9]*) printf '  FAIL  exec injects into a child\n    %s\n' "$out"; fail=$((fail + 1)) ;;
-    *) printf '  ok    exec injects into a child (%s bytes)\n' "$out"; pass=$((pass + 1)) ;;
+    ''|*[!0-9]*) printf '  FAIL  read %s into a child\n    %s\n' "$SECRET" "$out"; fail=$((fail + 1)) ;;
+    *) printf '  ok    read %s into a child (%s bytes)\n' "$SECRET" "$out"; pass=$((pass + 1)) ;;
 esac
 
 # The caller never sees it in its own environment

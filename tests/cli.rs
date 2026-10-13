@@ -1492,3 +1492,49 @@ fn a_refused_project_grant_is_audited_and_an_approved_one_covers_reads() {
         assert!(decided(&log, name, "project grant"), "{log}");
     }
 }
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn copy_reads_through_the_broker_and_never_prints_the_value() {
+    let bound = Bound::new();
+    let out = bound
+        .cmd()
+        .args(["copy", "demo/one", "--clear", "7"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(out.stdout.is_empty(), "copy printed to stdout");
+    assert!(!stderr.contains("value-one"), "{stderr}");
+    assert_eq!(
+        bound.prompts(),
+        ["release the password for demo/one to test-agent"]
+    );
+
+    let clipboard = bound.log.path().join("prompts.clipboard");
+    assert_eq!(std::fs::read_to_string(&clipboard).unwrap(), "value-one");
+    let clear = bound.log.path().join("prompts.clear");
+    assert_eq!(std::fs::read_to_string(clear).unwrap(), "7");
+
+    let log = bound.audit();
+    assert!(decided(&log, "demo/one", "released"), "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_refused_copy_puts_nothing_on_the_clipboard() {
+    let bound = Bound::new();
+    bound.deny("1");
+    let err = bound.run(&["copy", "demo/one"], None).unwrap_err();
+    assert!(err.contains("denied"), "{err}");
+    assert!(!bound.log.path().join("prompts.clipboard").exists());
+
+    let log = bound.audit();
+    assert!(decided(&log, "demo/one", "denied"), "{log}");
+}

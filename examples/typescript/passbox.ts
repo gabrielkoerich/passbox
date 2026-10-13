@@ -96,7 +96,8 @@ export function config(options: LoadOptions = {}): string[] {
 
   const set: string[] = [];
   for (const [variable, name] of missing) {
-    process.env[variable] = run(["get", full(name)], env);
+    // A library reads the value in process on purpose, which is what --reveal is for
+    process.env[variable] = run(["get", "--reveal", full(name)], env);
     set.push(variable);
   }
   return set;
