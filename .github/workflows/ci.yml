@@ -275,16 +275,17 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page-url }}
     steps:
       - uses: actions/checkout@v5
-      - uses: gabrielkoerich/zola-docs-action@v1
+      - id: deployment
+        uses: gabrielkoerich/zola-docs-action@v1
         with:
           path: docs
           zola-version: "0.22.1"
           build-command: ./build.sh
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          deploy: "true"
+          cloudflare-token: ${{ secrets.CF_API_TOKEN }}
 
   release:
     needs: [lint, gitleaks, test-macos, client-build, version, binaries]
