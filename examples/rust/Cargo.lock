@@ -1090,7 +1090,7 @@ dependencies = [
 
 [[package]]
 name = "passbox"
-version = "0.13.35"
+version = "1.0.3"
 dependencies = [
  "age",
  "anyhow",

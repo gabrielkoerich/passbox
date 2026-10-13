@@ -34,9 +34,12 @@ mkdir -p ~/.claude/skills/passbox && cp SKILL.md ~/.claude/skills/passbox/
 ## Reading a secret
 
 ```bash
-passbox get github/token                    # prints it, interactive use
+passbox get github/token                    # prints it, refuses unless stdout is a terminal
+passbox copy github/token                   # to the clipboard, cleared after a few seconds
 passbox ls                                  # tree of names, needs a prompt
 ```
+
+`get` writes to stdout, so it refuses a pipe, a file or an agent, where the value would leak. A deliberate capture passes `--reveal`. Use `copy` for the clipboard and `exec` for a command.
 
 **Prefer injection over reading.** The value goes broker to child and never through the caller, so a traceback or a crash dump cannot carry it.
 

@@ -75,7 +75,8 @@ class Passbox:
 
     def get(self, path: str) -> str:
         """The whole value. For a multi-line entry this includes the fields."""
-        return self._run(["passbox", "get", self._name(path)])
+        # A library reads the value in process on purpose, which is what --reveal is for
+        return self._run(["passbox", "get", "--reveal", self._name(path)])
 
     def get_fields(self, path: str) -> dict[str, str]:
         """First line as "password", then any "key: value" lines below it.

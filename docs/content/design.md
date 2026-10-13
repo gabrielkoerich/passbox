@@ -110,7 +110,13 @@ Rejected: a batch read op in the broker. The grant already approves a list of na
 
 Rejected: removing them only from each child. It covers the commands an agent picks, and misses `ps eww` and every subprocess added later. Startup removal covers both, and the per-child removal stays as a second layer.
 
-`passbox get` prints to stdout for interactive use.
+`passbox get` prints to stdout for interactive use. It refuses when stdout is not a terminal, because a pipe, a file or an agent's capture is where a printed secret leaks. A human who means to capture it, such as a library reading it in process, passes `--reveal`. The test is the terminal, not the caller, so it fails closed, an unknown tool is refused by the same rule that refuses a known one.
+
+Rejected: a blocklist of known agent names. It fails open, because any agent not on the list passes, and the list never catches up. The terminal test needs no list.
+
+Rejected: enforcing the refusal in the broker. `get` and `exec` both send the same read, and the caller's terminal is a client-side fact the broker does not see. A client that lies about which one it is defeats a broker check too, so the guard belongs in the client where the terminal is known.
+
+`passbox copy` puts the value on the clipboard for the clipboard case. The value goes broker to the Swift helper to the pasteboard, never through stdout. The helper marks the entry with the `org.nspasteboard` concealed and transient types, which clipboard managers that honour the convention skip, so the secret never enters paste history. The helper stays alive to clear the clipboard after `--clear` seconds, 20 by default and at most 60, and clears only if the change count is untouched, so a value copied in the meantime is left alone. The cap keeps a secret from sitting on the clipboard for hours because of a typo.
 
 ## Sync
 

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
@@ -145,6 +145,32 @@ pub fn unwrap(wrap: &SeWrap, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
         &["unwrap", "--reason", reason],
         Some(&serde_json::to_vec(&request)?),
     )
+}
+
+// The helper keeps running to clear the clipboard, so wait only for the line that confirms the
+// pasteboard is set, then leave it. The value goes in on stdin, so it never reaches argv or ps
+pub fn clip(value: &str, secs: u64) -> Result<()> {
+    let mut child = Command::new(helper()?)
+        .args(["clip", "--clear", &secs.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("could not start the clipboard helper")?;
+    child
+        .stdin
+        .take()
+        .expect("piped")
+        .write_all(value.as_bytes())?;
+
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().expect("piped")).read_line(&mut line)?;
+    if line.trim() != "ok" {
+        let mut err = String::new();
+        let _ = child.stderr.take().expect("piped").read_to_string(&mut err);
+        bail!("the clipboard helper failed: {}", err.trim());
+    }
+    Ok(())
 }
 
 /// The helper speaks base64, and a dependency for 20 lines of table lookup is not worth it

@@ -20,8 +20,23 @@ fn main() {
             println!("{sealed}");
         }
         Some("unwrap") if args.len() == 3 && args[1] == "--reason" => unwrap(&args[2]),
-        _ => fail("usage: fake-enclave keygen | wrap | unwrap --reason <text>"),
+        Some("clip") if args.len() == 3 && args[1] == "--clear" => clip(&args[2]),
+        _ => {
+            fail("usage: fake-enclave keygen | wrap | unwrap --reason <text> | clip --clear <secs>")
+        }
     }
+}
+
+// A file stands in for the pasteboard, and the clear timeout is kept so a test can check it
+fn clip(secs: &str) {
+    let log = std::env::var("PASSBOX_FAKE_ENCLAVE_LOG").unwrap_or_else(|_| fail("no prompt log"));
+    let mut value = String::new();
+    std::io::stdin()
+        .read_to_string(&mut value)
+        .expect("read stdin");
+    std::fs::write(format!("{log}.clipboard"), value).expect("write the clipboard");
+    std::fs::write(format!("{log}.clear"), secs).expect("write the clear timeout");
+    println!("ok");
 }
 
 fn unwrap(reason: &str) {

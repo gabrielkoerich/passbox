@@ -86,7 +86,8 @@ impl Passbox {
     pub fn get(&mut self, path: &str) -> Result<String, String> {
         let name = self.name(path);
         let out = self
-            .command(&["get", &name])
+            // A library reads the value in process on purpose, which is what --reveal is for
+            .command(&["get", "--reveal", &name])
             .output()
             .map_err(|e| format!("passbox is not on PATH: {e}"))?;
         if !out.status.success() {

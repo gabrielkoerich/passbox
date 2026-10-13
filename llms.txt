@@ -140,7 +140,7 @@ passbox ls                                               # names only
 
 Set `PASSBOX_AGENT=<your name>` so the prompt names you. Without it the prompt says `passbox`, and the user cannot tell who is asking.
 
-`passbox get` prints a value to stdout. It exists for a person at a terminal. As an agent, do not run it. Its output would land in your context.
+`passbox get` prints a value to stdout. It exists for a person at a terminal, and it refuses when stdout is not a terminal, which is where you run. Its output would land in your context, so use `exec` or `run_with_secret`. For the clipboard a person uses `passbox copy`, which never routes the value through stdout.
 
 To store a secret the user gives you, pipe it in. Never write it to a file and never echo it:
 

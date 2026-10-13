@@ -54,8 +54,11 @@ The release binary is statically linked against musl, so it runs on any distribu
 ```bash
 printf 'ghp_xxx' | passbox add github/token
 passbox ls
-passbox get github/token
+passbox get github/token      # prints it, for a terminal
+passbox copy github/token     # to the clipboard, cleared after a few seconds
 ```
+
+`get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. A deliberate capture passes `--reveal`. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after a few seconds. For a command use `exec`.
 
 ### Coming from pass
 
@@ -521,7 +524,7 @@ passbox get github/token
 fly launch --no-deploy --name passbox-poc
 fly secrets set TS_AUTHKEY=tskey-auth-... PASSBOX_HOST=100.x.y.z
 fly deploy --ha=false
-fly ssh console -C "passbox get github/token"
+fly ssh console -C "passbox get --reveal github/token"
 ```
 
 Give the container a real tun device. `tailscaled --tun=userspace-networking` reaches the tailnet only through a SOCKS proxy, so an ordinary `connect()` to a 100.x address times out with no hint why. The entrypoint uses `/dev/net/tun` when the platform provides one.
@@ -591,8 +594,9 @@ cargo test secure_enclave_round_trip -- --ignored   # the real Enclave, needs a 
 An entry can hold more than a password. The first line is the secret, later `key: value` lines are fields, which is the layout `pass` uses and `import-pass` keeps.
 
 ```bash
-passbox get db/prod                  # the whole thing
-passbox get db/prod --field username # just that one
+passbox get db/prod                   # the whole thing
+passbox get db/prod --field username  # just that one
+passbox copy db/prod --field username # that one, to the clipboard
 ```
 
 Reading one field hands a caller the password without the note beside it.
