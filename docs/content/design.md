@@ -102,6 +102,14 @@ Grants are written to `grants-<host>.age`, encrypted to the store key so a local
 
 `--env` is what every tool supports. `--stdin` is safer, because any process running as you can read a child's environment with `ps eww`.
 
+`exec` with two or more secrets asks once. It grants all the names for 30 seconds and reads each through that token, so a process start with fourteen secrets costs one fingerprint, and a refused grant falls back to one prompt per secret. Cost: the token stays valid for up to 30 seconds after the reads, and the `exec` process is the only caller that holds it.
+
+Rejected: a batch read op in the broker. The grant already approves a list of names with one prompt and works from a client over the tailnet, so a second path would duplicate it.
+
+`PASSBOX_TOKEN` and `PASSBOX_PASSPHRASE` leave the environment at startup. passbox copies them into memory it owns, overwrites the original bytes, because `ps eww` and `/proc/<pid>/environ` read the block exec wrote rather than the live table, and unsets them. A command passbox runs for someone else, an `exec` child, a plugin or an MCP command, also has both removed. Without this an agent could ask `run_with_secret` to print `$PASSBOX_TOKEN` and read the token, or the whole-store passphrase, in the tool result.
+
+Rejected: removing them only from each child. It covers the commands an agent picks, and misses `ps eww` and every subprocess added later. Startup removal covers both, and the per-child removal stays as a second layer.
+
 `passbox get` prints to stdout for interactive use.
 
 ## Sync

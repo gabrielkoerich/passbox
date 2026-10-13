@@ -675,13 +675,18 @@ pub(crate) fn ancestry(pid: libc::pid_t) -> String {
 }
 
 pub fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
+    request_token(store, name, agent, crate::held_token().unwrap_or_default())
+}
+
+/// A read carrying a token the caller already holds, such as the one exec mints for its batch
+pub fn request_token(store: &Store, name: &str, agent: &str, token: &str) -> Result<String> {
     ask_broker(
         store,
         Request {
             name: name.to_string(),
             agent: agent.to_string(),
             op: Op::Get,
-            token: std::env::var("PASSBOX_TOKEN").unwrap_or_default(),
+            token: token.to_string(),
             ttl: 0,
             names: Vec::new(),
             action: String::new(),

@@ -51,6 +51,79 @@ use store::{Secret, Store};
 const PASSPHRASE_ENV: &str = "PASSBOX_PASSPHRASE";
 const MIN_PASSPHRASE: usize = 12;
 
+// A token opens its grants and the passphrase opens the whole store, so a command passbox runs
+// for someone else inherits neither, or it could print them into a transcript
+pub fn without_credentials(command: &mut std::process::Command) -> &mut std::process::Command {
+    command
+        .env_remove("PASSBOX_TOKEN")
+        .env_remove(PASSPHRASE_ENV)
+}
+
+struct Held {
+    token: Option<zeroize::Zeroizing<String>>,
+    passphrase: Option<zeroize::Zeroizing<String>>,
+}
+
+static HELD: std::sync::OnceLock<Held> = std::sync::OnceLock::new();
+
+/**
+ * Moves the token and the passphrase out of the environment before anything else runs, so nothing
+ * passbox starts can inherit them, git and the broker included. Unsetting a variable leaves its
+ * bytes where exec placed them, and `ps eww` and `/proc/<pid>/environ` read that original block,
+ * so the value is overwritten in place first
+ **/
+fn take_credentials() {
+    let _ = HELD.set(Held {
+        token: take_env("PASSBOX_TOKEN"),
+        passphrase: take_env(PASSPHRASE_ENV),
+    });
+}
+
+fn take_env(name: &str) -> Option<zeroize::Zeroizing<String>> {
+    let value = zeroize::Zeroizing::new(std::env::var(name).ok()?);
+    wipe_env_value(name);
+    // SAFETY: called first thing in main, while this is the only thread
+    unsafe { std::env::remove_var(name) };
+    Some(value)
+}
+
+fn wipe_env_value(name: &str) {
+    use zeroize::Zeroize;
+    #[cfg(target_os = "macos")]
+    // SAFETY: the C runtime's own pointer to the environment table
+    let mut entry = unsafe { *libc::_NSGetEnviron() };
+    #[cfg(not(target_os = "macos"))]
+    // SAFETY: the C runtime's own pointer to the environment table
+    let mut entry = unsafe { environ };
+    let prefix = format!("{name}=");
+
+    // SAFETY: walks the NUL terminated table and only writes inside the matched entry's value
+    unsafe {
+        while !(*entry).is_null() {
+            let bytes = std::ffi::CStr::from_ptr(*entry).to_bytes();
+            if let Some(value) = bytes.strip_prefix(prefix.as_bytes()) {
+                let start = (*entry).add(prefix.len()).cast::<u8>();
+                std::slice::from_raw_parts_mut(start, value.len()).zeroize();
+            }
+            entry = entry.add(1);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+unsafe extern "C" {
+    static environ: *mut *mut libc::c_char;
+}
+
+/// The token this process was started with, held outside the environment
+pub fn held_token() -> Option<&'static str> {
+    HELD.get()?.token.as_deref().map(String::as_str)
+}
+
+fn held_passphrase() -> Option<&'static str> {
+    HELD.get()?.passphrase.as_deref().map(String::as_str)
+}
+
 #[derive(Parser)]
 #[command(
     name = "passbox",
@@ -159,6 +232,7 @@ enum Command {
 }
 
 fn main() {
+    take_credentials();
     if let Err(e) = run() {
         eprintln!("passbox: {e:#}");
         std::process::exit(1);
@@ -358,13 +432,16 @@ pub fn agent_read_secret(store: &Store, name: &str, agent: &str) -> Result<Strin
     read_secret_as(store, name, agent, true)
 }
 
+// A configured host wins over this disk, or a client with no wraps falls through to asking
+// for a passphrase it does not have
+fn brokered(store: &Store) -> bool {
+    store.host().is_some() || (!headless() && store.has_se_wrap())
+}
+
 /// The broker owns windows and the audit log, so every read goes through it when it can.
 /// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
 fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Result<String> {
-    /* A configured host means this machine keeps no store worth unlocking, so the question
-    goes there whatever is on this disk. Without this a client with no wraps falls through to
-    asking for a passphrase it does not have. */
-    if store.host().is_some() || (!headless() && store.has_se_wrap()) {
+    if brokered(store) {
         return broker::request(store, name, agent);
     }
     let key = unlock(store, &format!("release the password for {name}"))?;
@@ -377,20 +454,50 @@ fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Re
     Ok(secret.value.clone())
 }
 
+/// Long enough for exec to read its batch, short enough that the token is useless after
+const EXEC_GRANT_SECS: u64 = 30;
+
+// Two or more broker reads would prompt once each, so grant them together and read through the
+// token. A held PASSBOX_TOKEN, or a refused grant, keeps one read per secret
+fn batch_token(store: &Store, names: &[&str]) -> Option<String> {
+    let mut names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    names.sort();
+    names.dedup();
+    if names.len() < 2 || !brokered(store) || held_token().is_some() {
+        return None;
+    }
+
+    let answer = broker::grant(store, &names, &agent(), EXEC_GRANT_SECS).ok()?;
+    answer.lines().next().map(str::to_string)
+}
+
 fn exec(store: &Store, envs: &[String], stdin: Option<&str>, command: &[String]) -> Result<()> {
     let (program, args) = command.split_first().context("no command to run")?;
     let mut child = std::process::Command::new(program);
-    child.args(args);
+    // Before the injected secrets, so an explicit --env PASSBOX_TOKEN=name still reaches the child
+    without_credentials(&mut child).args(args);
 
+    let mut pairs = Vec::new();
     for pair in envs {
         let (var, name) = pair
             .split_once('=')
             .with_context(|| format!("expected VAR=secret, got {pair}"))?;
-        child.env(var, read_secret(store, name, true)?);
+        pairs.push((var, name));
+    }
+
+    let names: Vec<&str> = pairs.iter().map(|(_, name)| *name).chain(stdin).collect();
+    let token = batch_token(store, &names);
+    let read = |name: &str| match &token {
+        Some(token) => broker::request_token(store, name, &agent(), token),
+        None => read_secret(store, name, true),
+    };
+
+    for (var, name) in pairs {
+        child.env(var, read(name)?);
     }
 
     let piped = match stdin {
-        Some(name) => Some(read_secret(store, name, true)?),
+        Some(name) => Some(read(name)?),
         None => None,
     };
     child.stdin(if piped.is_some() {
@@ -635,7 +742,7 @@ fn bind_machine(store: &Store, key: &age::x25519::Identity) -> bool {
 
 /// `PASSBOX_PASSPHRASE` says nobody is at the keyboard, and a fingerprint needs somebody
 fn headless() -> bool {
-    std::env::var_os(PASSPHRASE_ENV).is_some()
+    held_passphrase().is_some()
 }
 
 fn unlock(store: &Store, reason: &str) -> Result<age::x25519::Identity> {
@@ -684,9 +791,9 @@ fn machine_add(store: &Store) -> Result<()> {
 
 /// `PASSBOX_PASSPHRASE` exists for CI and for headless use, where there is no terminal to type at
 fn ask(prompt: &str) -> Result<String> {
-    match std::env::var(PASSPHRASE_ENV) {
-        Ok(pass) => Ok(pass),
-        Err(_) => Ok(rpassword::prompt_password(prompt)?),
+    match held_passphrase() {
+        Some(pass) => Ok(pass.to_string()),
+        None => Ok(rpassword::prompt_password(prompt)?),
     }
 }
 
@@ -1072,7 +1179,7 @@ pub fn run_child(
 ) -> Result<std::process::Output> {
     let (program, args) = command.split_first().context("no command to run")?;
     let mut child = std::process::Command::new(program);
-    child
+    without_credentials(&mut child)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -1105,8 +1212,8 @@ pub fn run_child(
 /* The token goes to stdout and the rest to stderr, so `TOKEN=$(passbox grant acme/api-key)` picks up
 the token alone while a person still sees what it covers. */
 fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
-    // A token lives in the broker, and a passphrase store reads without one at all
-    if headless() || !store.has_se_wrap() {
+    // A token lives in the broker, local or a configured host, and a passphrase store has none
+    if !brokered(store) {
         bail!("a token needs the broker, which this store does not use");
     }
 
@@ -1115,14 +1222,13 @@ fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
     let token = lines.next().context("the broker returned no token")?;
     let covered: Vec<&str> = lines.collect();
 
+    // The token goes to stdout only, since stderr lands in scrollback, CI logs and transcripts
     println!("{token}");
     eprintln!("opens {} secret(s) for {ttl}s:", covered.len());
     for name in &covered {
         eprintln!("  {name}");
     }
-    eprintln!();
-    eprintln!("pass it back with PASSBOX_TOKEN, and it stops working when it lapses:");
-    eprintln!("  export PASSBOX_TOKEN={token}");
+    eprintln!("pass the token on stdout back as PASSBOX_TOKEN, it stops working when it lapses");
     Ok(())
 }
 

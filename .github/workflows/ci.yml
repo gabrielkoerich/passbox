@@ -52,6 +52,9 @@ jobs:
   test-macos:
     runs-on: macos-latest
     timeout-minutes: 15
+    # A broken headless check then fails the job instead of reaching for an Enclave
+    env:
+      PASSBOX_NO_ENCLAVE: "1"
     steps:
       - uses: actions/checkout@v5
 

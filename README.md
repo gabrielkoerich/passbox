@@ -400,6 +400,8 @@ Try this first. One approval, and the value lands in the process environment whe
 passbox exec --env GITHUB_TOKEN=github/token -- ./your-daemon
 ```
 
+Several `--env` and `--stdin` secrets share one approval: `exec` grants them together for 30 seconds and reads each through that token, and if the grant is refused it falls back to one prompt per secret.
+
 Nothing shells out to passbox again for the life of that process, so it runs for weeks on one fingerprint and needs you only when you restart it. This works with no code change wherever a credential layer already prefers an environment variable over its providers.
 
 Cost: the value sits in the environment for the process's lifetime, and anything running as you can read it with `ps eww`. Use `--stdin` where the child takes a secret that way.
@@ -412,7 +414,7 @@ Some secrets have no usable variable name, and some jobs pick what they read at 
 export PASSBOX_TOKEN=$(passbox grant acme/signing-key acme/api-key --for 86400)
 ```
 
-The token goes to stdout and the covered names to stderr, so `$(...)` captures the token alone. Reads that present it are audited as `by token`.
+The token goes to stdout only and the covered names to stderr, so `$(...)` captures the token alone. It never goes to stderr, which lands in scrollback, CI logs and agent transcripts. Reads that present it are audited as `by token`.
 
 **A namespace is refused.** `grant acme` would hand over everything under it to save one prompt, and it scopes on how the store happens to be laid out rather than on what the job reads: put everything at the root and a namespace rule protects nothing.
 
@@ -498,6 +500,8 @@ passbox get github/token
 
 `PASSBOX_HOST` does the same for one run. A configured host wins over anything on the client's own disk, so a machine with no store still asks the Mac rather than falling back to a passphrase it does not have.
 
+`grant` and `exec` go to the Mac too. `passbox exec --env A=x/a --env B=x/b -- cmd` raises one prompt on the Mac for both, and `passbox grant` on the client mints a token there and prints it here.
+
 ### In a container
 
 [`examples/linux-client`](examples/linux-client) has a Dockerfile with Tailscale and the client, and a fly.io deployment that was used to verify this.
@@ -555,6 +559,10 @@ The filename is a random id. Names live inside the ciphertext, so nothing on dis
 | `PASSBOX_AGENT` | Name shown in the prompt beside the secret |
 | `PASSBOX_NO_AUTOSYNC` | Set to stop a write copying to the configured directory |
 | `PASSBOX_PASSPHRASE` | Supplies the passphrase for CI and headless use, and turns off the Enclave path |
+| `PASSBOX_TOKEN` | A grant token, used for reads it covers |
+| `PASSBOX_NO_ENCLAVE` | Refuses any Secure Enclave operation. The tests and CI set it, so a bug fails them instead of asking for a fingerprint |
+
+passbox moves `PASSBOX_TOKEN` and `PASSBOX_PASSPHRASE` out of its environment when it starts and overwrites their bytes, so `ps eww` cannot read them and nothing it runs inherits them: not the `exec` child, a plugin, an MCP command, git or the broker. A secret injected under one of those names with `--env` still reaches the child.
 
 ### Building
 
