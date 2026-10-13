@@ -12,7 +12,7 @@ Secrets are ordinary [age](https://age-encryption.org) files. The broker decides
 
 It runs without an Apple Developer Program membership.
 
-**Beta.** This is a new way to store passwords, a fingerprint releases one or more secrets into one process. It is young and may have bugs. Keep another copy of anything you cannot lose.
+> This is a new way to store passwords, a fingerprint releases one or more secrets into one process. It is young and may have bugs. Keep another copy of anything you cannot lose.
 
 ## Install
 
