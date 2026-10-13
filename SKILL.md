@@ -97,7 +97,7 @@ A token caches on the provider instance, so a factory that builds a fresh provid
 def manager() -> CredentialManager: ...
 ```
 
-Symptom: repeated prompts for the same secret in a loop or per request. Check the audit log: repeated `approved` for one secret and one agent means the provider is being rebuilt.
+Symptom: repeated prompts for the same secret in a loop or per request. Check the audit log: repeated `granted` for one secret and one agent means the provider is being rebuilt.
 
 ### A failed grant must never stop the job
 

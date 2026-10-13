@@ -166,6 +166,26 @@ impl Broker {
         self.ask(&format!("release the password for {secret} to {agent}"))
     }
 
+    // A prompt that was not approved is recorded too, so the log shows what was asked for and not
+    // given. It has no key, so it is written to the public half like a token read
+    fn refused(
+        &self,
+        agent: &str,
+        secrets: &[&str],
+        error: anyhow::Error,
+        caller: &str,
+    ) -> anyhow::Error {
+        let decision = if format!("{error:#}").contains("denied") {
+            "denied"
+        } else {
+            "prompt failed"
+        };
+        for secret in secrets {
+            let _ = self.audit_by(agent, secret, decision, caller);
+        }
+        error
+    }
+
     fn ask(&mut self, reason: &str) -> Result<()> {
         let key = self.store.unlock_with_se(reason)?;
         #[cfg(feature = "host")]
@@ -188,7 +208,12 @@ impl Broker {
 
     /// One prompt covers the whole manifest, which is the point of declaring it up front
     #[cfg(feature = "host")]
-    fn grant_manifest(&mut self, request: &Request, cwd: Option<&std::path::Path>) -> Result<bool> {
+    fn grant_manifest(
+        &mut self,
+        request: &Request,
+        cwd: Option<&std::path::Path>,
+        caller: &str,
+    ) -> Result<bool> {
         let Some(manifest) = cwd.and_then(project::find) else {
             return Ok(false);
         };
@@ -196,13 +221,15 @@ impl Broker {
             return Ok(false);
         }
 
+        let declared: Vec<&str> = manifest.secrets.iter().map(String::as_str).collect();
         self.ask(&format!(
             "give {} access to {} secrets declared by {} for {} minutes",
             request.agent,
             manifest.secrets.len(),
             manifest.dir.display(),
             manifest.window_secs / 60
-        ))?;
+        ))
+        .map_err(|e| self.refused(&request.agent, &declared, e, caller))?;
 
         self.grants.push(Grant {
             dir: manifest.dir.to_string_lossy().to_string(),
@@ -237,7 +264,8 @@ impl Broker {
             .tool(&request.action)
             .ok_or_else(|| anyhow!("{} has no action {}", request.name, request.action))?;
         let slot_name = format!("plugin:{}.{}", request.name, request.action);
-        self.ask(&format!("run {slot_name} for {}", request.agent))?;
+        self.ask(&format!("run {slot_name} for {}", request.agent))
+            .map_err(|e| self.refused(&request.agent, &[&slot_name], e, caller))?;
         self.audit_by(&request.agent, &slot_name, "approved", caller)?;
         if !request.run {
             return Ok("ok".to_string());
@@ -257,7 +285,8 @@ impl Broker {
     /// Names are inside the ciphertext, so listing needs the key and therefore a prompt.
     /// It gets its own window: riding a `get` approval would turn one secret into all of them.
     fn handle_list(&mut self, request: &Request, caller: &str) -> Result<String> {
-        self.ask(&format!("list your secret names for {}", request.agent))?;
+        self.ask(&format!("list your secret names for {}", request.agent))
+            .map_err(|e| self.refused(&request.agent, &["<list>"], e, caller))?;
         let key = self.key.clone().expect("just unlocked");
         self.audit(&key, &request.agent, "<list>", "approved", caller)?;
         let names = self.store.names(&key)?;
@@ -283,7 +312,9 @@ impl Broker {
             request.names.join(", "),
             request.agent
         );
-        self.ask(&reason)?;
+        let asked_for: Vec<&str> = request.names.iter().map(String::as_str).collect();
+        self.ask(&reason)
+            .map_err(|e| self.refused(&request.agent, &asked_for, e, caller))?;
         let key = self.key.clone().expect("just unlocked");
 
         let all = self.store.names(&key)?;
@@ -300,10 +331,7 @@ impl Broker {
             values.insert(name.clone(), secret.value.clone());
         }
         if values.is_empty() {
-            bail!(
-                "{} matched only secrets marked never",
-                request.names.join(", ")
-            );
+            bail!("{} matched no secrets", request.names.join(", "));
         }
 
         let token = store::new_id() + &store::new_id();
@@ -345,11 +373,12 @@ impl Broker {
         // A read prompts every time. The only way past the prompt is a token or, for the
         // caller's own directory, a project manifest that already covers this secret
         let covered = (self.cached_key().is_some() && self.granted(&request.name, cwd))
-            || (self.cached_key().is_none() && self.grant_manifest(request, cwd)?);
+            || (self.cached_key().is_none() && self.grant_manifest(request, cwd, caller)?);
         let outcome = if covered {
             "project grant"
         } else {
-            self.prompt(&request.agent, &request.name)?;
+            self.prompt(&request.agent, &request.name)
+                .map_err(|e| self.refused(&request.agent, &[&request.name], e, caller))?;
             "released"
         };
 

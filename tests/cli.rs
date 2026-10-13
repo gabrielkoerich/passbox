@@ -1084,10 +1084,25 @@ impl Bound {
         let _ = std::fs::remove_file(self.log.path().join("prompts"));
     }
 
-    /// `all` refuses every prompt from here on, a number refuses that many
+    /// `all` refuses every prompt from here on, a number refuses that many, and `unavailable`
+    /// fails the way a closed lid does
     fn deny(&self, how_many: &str) {
         std::fs::write(self.log.path().join("prompts.deny"), how_many).unwrap();
     }
+
+    /// The audit log, read with its own prompt allowed
+    fn audit(&self) -> String {
+        self.deny("0");
+        self.run(&["audit", "--tail", "100"], None).unwrap()
+    }
+}
+
+/// Whether the audit log holds a record of `decision` for `secret`
+fn decided(log: &str, secret: &str, decision: &str) -> bool {
+    log.lines().any(|l| {
+        l.contains(&format!("\"secret\":\"{secret}\""))
+            && l.contains(&format!("\"decision\":\"{decision}\""))
+    })
 }
 
 const SHOW_AB: &str = "printf %s,%s \"$A\" \"$B\"";
@@ -1202,14 +1217,37 @@ fn exec_with_many_secrets_prompts_once_through_the_broker() {
     not(feature = "mock-enclave"),
     ignore = "needs --features mock-enclave"
 )]
-fn a_denied_prompt_fails_the_read() {
+fn a_denied_prompt_fails_the_read_and_is_audited() {
     let bound = Bound::new();
-    bound.deny("all");
+    bound.deny("1");
     let err = bound
         .run(&["exec", "--env", "A=demo/one", "--", "true"], None)
         .unwrap_err();
     assert!(err.contains("denied"), "{err}");
-    assert_eq!(bound.prompts().len(), 1);
+    assert_eq!(
+        bound.prompts(),
+        ["release the password for demo/one to test-agent"]
+    );
+
+    let log = bound.audit();
+    assert!(decided(&log, "demo/one", "denied"), "{log}");
+    assert!(!decided(&log, "demo/one", "released"), "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_prompt_that_cannot_be_shown_is_audited_as_failed() {
+    let bound = Bound::new();
+    bound.deny("unavailable");
+    let err = bound.run(&["ls"], None).unwrap_err();
+    assert!(err.contains("unavailable"), "{err}");
+
+    let log = bound.audit();
+    assert!(decided(&log, "<list>", "prompt failed"), "{log}");
+    assert!(!decided(&log, "<list>", "denied"), "{log}");
 }
 
 #[test]
@@ -1240,6 +1278,13 @@ fn exec_falls_back_to_one_prompt_each_when_the_grant_is_denied() {
             "release the password for demo/two to test-agent",
         ]
     );
+
+    // The refused grant is on record for both names, then each read that followed
+    let log = bound.audit();
+    for name in ["demo/one", "demo/two"] {
+        assert!(decided(&log, name, "denied"), "{log}");
+        assert!(decided(&log, name, "released"), "{log}");
+    }
 }
 
 #[test]
@@ -1270,15 +1315,9 @@ fn the_audit_log_shows_the_grant_the_token_reads_and_the_prompted_reads() {
 
     let log = bound.run(&["audit", "--tail", "50"], None).unwrap();
     assert_eq!(bound.prompts(), ["read the audit log"]);
-    let decided = |secret: &str, decision: &str| {
-        log.lines().any(|l| {
-            l.contains(&format!("\"secret\":\"{secret}\""))
-                && l.contains(&format!("\"decision\":\"{decision}\""))
-        })
-    };
-    assert!(decided("demo/one", "granted"), "{log}");
-    assert!(decided("demo/one", "by token"), "{log}");
-    assert!(decided("demo/two", "released"), "{log}");
+    assert!(decided(&log, "demo/one", "granted"), "{log}");
+    assert!(decided(&log, "demo/one", "by token"), "{log}");
+    assert!(decided(&log, "demo/two", "released"), "{log}");
 }
 
 #[test]

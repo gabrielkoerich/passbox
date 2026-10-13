@@ -181,7 +181,17 @@ If a project uses both, the `.toml` covers the same names the `.env` maps, so th
 passbox audit --tail 50
 ```
 
-Every decision is logged, encrypted, one record per line.
+Every decision is logged, encrypted, one record per line, with the agent, the secret and the caller's process chain.
+
+| Decision | Meaning |
+|---|---|
+| `released` | A prompt was approved and the value went out |
+| `by token` | A grant token covered the read, no prompt |
+| `granted` | A grant was approved for this name |
+| `project grant` | A `.passbox.toml` grant covered the read |
+| `approved` | A listing or a plugin run was approved |
+| `denied` | The prompt was refused |
+| `prompt failed` | No prompt could be shown, such as with the lid closed |
 
 ## Plugins
 
@@ -438,7 +448,7 @@ pkill -f "passbox broker"
 
 ### Mint once per process
 
-A token caches on the client that minted it. A factory that builds a fresh client per call mints a fresh grant per call, and each one is a fingerprint. Memoise it. The symptom is repeated `approved` for one secret and one agent in `passbox audit`.
+A token caches on the client that minted it. A factory that builds a fresh client per call mints a fresh grant per call, and each one is a fingerprint. Memoise it. The symptom is repeated `granted` for one secret and one agent in `passbox audit`.
 
 ## Another machine
 
