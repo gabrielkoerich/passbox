@@ -7,6 +7,7 @@
  neither, which is why age-plugin-se runs from a Homebrew bottle with an ad-hoc signature.
  */
 
+import AppKit
 import CryptoKit
 import Foundation
 import LocalAuthentication
@@ -141,6 +142,31 @@ func unwrap(reason: String) {
     FileHandle.standardOutput.write(plaintext)
 }
 
+// Value comes in on stdin, never argv, so ps cannot read it. The concealed and transient types
+// make clipboard managers skip it, and the clear fires only if the change count is still untouched
+func clip(secs: Double) {
+    let value = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+    let board = NSPasteboard.general
+    let item = NSPasteboardItem()
+    item.setString(value, forType: .string)
+    item.setString(value, forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+    item.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+    board.clearContents()
+    board.writeObjects([item])
+    let mark = board.changeCount
+
+    // Confirm the pasteboard is set so the caller can return, then detach from its session
+    FileHandle.standardOutput.write(Data("ok\n".utf8))
+    try? FileHandle.standardOutput.close()
+    setsid()
+
+    Thread.sleep(forTimeInterval: secs)
+    if NSPasteboard.general.changeCount == mark {
+        NSPasteboard.general.clearContents()
+    }
+    exit(0)
+}
+
 let args = Array(CommandLine.arguments.dropFirst())
 switch args.first {
 case "keygen":
@@ -152,6 +178,11 @@ case "unwrap":
         fail("usage: passbox-se unwrap --reason <text>")
     }
     unwrap(reason: args[2])
+case "clip":
+    guard args.count == 3, args[1] == "--clear", let secs = Double(args[2]) else {
+        fail("usage: passbox-se clip --clear <secs>")
+    }
+    clip(secs: secs)
 default:
-    fail("usage: passbox-se keygen | wrap | unwrap --reason <text>")
+    fail("usage: passbox-se keygen | wrap | unwrap --reason <text> | clip --clear <secs>")
 }

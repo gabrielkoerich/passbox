@@ -147,6 +147,19 @@ enum Command {
         /// One field of a multi-line entry, such as `username`. `password` is the first line
         #[arg(long)]
         field: Option<String>,
+        /// Print to a pipe or file anyway. Without it `get` refuses unless stdout is a terminal
+        #[arg(long)]
+        reveal: bool,
+    },
+    /// Copy a secret to the clipboard, which clears after a few seconds and skips clipboard history
+    Copy {
+        name: String,
+        /// One field of a multi-line entry, such as `username`
+        #[arg(long)]
+        field: Option<String>,
+        /// Seconds before the clipboard is cleared
+        #[arg(long, default_value_t = 20)]
+        clear: u64,
     },
     /// Approve named secrets once, and print a token that opens only those
     Grant {
@@ -271,7 +284,12 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Init => init(&store),
         Command::Add { name } => add(&store, &name).inspect(|()| written(&store, "add a secret")),
-        Command::Get { name, field } => get(&store, &name, field.as_deref()),
+        Command::Get {
+            name,
+            field,
+            reveal,
+        } => get(&store, &name, field.as_deref(), reveal),
+        Command::Copy { name, field, clear } => copy(&store, &name, field.as_deref(), clear),
         Command::Grant { names, r#for } => grant(&store, &names, r#for),
         Command::Ls => ls(&store),
         Command::Rm { name } => rm(&store, &name).inspect(|()| written(&store, "remove a secret")),
@@ -900,20 +918,47 @@ fn fields(value: &str) -> std::collections::HashMap<String, String> {
     out
 }
 
-fn get(store: &Store, name: &str, field: Option<&str>) -> Result<()> {
+fn read_field(store: &Store, name: &str, field: Option<&str>) -> Result<String> {
     let whole = read_secret(store, name, false)?;
-    let value = match field {
-        None => whole,
+    match field {
+        None => Ok(whole),
         Some(want) => fields(&whole)
             .remove(want)
-            .with_context(|| format!("{name} has no field {want}"))?,
-    };
+            .with_context(|| format!("{name} has no field {want}")),
+    }
+}
+
+// get writes the value to stdout, which lands in an agent's context, so it refuses unless
+// stdout is a terminal. A deliberate pipe or capture passes --reveal, and copy and exec stay clean
+fn get(store: &Store, name: &str, field: Option<&str>, reveal: bool) -> Result<()> {
     let mut out = std::io::stdout();
+    if !reveal && !out.is_terminal() {
+        bail!(
+            "passbox get writes a secret to stdout and this is not a terminal\n\
+             use `passbox copy {name}`, `passbox exec --stdin {name} -- CMD`, the run_with_secret \
+             MCP tool, or `--reveal` to capture it anyway"
+        );
+    }
+    let value = read_field(store, name, field)?;
     out.write_all(value.as_bytes())?;
     if out.is_terminal() {
         out.write_all(b"\n")?;
     }
     Ok(())
+}
+
+#[cfg(feature = "host")]
+fn copy(store: &Store, name: &str, field: Option<&str>, clear: u64) -> Result<()> {
+    let value = read_field(store, name, field)?;
+    se::clip(&value, clear)?;
+    eprintln!("copied {name} to the clipboard, clears in {clear}s");
+    Ok(())
+}
+
+// A client build has no Enclave helper to drive the pasteboard, so copy is host only
+#[cfg(not(feature = "host"))]
+fn copy(_store: &Store, _name: &str, _field: Option<&str>, _clear: u64) -> Result<()> {
+    bail!("copy needs the host build")
 }
 
 /// Through the broker, so a second listing inside the window does not ask again
