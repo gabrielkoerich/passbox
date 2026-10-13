@@ -568,7 +568,9 @@ fn watchdog(socket: std::path::PathBuf) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(30));
-            if store::now().saturating_sub(LAST_SEEN.load(Ordering::Relaxed)) >= KEY_TTL_SECS {
+            // A broker whose socket is gone, with its store deleted, can never be reached again
+            let idle = store::now().saturating_sub(LAST_SEEN.load(Ordering::Relaxed));
+            if idle >= KEY_TTL_SECS || !socket.exists() {
                 let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
             }
@@ -841,6 +843,8 @@ fn spawn(store: &Store) -> Result<()> {
         .env("PASSBOX_DIR", &store.dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
+        // It outlives the caller, so it must not hold the caller's stderr or write into its transcript
+        .stderr(std::process::Stdio::null())
         .spawn()
         .context("could not start the broker")?;
 

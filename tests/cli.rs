@@ -1005,3 +1005,321 @@ fn a_test_can_never_reach_the_secure_enclave() {
     );
     assert!(!stderr.contains("bound to this Mac"), "{stderr}");
 }
+
+const NEEDS_FAKE: &str = "needs --features mock-enclave";
+
+/// The fake enclave binary, which only exists in a `--features mock-enclave` build
+fn fake_enclave() -> &'static str {
+    match option_env!("CARGO_BIN_EXE_fake-enclave") {
+        Some(path) => path,
+        None => panic!("{NEEDS_FAKE}"),
+    }
+}
+
+/// A store bound to the fake enclave. Reads go through a real broker, and every prompt a person
+/// would have seen is written to a log the test reads back
+struct Bound {
+    cli: Cli,
+    log: tempfile::TempDir,
+}
+
+impl Bound {
+    fn new() -> Self {
+        let bound = Bound {
+            cli: Cli::empty(),
+            log: tempfile::tempdir().unwrap(),
+        };
+        bound.run(&["init"], None).expect("init");
+        bound.run(&["add", "demo/one"], Some("value-one")).unwrap();
+        bound.run(&["add", "demo/two"], Some("value-two")).unwrap();
+        // Replacing the second name needs the key, so setup raises a prompt of its own
+        bound.forget_prompts();
+        bound
+    }
+
+    fn cmd(&self) -> Command {
+        let mut cmd = self.cli.cmd(PASSPHRASE);
+        cmd.env_remove("PASSBOX_PASSPHRASE")
+            .env("PASSBOX_SE_HELPER", fake_enclave())
+            .env("PASSBOX_FAKE_ENCLAVE_LOG", self.log.path().join("prompts"))
+            .env("PASSBOX_AGENT", "test-agent");
+        cmd
+    }
+
+    fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+        let mut child = self
+            .cmd()
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(text) = stdin {
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap();
+        }
+        drop(child.stdin.take());
+        let out = child.wait_with_output().unwrap();
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).to_string())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).to_string())
+        }
+    }
+
+    fn prompts(&self) -> Vec<String> {
+        std::fs::read_to_string(self.log.path().join("prompts"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn forget_prompts(&self) {
+        let _ = std::fs::remove_file(self.log.path().join("prompts"));
+    }
+
+    /// `all` refuses every prompt from here on, a number refuses that many
+    fn deny(&self, how_many: &str) {
+        std::fs::write(self.log.path().join("prompts.deny"), how_many).unwrap();
+    }
+}
+
+const SHOW_AB: &str = "printf %s,%s \"$A\" \"$B\"";
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn every_read_prompts() {
+    let bound = Bound::new();
+    for _ in 0..2 {
+        let out = bound.run(
+            &[
+                "exec",
+                "--env",
+                "A=demo/one",
+                "--",
+                "sh",
+                "-c",
+                "printf %s \"$A\"",
+            ],
+            None,
+        );
+        assert_eq!(out.unwrap(), "value-one");
+    }
+    assert_eq!(
+        bound.prompts(),
+        ["release the password for demo/one to test-agent"; 2]
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn listing_prompts() {
+    let bound = Bound::new();
+    let names = bound.run(&["ls"], None).unwrap();
+    assert!(names.contains("one") && names.contains("two"), "{names}");
+    assert_eq!(bound.prompts(), ["list your secret names for test-agent"]);
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_grant_prompts_once_and_its_token_reads_without_a_prompt() {
+    let bound = Bound::new();
+    let token = bound
+        .run(&["grant", "demo/one", "demo/two", "--for", "60"], None)
+        .unwrap();
+    assert_eq!(
+        bound.prompts(),
+        ["grant demo/one, demo/two to test-agent for 60s"]
+    );
+
+    let out = bound
+        .cmd()
+        .env("PASSBOX_TOKEN", token.trim())
+        .args([
+            "exec",
+            "--env",
+            "A=demo/one",
+            "--env",
+            "B=demo/two",
+            "--",
+            "sh",
+            "-c",
+            SHOW_AB,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "value-one,value-two");
+    assert_eq!(bound.prompts().len(), 1, "a token read raised a prompt");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn exec_with_many_secrets_prompts_once_through_the_broker() {
+    let bound = Bound::new();
+    let args = [
+        "exec",
+        "--env",
+        "A=demo/one",
+        "--env",
+        "B=demo/two",
+        "--",
+        "sh",
+        "-c",
+        SHOW_AB,
+    ];
+    assert_eq!(bound.run(&args, None).unwrap(), "value-one,value-two");
+    assert_eq!(
+        bound.prompts(),
+        ["grant demo/one, demo/two to test-agent for 30s"]
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_denied_prompt_fails_the_read() {
+    let bound = Bound::new();
+    bound.deny("all");
+    let err = bound
+        .run(&["exec", "--env", "A=demo/one", "--", "true"], None)
+        .unwrap_err();
+    assert!(err.contains("denied"), "{err}");
+    assert_eq!(bound.prompts().len(), 1);
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn exec_falls_back_to_one_prompt_each_when_the_grant_is_denied() {
+    let bound = Bound::new();
+    bound.deny("1");
+    let args = [
+        "exec",
+        "--env",
+        "A=demo/one",
+        "--env",
+        "B=demo/two",
+        "--",
+        "sh",
+        "-c",
+        SHOW_AB,
+    ];
+    assert_eq!(bound.run(&args, None).unwrap(), "value-one,value-two");
+    assert_eq!(
+        bound.prompts(),
+        [
+            "grant demo/one, demo/two to test-agent for 30s",
+            "release the password for demo/one to test-agent",
+            "release the password for demo/two to test-agent",
+        ]
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn the_audit_log_shows_the_grant_the_token_reads_and_the_prompted_reads() {
+    let bound = Bound::new();
+    let token = bound
+        .run(&["grant", "demo/one", "--for", "60"], None)
+        .unwrap();
+    let out = bound
+        .cmd()
+        .env("PASSBOX_TOKEN", token.trim())
+        .args(["exec", "--env", "A=demo/one", "--", "true"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    bound
+        .run(&["exec", "--env", "B=demo/two", "--", "true"], None)
+        .unwrap();
+    bound.forget_prompts();
+
+    let log = bound.run(&["audit", "--tail", "50"], None).unwrap();
+    assert_eq!(bound.prompts(), ["read the audit log"]);
+    let decided = |secret: &str, decision: &str| {
+        log.lines().any(|l| {
+            l.contains(&format!("\"secret\":\"{secret}\""))
+                && l.contains(&format!("\"decision\":\"{decision}\""))
+        })
+    };
+    assert!(decided("demo/one", "granted"), "{log}");
+    assert!(decided("demo/one", "by token"), "{log}");
+    assert!(decided("demo/two", "released"), "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_mock_build_aborts_outside_a_cargo_target_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("passbox");
+    std::fs::copy(env!("CARGO_BIN_EXE_passbox"), &copy).unwrap();
+    let out = Command::new(&copy).arg("--version").output().unwrap();
+    assert!(!out.status.success(), "a shipped mock build ran");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("outside a cargo target directory"),
+        "{stderr}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn the_fake_enclave_refuses_a_store_outside_the_temp_directory() {
+    let outside = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let cli = Cli::empty();
+    let out = cli
+        .cmd(PASSPHRASE)
+        .env("PASSBOX_DIR", outside.path())
+        .env_remove("PASSBOX_PASSPHRASE")
+        .env("PASSBOX_SE_HELPER", fake_enclave())
+        .arg("init")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "the fake ran against a store outside the temp directory"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("outside the temp directory"), "{stderr}");
+}

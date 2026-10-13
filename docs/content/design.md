@@ -148,6 +148,26 @@ An entry holds a first line and then `key: value` lines, which is what `pass` us
 
 Rejected: a structured payload with typed fields. It would change the file format, need a migration for every entry already imported, and buy nothing the convention does not already carry. The parse is fifteen lines and works on stores written before it existed.
 
+## Testing the broker
+
+Every read on an Enclave store needs a finger, so the broker path was untested end to end. The `mock-enclave` feature swaps the Swift helper for `src/bin/fake-enclave.rs`, which speaks the same commands over the same JSON, prompts nobody, and logs each prompt a person would have seen. The tests run a real broker against it and count the prompts. `PASSBOX_NO_ENCLAVE`, which the tests and CI always set, refuses the real helper, so no test can reach a developer's fingerprint.
+
+The fake must never reach a user. `wrap` sends the plaintext store key to the helper, so a shipped override would hand the key to whatever the environment names. Each guard holds if the ones before it fail:
+
+| Guard | What it stops |
+|---|---|
+| The feature is off by default | Every release, Homebrew and publish build, none of which enable it |
+| `compile_error!` without `debug_assertions` | A release-profile build with the feature, the CI release, `brew install --HEAD` and `cargo install` |
+| `abort` outside a cargo target directory, found by `CACHEDIR.TAG` | A mock build that ships anyway. `abort` and not `panic!`, since a panic on a broker thread ends only that thread |
+| The fake refuses a store outside the temp directory | The fake opening `~/.passbox` |
+| The release job greps each binary for `PASSBOX_SE_HELPER` and runs it outside `target` | Any mistake in how the release was configured |
+
+Rejected: a Rust trait with the Swift helper and a fake behind it. It adds an abstraction with one real implementation to production code, and it skips the process boundary and the JSON, which the fake exercises.
+
+Rejected: gating on `debug_assertions` alone. Every debug build would honour the override, including a `target/debug/passbox` someone uses for real.
+
+Cost: the fake's source ships in the crates.io package, since the binary target must exist to publish, and it builds only with the feature. A plain `cargo test` skips the broker tests, so the full run needs the flag.
+
 ## Releasing
 
 The version is computed in its own job before anything is built, because the binaries have to be stamped with the version they ship as. An earlier layout built first and bumped after, so every release carried a binary reporting the previous number.

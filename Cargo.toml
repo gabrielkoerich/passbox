@@ -15,6 +15,14 @@ include = ["/src/**", "/plugins/**", "/swift/**", "/build.rs", "/README.md", "/L
 # The host holds the Enclave, the store and the broker. A client only asks one.
 default = ["host"]
 host = []
+# Tests only. Swaps the Secure Enclave helper for src/bin/fake-enclave.rs, and a release build
+# with it does not compile. Never enable it for anything that ships.
+mock-enclave = ["host"]
+
+[[bin]]
+name = "fake-enclave"
+path = "src/bin/fake-enclave.rs"
+required-features = ["mock-enclave"]
 
 [dependencies]
 # `plugin` is back for the YubiKey wrap alone. It carries no prompt wording of its own,

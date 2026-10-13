@@ -567,9 +567,11 @@ passbox moves `PASSBOX_TOKEN` and `PASSBOX_PASSPHRASE` out of its environment wh
 ### Building
 
 ```bash
-cargo test
-cargo test -- --ignored   # the Secure Enclave round trip, needs a finger
+cargo test --features mock-enclave                  # everything, the broker through a fake enclave
+cargo test secure_enclave_round_trip -- --ignored   # the real Enclave, needs a finger
 ```
+
+`mock-enclave` swaps the Secure Enclave helper for a fake that prompts nobody and logs each prompt a person would have seen, so the tests can count them. It is for tests only: a release build with it does not compile, and a build with it aborts outside a cargo target directory. A plain `cargo test` skips the tests that need it.
 
 `build.rs` compiles the Swift helper with `swiftc` from the Command Line Tools.
 
