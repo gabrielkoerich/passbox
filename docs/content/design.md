@@ -102,6 +102,10 @@ Grants are written to `grants-<host>.age`, encrypted to the store key so a local
 
 `--env` is what every tool supports. `--stdin` is safer, because any process running as you can read a child's environment with `ps eww`.
 
+`exec` with two or more secrets asks once. It grants all the names for 30 seconds and reads each through that token, so a process start with fourteen secrets costs one fingerprint, and a refused grant falls back to one prompt per secret. Cost: the token stays valid for up to 30 seconds after the reads, and the `exec` process is the only caller that holds it.
+
+Rejected: a batch read op in the broker. The grant already approves a list of names with one prompt and works from a client over the tailnet, so a second path would duplicate it.
+
 `passbox get` prints to stdout for interactive use.
 
 ## Sync

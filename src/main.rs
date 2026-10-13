@@ -358,13 +358,16 @@ pub fn agent_read_secret(store: &Store, name: &str, agent: &str) -> Result<Strin
     read_secret_as(store, name, agent, true)
 }
 
+// A configured host wins over this disk, or a client with no wraps falls through to asking
+// for a passphrase it does not have
+fn brokered(store: &Store) -> bool {
+    store.host().is_some() || (!headless() && store.has_se_wrap())
+}
+
 /// The broker owns windows and the audit log, so every read goes through it when it can.
 /// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
 fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Result<String> {
-    /* A configured host means this machine keeps no store worth unlocking, so the question
-    goes there whatever is on this disk. Without this a client with no wraps falls through to
-    asking for a passphrase it does not have. */
-    if store.host().is_some() || (!headless() && store.has_se_wrap()) {
+    if brokered(store) {
         return broker::request(store, name, agent);
     }
     let key = unlock(store, &format!("release the password for {name}"))?;
@@ -377,20 +380,49 @@ fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Re
     Ok(secret.value.clone())
 }
 
+/// Long enough for exec to read its batch, short enough that the token is useless after
+const EXEC_GRANT_SECS: u64 = 30;
+
+// Two or more broker reads would prompt once each, so grant them together and read through the
+// token. A held PASSBOX_TOKEN, or a refused grant, keeps one read per secret
+fn batch_token(store: &Store, names: &[&str]) -> Option<String> {
+    let mut names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    names.sort();
+    names.dedup();
+    if names.len() < 2 || !brokered(store) || std::env::var_os("PASSBOX_TOKEN").is_some() {
+        return None;
+    }
+
+    let answer = broker::grant(store, &names, &agent(), EXEC_GRANT_SECS).ok()?;
+    answer.lines().next().map(str::to_string)
+}
+
 fn exec(store: &Store, envs: &[String], stdin: Option<&str>, command: &[String]) -> Result<()> {
     let (program, args) = command.split_first().context("no command to run")?;
     let mut child = std::process::Command::new(program);
     child.args(args);
 
+    let mut pairs = Vec::new();
     for pair in envs {
         let (var, name) = pair
             .split_once('=')
             .with_context(|| format!("expected VAR=secret, got {pair}"))?;
-        child.env(var, read_secret(store, name, true)?);
+        pairs.push((var, name));
+    }
+
+    let names: Vec<&str> = pairs.iter().map(|(_, name)| *name).chain(stdin).collect();
+    let token = batch_token(store, &names);
+    let read = |name: &str| match &token {
+        Some(token) => broker::request_token(store, name, &agent(), token),
+        None => read_secret(store, name, true),
+    };
+
+    for (var, name) in pairs {
+        child.env(var, read(name)?);
     }
 
     let piped = match stdin {
-        Some(name) => Some(read_secret(store, name, true)?),
+        Some(name) => Some(read(name)?),
         None => None,
     };
     child.stdin(if piped.is_some() {
@@ -1105,8 +1137,8 @@ pub fn run_child(
 /* The token goes to stdout and the rest to stderr, so `TOKEN=$(passbox grant acme/api-key)` picks up
 the token alone while a person still sees what it covers. */
 fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
-    // A token lives in the broker, and a passphrase store reads without one at all
-    if headless() || !store.has_se_wrap() {
+    // A token lives in the broker, local or a configured host, and a passphrase store has none
+    if !brokered(store) {
         bail!("a token needs the broker, which this store does not use");
     }
 
@@ -1115,14 +1147,13 @@ fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
     let token = lines.next().context("the broker returned no token")?;
     let covered: Vec<&str> = lines.collect();
 
+    // The token goes to stdout only, since stderr lands in scrollback, CI logs and transcripts
     println!("{token}");
     eprintln!("opens {} secret(s) for {ttl}s:", covered.len());
     for name in &covered {
         eprintln!("  {name}");
     }
-    eprintln!();
-    eprintln!("pass it back with PASSBOX_TOKEN, and it stops working when it lapses:");
-    eprintln!("  export PASSBOX_TOKEN={token}");
+    eprintln!("pass the token on stdout back as PASSBOX_TOKEN, it stops working when it lapses");
     Ok(())
 }
 

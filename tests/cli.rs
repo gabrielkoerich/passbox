@@ -1,6 +1,6 @@
 //! Drives the built binary, so it covers what unit tests cannot: argument handling and exit codes.
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -684,5 +684,158 @@ fn autosync_can_be_turned_off() {
     assert!(
         !remote.path().join("store").exists(),
         "PASSBOX_NO_AUTOSYNC should stop the copy"
+    );
+}
+
+/// The Mac's broker as a client with PASSBOX_HOST reaches it, on loopback. Each connection is one
+/// request, answered by `answer` and handed back so a test can check what the client asked for
+fn fake_host(
+    answer: impl Fn(&serde_json::Value) -> Result<String, String> + Send + 'static,
+) -> (String, std::sync::mpsc::Receiver<serde_json::Value>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let (seen, requests) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let response = match answer(&request) {
+                Ok(value) => serde_json::json!({ "ok": true, "value": value, "error": null }),
+                Err(error) => serde_json::json!({ "ok": false, "value": null, "error": error }),
+            };
+            seen.send(request).unwrap();
+            writeln!(stream, "{response}").unwrap();
+        }
+    });
+    (addr, requests)
+}
+
+/// A client run with a configured host, and with or without a token already held
+fn on_host(cli: &Cli, host: &str, token: Option<&str>, args: &[&str]) -> (bool, String, String) {
+    let mut cmd = cli.cmd(PASSPHRASE);
+    cmd.env("PASSBOX_HOST", host).env_remove("PASSBOX_TOKEN");
+    if let Some(token) = token {
+        cmd.env("PASSBOX_TOKEN", token);
+    }
+    let out = cmd.args(args).output().unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+fn ops(requests: &std::sync::mpsc::Receiver<serde_json::Value>) -> Vec<serde_json::Value> {
+    requests.try_iter().collect()
+}
+
+#[test]
+fn grant_on_a_client_goes_to_the_host_and_keeps_the_token_off_stderr() {
+    let cli = Cli::empty();
+    let (host, requests) = fake_host(|_| Ok("tok-7f3a\na/b\nc/d".into()));
+    let (ok, stdout, stderr) = on_host(&cli, &host, None, &["grant", "a/b", "c/d"]);
+
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "tok-7f3a\n");
+    // stderr lands in scrollback, CI logs and agent transcripts, so the token must not be there
+    assert!(
+        !stderr.contains("tok-7f3a"),
+        "the token leaked to stderr: {stderr}"
+    );
+    assert!(stderr.contains("a/b") && stderr.contains("c/d"), "{stderr}");
+
+    let seen = ops(&requests);
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0]["op"], "grant");
+    assert_eq!(seen[0]["names"], serde_json::json!(["a/b", "c/d"]));
+}
+
+#[test]
+fn exec_with_many_secrets_asks_the_host_once() {
+    let cli = Cli::empty();
+    let (host, requests) = fake_host(|r| match r["op"].as_str() {
+        Some("grant") => Ok("tok-1\na/b\nc/d".into()),
+        Some("get") if r["token"] == "tok-1" => Ok(format!("v-{}", r["name"].as_str().unwrap())),
+        _ => Err("a read without the batch token".into()),
+    });
+    let script = "printf %s, \"$A\"; cat";
+    let args = [
+        "exec", "--env", "A=a/b", "--stdin", "c/d", "--", "sh", "-c", script,
+    ];
+    let (ok, stdout, stderr) = on_host(&cli, &host, None, &args);
+
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "v-a/b,v-c/d");
+    let seen = ops(&requests);
+    let kinds: Vec<&str> = seen.iter().map(|r| r["op"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["grant", "get", "get"]);
+    // A short token, so it is useless once the batch is read
+    assert_eq!(seen[0]["ttl"], 30);
+}
+
+#[test]
+fn exec_reads_one_by_one_when_the_grant_is_refused() {
+    let cli = Cli::empty();
+    let (host, requests) = fake_host(|r| match r["op"].as_str() {
+        Some("grant") => Err("denied".into()),
+        Some("get") if r["token"] == "" => Ok(format!("v-{}", r["name"].as_str().unwrap())),
+        _ => Err("unexpected request".into()),
+    });
+    let args = [
+        "exec",
+        "--env",
+        "A=a/b",
+        "--env",
+        "B=c/d",
+        "--",
+        "sh",
+        "-c",
+        "printf %s,%s \"$A\" \"$B\"",
+    ];
+    let (ok, stdout, stderr) = on_host(&cli, &host, None, &args);
+
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "v-a/b,v-c/d");
+    let kinds: Vec<String> = ops(&requests)
+        .iter()
+        .map(|r| r["op"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["grant", "get", "get"]);
+}
+
+#[test]
+fn exec_with_one_secret_or_a_held_token_mints_no_grant() {
+    let cli = Cli::empty();
+    let (host, requests) = fake_host(|r| Ok(format!("v-{}", r["name"].as_str().unwrap())));
+
+    let one = [
+        "exec",
+        "--env",
+        "A=a/b",
+        "--",
+        "sh",
+        "-c",
+        "printf %s \"$A\"",
+    ];
+    let (ok, stdout, stderr) = on_host(&cli, &host, None, &one);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "v-a/b");
+    let seen = ops(&requests);
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0]["op"], "get");
+
+    let two = ["exec", "--env", "A=a/b", "--env", "B=c/d", "--", "true"];
+    let (ok, _, stderr) = on_host(&cli, &host, Some("held"), &two);
+    assert!(ok, "{stderr}");
+    let seen = ops(&requests);
+    assert_eq!(seen.len(), 2);
+    assert!(
+        seen.iter()
+            .all(|r| r["op"] == "get" && r["token"] == "held"),
+        "{seen:?}"
     );
 }
