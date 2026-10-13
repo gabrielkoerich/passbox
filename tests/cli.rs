@@ -1362,3 +1362,90 @@ fn the_fake_enclave_refuses_a_store_outside_the_temp_directory() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("outside the temp directory"), "{stderr}");
 }
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_refused_plugin_run_is_audited() {
+    let bound = Bound::new();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        "name = \"demo\"\ndescription = \"test\"\n\n[[tool]]\nname = \"say\"\nrun = [\"printf\", \"%s\", \"hi\"]\n",
+    )
+    .unwrap();
+    bound
+        .run(&["plugin", "add", src.path().to_str().unwrap()], None)
+        .unwrap();
+    bound.forget_prompts();
+
+    bound.deny("1");
+    let err = bound.run(&["plugin", "demo", "say"], None).unwrap_err();
+    assert!(err.contains("denied"), "{err}");
+    assert_eq!(bound.run(&["plugin", "demo", "say"], None).unwrap(), "hi");
+    assert_eq!(bound.prompts(), ["run plugin:demo.say for test-agent"; 2]);
+
+    let log = bound.audit();
+    assert!(decided(&log, "plugin:demo.say", "denied"), "{log}");
+    assert!(decided(&log, "plugin:demo.say", "approved"), "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_refused_project_grant_is_audited_and_an_approved_one_covers_reads() {
+    let bound = Bound::new();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join(".passbox.toml"),
+        "secrets = [\"demo/one\", \"demo/two\"]\n",
+    )
+    .unwrap();
+    // The broker finds the manifest from the caller's working directory
+    let read = |pair: &str| {
+        bound
+            .cmd()
+            .current_dir(project.path())
+            .args(["exec", "--env", pair, "--", "true"])
+            .output()
+            .unwrap()
+    };
+
+    bound.deny("1");
+    assert!(
+        !read("A=demo/one").status.success(),
+        "a refused grant still read"
+    );
+    let out = read("A=demo/one");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Covered by the grant just approved, so no prompt
+    let out = read("B=demo/two");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let prompts = bound.prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(
+        prompts
+            .iter()
+            .all(|p| p.starts_with("give test-agent access to 2 secrets declared by")),
+        "{prompts:?}"
+    );
+
+    let log = bound.audit();
+    for name in ["demo/one", "demo/two"] {
+        assert!(decided(&log, name, "denied"), "{log}");
+        assert!(decided(&log, name, "project grant"), "{log}");
+    }
+}
