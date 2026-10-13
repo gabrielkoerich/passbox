@@ -157,8 +157,8 @@ enum Command {
         /// One field of a multi-line entry, such as `username`
         #[arg(long)]
         field: Option<String>,
-        /// Seconds before the clipboard is cleared
-        #[arg(long, default_value_t = 20)]
+        /// Seconds before the clipboard is cleared, at most a minute so a secret never lingers there
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u64).range(1..=60))]
         clear: u64,
     },
     /// Approve named secrets once, and print a token that opens only those

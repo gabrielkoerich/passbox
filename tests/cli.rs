@@ -1538,3 +1538,14 @@ fn a_refused_copy_puts_nothing_on_the_clipboard() {
     let log = bound.audit();
     assert!(decided(&log, "demo/one", "denied"), "{log}");
 }
+
+#[test]
+fn copy_clears_within_a_minute_and_refuses_anything_longer() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    // Each fails on the argument, before anything is read or copied
+    for bad in ["61", "3600", "0"] {
+        let err = cli.run(&["copy", "a/b", "--clear", bad], None).unwrap_err();
+        assert!(err.contains("1..=60"), "--clear {bad}: {err}");
+    }
+}
