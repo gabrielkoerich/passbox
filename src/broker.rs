@@ -461,7 +461,7 @@ fn reply<S: std::io::Read + Write>(
         eprintln!("could not read the request: {e}");
         return Ok(());
     }
-    eprintln!("read {} bytes of request", line.len());
+    eprintln!("{} read {} bytes of request", clock(), line.len());
     let response = match serde_json::from_str::<Request>(&line) {
         Ok(mut request) => {
             // An unset agent is named from the caller's own process chain, so the prompt says who
@@ -550,9 +550,8 @@ pub fn serve(store: Store) -> Result<()> {
     std::fs::set_permissions(&socket, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
 
     LAST_SEEN.store(store::now(), Ordering::Relaxed);
-    watchdog(socket.clone());
-
     let broker = std::sync::Arc::new(std::sync::Mutex::new(Broker::new(store)));
+    watchdog(socket.clone(), broker.clone());
 
     /* Loopback, exposed to the tailnet by `tailscale serve`, rather than bound to the tailnet
     address directly. Measured 2026-09-27: macOS runs Tailscale as a network extension, and a
@@ -577,7 +576,7 @@ pub fn serve(store: Store) -> Result<()> {
     }
 
     // A daemon that prints nothing looks like a hang, so say plainly that it is working
-    eprintln!("broker ready, waiting for requests. Ctrl+C to stop");
+    eprintln!("{} broker ready, waiting for requests. Ctrl+C to stop", clock());
 
     for stream in listener.incoming() {
         let mut stream = stream?;
@@ -594,18 +593,75 @@ pub fn serve(store: Store) -> Result<()> {
 
 /// Exiting is how the key is dropped, which is blunter and surer than clearing it in place
 #[cfg(feature = "host")]
-fn watchdog(socket: std::path::PathBuf) {
+fn watchdog(socket: std::path::PathBuf, broker: std::sync::Arc<std::sync::Mutex<Broker>>) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(30));
             // A broker whose socket is gone, with its store deleted, can never be reached again
+            if !socket.exists() {
+                eprintln!("{} socket is gone, exiting", clock());
+                std::process::exit(0);
+            }
             let idle = store::now().saturating_sub(LAST_SEEN.load(Ordering::Relaxed));
-            if idle >= KEY_TTL_SECS || !socket.exists() {
+            // A held lock is a request in flight, often waiting on a prompt, so try again later
+            let mut broker = match broker.try_lock() {
+                Ok(broker) => broker,
+                Err(std::sync::TryLockError::WouldBlock) => continue,
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    eprintln!("{} a request panicked, exiting", clock());
+                    let _ = std::fs::remove_file(&socket);
+                    std::process::exit(1);
+                }
+            };
+            if broker.sweep(idle) {
+                eprintln!("{} idle {idle}s and no live token, exiting to drop the key", clock());
                 let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
             }
         }
     });
+}
+
+#[cfg(feature = "host")]
+impl Broker {
+    /* Called by the watchdog. A live token holds its values only here, so exiting would end a
+    grant early and the next read would prompt again. While one lives, only the key goes. */
+    fn sweep(&mut self, idle: u64) -> bool {
+        if idle < KEY_TTL_SECS {
+            return false;
+        }
+        let now = store::now();
+        self.tokens.retain(|_, g| now < g.expires);
+        if self.tokens.is_empty() {
+            return true;
+        }
+        if self.key.take().is_some() {
+            eprintln!(
+                "{} idle {idle}s, dropped the key, {} live token(s) keep the broker up",
+                clock(),
+                self.tokens.len()
+            );
+        }
+        false
+    }
+}
+
+/// Local time for the broker log, which launchd writes without one
+#[cfg(feature = "host")]
+fn clock() -> String {
+    let t = store::now() as libc::time_t;
+    // SAFETY: localtime_r only writes the tm it is given
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    format!(
+        "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
 }
 
 /// The peer pid comes from the kernel, so the caller cannot fake its own path
@@ -918,6 +974,32 @@ mod tests {
         // Only passbox and a shell means there is no better name than passbox
         assert_eq!(prompt_agent("passbox < zsh"), "passbox");
         assert_eq!(prompt_agent("unknown"), "passbox");
+    }
+
+    #[test]
+    fn an_idle_broker_outlives_a_live_token_and_drops_the_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut broker = Broker::new(Store {
+            dir: tmp.path().to_path_buf(),
+        });
+        broker.key = Some(x25519::Identity::generate());
+        broker.tokens.insert(
+            "t".into(),
+            TokenGrant {
+                values: HashMap::from([("a/b".into(), "v".into())]),
+                expires: store::now() + 43_200,
+            },
+        );
+
+        assert!(!broker.sweep(KEY_TTL_SECS - 1));
+        assert!(broker.key.is_some());
+
+        assert!(!broker.sweep(KEY_TTL_SECS));
+        assert!(broker.key.is_none());
+        assert_eq!(broker.value_for_token("t", "a/b").as_deref(), Some("v"));
+
+        broker.tokens.get_mut("t").unwrap().expires = store::now();
+        assert!(broker.sweep(KEY_TTL_SECS));
     }
 
     #[test]

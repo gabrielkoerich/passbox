@@ -76,7 +76,7 @@ Per-agent allowlists are therefore not implemented. They need verifiable identit
 
 A single process serving a unix socket at 0600, one connection at a time. No async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so there is no launchd plist and no install step.
 
-It holds the store key for 300 seconds of inactivity and then exits. Exiting is how the key is dropped.
+It holds the store key for 300 seconds of inactivity and then exits. Exiting is how the key is dropped. A live token holds its values only in the broker, so while one lives the broker drops just the key and stays up, and exits once the last token lapses.
 
 Every read raises the prompt. A grant token is the only way to skip it: the broker holds the granted values in memory and releases them without asking again until the token lapses.
 
