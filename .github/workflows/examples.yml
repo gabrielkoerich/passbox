@@ -1,0 +1,84 @@
+name: Examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: examples-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Every example runs against the client build and a throwaway passphrase store, so none needs a Mac
+  examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The Rust example is its own Cargo project with its own target, so it is cached separately
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          workspaces: |
+            . -> target
+            examples/rust -> target
+
+      - name: Build the client
+        run: |
+          cargo build --no-default-features
+          echo "$PWD/target/debug" >> "$GITHUB_PATH"
+
+      - name: Python
+        working-directory: examples
+        run: python3 python/passbox.py
+
+      - name: MCP
+        working-directory: examples
+        run: python3 mcp/passbox_mcp.py
+
+      - name: TypeScript
+        working-directory: examples
+        run: npx --yes tsx typescript/selfcheck.ts
+
+      - name: Rust
+        working-directory: examples
+        run: cargo run --manifest-path rust/Cargo.toml
+
+      # The copy half needs a Mac pasteboard, so this checks the workflow file and the listing Alfred shows
+      - name: Alfred
+        working-directory: examples/alfred
+        run: |
+          python3 -c 'import plistlib; plistlib.load(open("info.plist", "rb"))'
+          export PASSBOX_DIR="$RUNNER_TEMP/alfred" PASSBOX_PASSPHRASE="correct horse battery staple"
+          passbox init
+          printf 'v' | passbox add github/token
+          PASSBOX="$(command -v passbox)" ./filter.sh > "$RUNNER_TEMP/alfred.json"
+          python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); assert [i["title"] for i in d["items"]] == ["github/token"], d' "$RUNNER_TEMP/alfred.json"
+
+      # GitHub's runner image has shellcheck, act's does not
+      - name: Shellcheck the example scripts
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -yq shellcheck; }
+          shellcheck examples/linux-client/*.sh examples/alfred/*.sh
+
+      # The Linux client needs a Mac and a tailnet to run, so CI checks that the image builds and starts
+      # the client built above, which is what the next release ships. Its other layers stay cached
+      - name: Put the client in the image context
+        run: cp target/debug/passbox examples/linux-client/passbox
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the Linux client image
+        uses: docker/build-push-action@v7
+        with:
+          context: examples/linux-client
+          load: true
+          tags: passbox-client
+          cache-from: type=gha,scope=linux-client
+          cache-to: type=gha,mode=max,scope=linux-client
+      - name: The image runs this commit's client
+        run: |
+          want=$(target/debug/passbox --version)
+          got=$(docker run --rm --entrypoint passbox passbox-client --version)
+          [ "$got" = "$want" ] || { echo "::error::image has $got, built $want"; exit 1; }

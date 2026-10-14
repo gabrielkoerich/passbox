@@ -50,7 +50,21 @@ jobs:
       - name: Clippy, client only
         run: cargo clippy --no-default-features -- -D warnings
 
-  # macOS only, because the Secure Enclave is the point of the product
+  # macOS only, because the Secure Enclave is the point of the product. Clippy and the tests share
+  # nothing, so each runs on its own runner in parallel. The examples have their own workflow
+  clippy-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+      - name: Clippy
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets --features mock-enclave -- -D warnings
+
   test-macos:
     runs-on: macos-latest
     timeout-minutes: 15
@@ -59,23 +73,13 @@ jobs:
       PASSBOX_NO_ENCLAVE: "1"
     steps:
       - uses: actions/checkout@v5
-
-      # The Rust example is its own Cargo project with its own target, so it is cached separately
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
-          workspaces: |
-            . -> target
-            examples/rust -> target
 
       # The reference implementation, so the interop test runs rather than skipping
       - name: Install age
         run: brew install age
-
-      - name: Clippy
-        run: |
-          cargo clippy --all-targets -- -D warnings
-          cargo clippy --all-targets --features mock-enclave -- -D warnings
 
       # The fake enclave runs the broker tests that would otherwise need a finger
       - name: Test
@@ -90,16 +94,6 @@ jobs:
           /tmp/venv/bin/pip install --quiet cryptography
           /tmp/venv/bin/python tests/ecies.py /tmp/passbox-se
 
-      - name: Run the MCP example against the server
-        run: |
-          cargo build
-          PATH="$PWD/target/debug:$PATH" python3 examples/mcp/passbox_mcp.py
-
-      - name: Run the Rust example against the library
-        run: |
-          cargo build
-          PATH="$PWD/target/debug:$PATH" cargo run --manifest-path examples/rust/Cargo.toml
-
       - name: Confirm the binary needs no developer identity
         run: |
           cargo build
@@ -109,7 +103,7 @@ jobs:
   # The version has to be known before the binaries build, or every release ships a
   # binary stamped with the previous number.
   version:
-    needs: [lint, gitleaks, test-macos, client-build]
+    needs: [lint, gitleaks, clippy-macos, test-macos, client-build]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
@@ -214,7 +208,7 @@ jobs:
 
   # CI pays the build cost once so nobody installing has to. Public repos get free minutes.
   binaries:
-    needs: [lint, gitleaks, test-macos, client-build, version]
+    needs: [lint, gitleaks, clippy-macos, test-macos, client-build, version]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
     strategy:
       matrix:
@@ -290,7 +284,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [lint, gitleaks, test-macos, client-build, version, binaries]
+    needs: [lint, gitleaks, clippy-macos, test-macos, client-build, version, binaries]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
     runs-on: ubuntu-latest
     permissions:

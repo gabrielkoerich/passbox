@@ -9,3 +9,4 @@ target/
 !/docs/content/design.md
 !/docs/content/roadmap.md
 *.alfredworkflow
+examples/linux-client/passbox

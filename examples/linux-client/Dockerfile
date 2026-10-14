@@ -26,11 +26,19 @@ RUN curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg \
 # The client build: no Secure Enclave, no broker server, no sync.
 # Only x86_64 Linux is released, so on an arm64 host build with
 #   docker build --platform linux/amd64 ...
+# A passbox binary next to this file is installed instead, so CI tests the client it just built.
+# entrypoint.sh is named too because a COPY whose only pattern matches nothing fails
+COPY entrypoint.sh passbo[x] /tmp/context/
 RUN set -eux; \
-    curl -fsSL -o /tmp/passbox.tar.gz \
-      https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox-x86_64-unknown-linux-musl.tar.gz; \
-    tar -xzf /tmp/passbox.tar.gz -C /usr/local/bin passbox; \
-    rm /tmp/passbox.tar.gz; \
+    if [ -f /tmp/context/passbox ]; then \
+      install -m 755 /tmp/context/passbox /usr/local/bin/passbox; \
+    else \
+      curl -fsSL -o /tmp/passbox.tar.gz \
+        https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox-x86_64-unknown-linux-musl.tar.gz; \
+      tar -xzf /tmp/passbox.tar.gz -C /usr/local/bin passbox; \
+      rm /tmp/passbox.tar.gz; \
+    fi; \
+    rm -r /tmp/context; \
     test -x /usr/local/bin/passbox
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
