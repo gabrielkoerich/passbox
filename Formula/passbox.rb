@@ -4,14 +4,12 @@ class Passbox < Formula
   version "0.0.0"
   license "MIT"
 
+  # Apple silicon only, since the Secure Enclave and Touch ID flow is built and tested there
   on_macos do
+    depends_on arch: :arm64
     on_arm do
       url "URL_MACOS_ARM"
       sha256 "SHA_MACOS_ARM"
-    end
-    on_intel do
-      url "URL_MACOS_INTEL"
-      sha256 "SHA_MACOS_INTEL"
     end
   end
 
