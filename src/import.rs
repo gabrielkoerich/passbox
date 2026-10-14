@@ -72,11 +72,7 @@ pub struct Report {
     pub skipped: usize,
 }
 
-pub fn import(
-    store: &Store,
-    names: &[String],
-    key: Option<&x25519::Identity>,
-) -> Result<Report> {
+pub fn import(store: &Store, names: &[String], key: Option<&x25519::Identity>) -> Result<Report> {
     let recipient = store.recipient()?;
     let mut report = Report {
         imported: 0,

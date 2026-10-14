@@ -307,8 +307,9 @@ fn run() -> Result<()> {
         #[cfg(feature = "host")]
         Command::Sync { remote, enable } => run_sync(&store, remote.as_deref(), enable),
         #[cfg(feature = "host")]
-        Command::ImportPass { prefix } => import_pass(&store, prefix.as_deref())
-            .inspect(|()| written(&store, "import from pass")),
+        Command::ImportPass { prefix } => {
+            import_pass(&store, prefix.as_deref()).inspect(|()| written(&store, "import from pass"))
+        }
         Command::Plugin { args } => plugin_cmd(&store, &args),
         Command::Mcp => mcp::serve(store),
         Command::Git { args } => git(&store, &args),

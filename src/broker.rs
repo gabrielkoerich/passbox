@@ -576,7 +576,10 @@ pub fn serve(store: Store) -> Result<()> {
     }
 
     // A daemon that prints nothing looks like a hang, so say plainly that it is working
-    eprintln!("{} broker ready, waiting for requests. Ctrl+C to stop", clock());
+    eprintln!(
+        "{} broker ready, waiting for requests. Ctrl+C to stop",
+        clock()
+    );
 
     for stream in listener.incoming() {
         let mut stream = stream?;
@@ -614,7 +617,10 @@ fn watchdog(socket: std::path::PathBuf, broker: std::sync::Arc<std::sync::Mutex<
                 }
             };
             if broker.sweep(idle) {
-                eprintln!("{} idle {idle}s and no live token, exiting to drop the key", clock());
+                eprintln!(
+                    "{} idle {idle}s and no live token, exiting to drop the key",
+                    clock()
+                );
                 let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
             }
