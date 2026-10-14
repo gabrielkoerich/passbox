@@ -27,6 +27,9 @@ a token becomes a password that never lapses, which is the thing this exists to 
 const MAX_GRANT_SECS: u64 = 86_400;
 #[cfg(feature = "host")]
 static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
+/// Connections being answered, token reads included, so an upgrade restart never cuts one off
+#[cfg(feature = "host")]
+static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /* Exact names only. A token is worth minting because it is narrower than the store key, and a
 namespace is not: it hands over everything under it now, and a caller that asks for one has not
@@ -544,6 +547,7 @@ fn serve_tailnet(listener: std::net::TcpListener, shared: std::sync::Arc<Shared>
         let Ok(mut stream) = stream else { continue };
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
         let shared = std::sync::Arc::clone(&shared);
+        IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
             let caller = stream
                 .peer_addr()
@@ -555,6 +559,7 @@ fn serve_tailnet(listener: std::net::TcpListener, shared: std::sync::Arc<Shared>
                 eprintln!("tailnet request failed: {e:#}");
             }
             LAST_SEEN.store(store::now(), Ordering::Relaxed);
+            IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         });
     }
 }
@@ -629,26 +634,81 @@ pub fn serve(store: Store) -> Result<()> {
         let mut stream = stream?;
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
         let shared = std::sync::Arc::clone(&shared);
+        IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
             let pid = peer_pid(&stream);
             let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
             let cwd = pid.and_then(caller_cwd);
             let _ = reply(&shared, &mut stream, &caller, cwd.as_deref(), true);
             LAST_SEEN.store(store::now(), Ordering::Relaxed);
+            IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         });
     }
     Ok(())
 }
 
+/// The file a path names, followed through symlinks, so a repointed `bin/passbox` reads as a change
+#[cfg(feature = "host")]
+fn file_id(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/* The path this broker was started as, and the file it is running from. launchd starts
+`/opt/homebrew/bin/passbox`, which an upgrade repoints, and the cleanup after it deletes the old
+file. Either way the next start would run a different file, which is the signal to restart. */
+#[cfg(feature = "host")]
+struct Binary {
+    launch: std::path::PathBuf,
+    running: Option<(u64, u64)>,
+}
+
+#[cfg(feature = "host")]
+impl Binary {
+    fn current() -> Self {
+        let exe = std::env::current_exe().ok();
+        let launch = std::env::args_os()
+            .next()
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| exe.clone())
+            .unwrap_or_default();
+        let running = exe
+            .and_then(|e| std::fs::canonicalize(e).ok())
+            .and_then(|e| file_id(&e));
+        Binary { launch, running }
+    }
+
+    fn replaced(&self) -> bool {
+        self.running.is_some() && file_id(&self.launch) != self.running
+    }
+}
+
 /// Exiting is how the key is dropped, which is blunter and surer than clearing it in place
 #[cfg(feature = "host")]
 fn watchdog(socket: std::path::PathBuf, shared: std::sync::Arc<Shared>) {
+    let binary = Binary::current();
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(30));
             // A broker whose socket is gone, with its store deleted, can never be reached again
             if !socket.exists() {
                 eprintln!("{} socket is gone, exiting", clock());
+                std::process::exit(0);
+            }
+            /* After an upgrade the old file may already be deleted, and macOS kills a process
+            whose code it can no longer page in. Exiting between requests lets launchd start the
+            new one. Live grants end with it, since they are held only in memory */
+            if binary.replaced()
+                && IN_FLIGHT.load(Ordering::SeqCst) == 0
+                && let Ok(_quiet) = shared.broker.try_lock()
+            {
+                eprintln!(
+                    "{} {} was replaced, exiting so the new version starts",
+                    clock(),
+                    binary.launch.display()
+                );
+                let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
             }
             let idle = store::now().saturating_sub(LAST_SEEN.load(Ordering::Relaxed));
@@ -1056,6 +1116,36 @@ mod tests {
         // Only passbox and a shell means there is no better name than passbox
         assert_eq!(prompt_agent("passbox < zsh"), "passbox");
         assert_eq!(prompt_agent("unknown"), "passbox");
+    }
+
+    #[test]
+    fn a_repointed_or_deleted_binary_reads_as_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("passbox-old");
+        let new = tmp.path().join("passbox-new");
+        let launch = tmp.path().join("passbox");
+        std::fs::write(&old, "old").unwrap();
+        std::fs::write(&new, "new").unwrap();
+        std::os::unix::fs::symlink(&old, &launch).unwrap();
+        let binary = Binary {
+            launch: launch.clone(),
+            running: file_id(&old),
+        };
+        assert!(!binary.replaced());
+
+        // What `brew upgrade` does to bin/passbox
+        std::fs::remove_file(&launch).unwrap();
+        std::os::unix::fs::symlink(&new, &launch).unwrap();
+        assert!(binary.replaced());
+
+        // And the cleanup, with the broker started from the file itself
+        let direct = Binary {
+            launch: old.clone(),
+            running: file_id(&old),
+        };
+        assert!(!direct.replaced());
+        std::fs::remove_file(&old).unwrap();
+        assert!(direct.replaced());
     }
 
     #[test]

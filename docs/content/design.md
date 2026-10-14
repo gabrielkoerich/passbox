@@ -76,7 +76,7 @@ Per-agent allowlists are therefore not implemented. They need verifiable identit
 
 A single process serving a unix socket at 0600, a thread per connection. A prompt holds the broker's lock, so only one dialog is ever on screen and the next request that needs one waits for it, as long as it takes, with no timeout and no retry. Tokens sit behind a lock of their own, so a token read is answered while a prompt waits. No async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so there is no launchd plist and no install step.
 
-It holds the store key for 300 seconds of inactivity and then exits. Exiting is how the key is dropped. A live token holds its values only in the broker, so while one lives the broker drops just the key and stays up, and exits once the last token lapses.
+It holds the store key for 300 seconds of inactivity and then exits. Exiting is how the key is dropped. A live token holds its values only in the broker, so while one lives the broker drops just the key and stays up, and exits once the last token lapses. It also exits when the binary it was started as is replaced, as `brew upgrade` does, between requests, so launchd starts the new version. Rejected: a Homebrew `post_install` that restarts the LaunchAgent, which knows only that one install path. The cost is the same as any restart: live grants end.
 
 Every read raises the prompt. A grant token is the only way to skip it: the broker holds the granted values in memory and releases them without asking again until the token lapses.
 
