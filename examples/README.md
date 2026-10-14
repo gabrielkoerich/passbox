@@ -9,6 +9,7 @@ Each is a small client over the CLI, with a runnable self-check against a throwa
 | [`mcp`](mcp) | `python3 mcp/passbox_mcp.py` |
 | [`typescript`](typescript) | `npx tsx typescript/selfcheck.ts` |
 | [`linux-client`](linux-client) | a container that asks a Mac over the tailnet |
+| [`alfred`](alfred) | a workflow that copies a secret from Alfred |
 
 Each shows the same three things, which any language needs:
 

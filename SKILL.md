@@ -119,7 +119,7 @@ Use `--field` when handing a value to something that needs only the password: it
 
 ## Listing names
 
-`ls` goes through the broker like a read, so it raises a prompt once per agent every 300 seconds and is audited. Do not use it as a health check. Check the binary and that `~/.passbox/wraps` exists instead.
+`ls` goes through the broker like a read, so it raises a prompt on every call and is audited. Do not use it as a health check. Check the binary and that `~/.passbox/wraps` exists instead.
 
 ## Reading from another machine
 

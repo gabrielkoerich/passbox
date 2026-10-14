@@ -8,3 +8,4 @@ target/
 !/docs/content/_index.head.md
 !/docs/content/design.md
 !/docs/content/roadmap.md
+*.alfredworkflow

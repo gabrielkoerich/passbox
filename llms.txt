@@ -64,7 +64,7 @@ A prompt waits for a person at the Mac. If you expect one, tell the user before 
 
 Every read raises a prompt. To skip it, the user covers named secrets with a grant token or a project `.passbox.toml`, for a bounded time up to 24 hours. See Fewer prompts below.
 
-`list_secrets` prompts too, at most once per agent every 300 seconds.
+`list_secrets` prompts too, on every call.
 
 ### Recipes
 
