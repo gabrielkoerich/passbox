@@ -60,13 +60,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The Rust example is its own Cargo project with its own target, so it is cached separately
+      # Every tracked Cargo.lock marks a project with its own target, so a new one is cached unlisted
+      - name: Find the Cargo workspaces
+        id: workspaces
+        run: |
+          {
+            echo "list<<EOF"
+            git ls-files '*Cargo.lock' | xargs -n1 dirname | sed 's|$| -> target|'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
-          workspaces: |
-            . -> target
-            examples/rust -> target
+          workspaces: ${{ steps.workspaces.outputs.list }}
 
       # The reference implementation, so the interop test runs rather than skipping
       - name: Install age
