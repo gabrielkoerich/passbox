@@ -94,9 +94,9 @@ jobs:
           /tmp/venv/bin/pip install --quiet cryptography
           /tmp/venv/bin/python tests/ecies.py /tmp/passbox-se
 
+      # The binary the tests built. The linker signs it ad hoc whatever its features, so no rebuild
       - name: Confirm the binary needs no developer identity
         run: |
-          cargo build
           codesign -dvvv target/debug/passbox 2>&1 | tee sig.txt
           grep -q "Signature=adhoc" sig.txt
 
