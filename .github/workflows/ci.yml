@@ -130,6 +130,9 @@ jobs:
           printf 'v' | passbox add github/token
           PASSBOX="$(command -v passbox)" ./filter.sh > "$RUNNER_TEMP/alfred.json"
           python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); assert [i["title"] for i in d["items"]] == ["github/token"], d' "$RUNNER_TEMP/alfred.json"
+          # The same package the release attaches
+          ./build.sh 0.0.0 "$RUNNER_TEMP/passbox.alfredworkflow"
+          unzip -Z1 "$RUNNER_TEMP/passbox.alfredworkflow" | sort | tr '\n' ' ' | grep -qx 'copy.sh filter.sh info.plist '
 
       # GitHub's runner image has shellcheck, act's does not
       - name: Shellcheck the example scripts
@@ -442,6 +445,13 @@ jobs:
           git push origin main "$VERSION"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
+      # releases/latest/download/passbox.alfredworkflow then always installs the newest one
+      - name: Build the Alfred workflow
+        if: needs.version.outputs.skip == 'false'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: integrations/alfred/build.sh "$VERSION" artifacts/passbox.alfredworkflow
+
       - name: Create release with the binaries attached
         if: needs.version.outputs.skip == 'false'
         env:
@@ -451,7 +461,8 @@ jobs:
           CHANGELOG: ${{ steps.changelog.outputs.body }}
         run: |
           ls -l artifacts
-          gh release create "$VERSION" --title "$VERSION" --notes "$CHANGELOG" artifacts/*.tar.gz
+          gh release create "$VERSION" --title "$VERSION" --notes "$CHANGELOG" \
+            artifacts/*.tar.gz artifacts/passbox.alfredworkflow
 
       # The docs describe this release, so they go out after it and are built from its tag
       - name: Publish the docs for this release

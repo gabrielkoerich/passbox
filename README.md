@@ -62,6 +62,15 @@ passbox copy github/token     # to the clipboard, cleared after a few seconds
 
 `add` refuses a name that already exists. To change a value, `passbox rm` it and add it again. The old value stays in its versions, so `passbox restore` brings it back.
 
+### Alfred
+
+The [Alfred workflow](integrations/alfred) copies a secret from Alfred: type `pb`, pick a name, and `⏎` copies the password or `⌘⏎` the username, through `passbox copy`. It needs the Powerpack.
+
+```bash
+curl -fsSLO https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox.alfredworkflow
+open passbox.alfredworkflow
+```
+
 ### Coming from pass
 
 ```bash

@@ -4,13 +4,14 @@ Type `pb`, pick a secret, and press `⏎` to copy its password or `⌘⏎` to co
 
 ## Install
 
+Every release attaches the workflow, and this link always serves the newest one:
+
 ```bash
-cd integrations/alfred
-zip -q passbox.alfredworkflow info.plist filter.sh copy.sh
+curl -fsSLO https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox.alfredworkflow
 open passbox.alfredworkflow
 ```
 
-Alfred imports it. To open it with a hotkey, such as `⌘⇧C`, add a Hotkey trigger in the workflow and connect it to the `pb` Script Filter.
+Or download it from the [latest release](https://github.com/gabrielkoerich/passbox/releases/latest) and double-click it. Alfred imports it, and installing a newer one replaces the old. From a checkout, `./build.sh dev passbox.alfredworkflow` builds the same file. To open it with a hotkey, such as `⌘⇧C`, add a Hotkey trigger in the workflow and connect it to the `pb` Script Filter.
 
 ## Prompts
 
@@ -26,6 +27,7 @@ So one use is two fingerprints. Setting the workflow variable `cache_seconds` ab
 | File | Does |
 |---|---|
 | `filter.sh` | Runs `passbox ls` once and prints Alfred's JSON. A refused listing shows as an item with the error |
+| `build.sh` | Packs the three files into `passbox.alfredworkflow`, stamped with a version. CI and the release use it |
 | `copy.sh` | Runs `passbox copy NAME`, with `--field username` on `⌘⏎` |
 | `info.plist` | The workflow: the `pb` Script Filter, the copy script and a notification with the result |
 
