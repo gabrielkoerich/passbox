@@ -45,6 +45,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
       - name: Clippy, client only
         run: cargo clippy --no-default-features -- -D warnings
 
@@ -61,6 +63,7 @@ jobs:
       # The Rust example is its own Cargo project with its own target, so it is cached separately
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-all-crates: true
           workspaces: |
             . -> target
             examples/rust -> target
@@ -229,6 +232,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-all-crates: true
           key: ${{ matrix.target }}
 
       # Stamped before the build, so `passbox --version` is the version it ships as
