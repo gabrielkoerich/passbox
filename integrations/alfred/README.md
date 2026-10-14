@@ -5,7 +5,7 @@ Type `pb`, pick a secret, and press `⏎` to copy its password or `⌘⏎` to co
 ## Install
 
 ```bash
-cd examples/alfred
+cd integrations/alfred
 zip -q passbox.alfredworkflow info.plist filter.sh copy.sh
 open passbox.alfredworkflow
 ```

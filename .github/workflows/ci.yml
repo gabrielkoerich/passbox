@@ -82,7 +82,8 @@ jobs:
       - name: Test
         run: cargo test --features mock-enclave
 
-  # Every example runs against the client build and a throwaway passphrase store, so none needs a Mac
+  # Every example and integration runs against the client build and a throwaway passphrase store,
+  # so none needs a Mac
   examples:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -120,8 +121,8 @@ jobs:
         run: cargo run --manifest-path rust/Cargo.toml
 
       # The copy half needs a Mac pasteboard, so this checks the workflow file and the listing Alfred shows
-      - name: Alfred
-        working-directory: examples/alfred
+      - name: Alfred integration
+        working-directory: integrations/alfred
         run: |
           python3 -c 'import plistlib; plistlib.load(open("info.plist", "rb"))'
           export PASSBOX_DIR="$RUNNER_TEMP/alfred" PASSBOX_PASSPHRASE="correct horse battery staple"
@@ -134,7 +135,7 @@ jobs:
       - name: Shellcheck the example scripts
         run: |
           command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -yq shellcheck; }
-          shellcheck examples/linux-client/*.sh examples/alfred/*.sh
+          shellcheck examples/linux-client/*.sh integrations/alfred/*.sh
 
       # The Linux client needs a Mac and a tailnet to run, so CI checks that the image builds and starts
       # the client built above, which is what the next release ships. Its other layers stay cached
