@@ -55,7 +55,7 @@ pub fn default_remote(store: &Store) -> Result<String> {
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;
     Ok(PathBuf::from(home)
-        .join("Library/Mobile Documents/com~apple~CloudDocs/passbox")
+        .join("Library/Mobile Documents/com~apple~CloudDocs/.passbox")
         .to_string_lossy()
         .to_string())
 }

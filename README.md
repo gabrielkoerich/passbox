@@ -301,7 +301,7 @@ The answer is written to `~/.passbox/remote`, so later runs of bare `passbox syn
 
 | Answer | Goes to | Needs |
 |---|---|---|
-| iCloud Drive | `~/Library/Mobile Documents/com~apple~CloudDocs/passbox` | nothing |
+| iCloud Drive | `~/Library/Mobile Documents/com~apple~CloudDocs/.passbox`, hidden in Finder until `cmd-shift-.` | nothing |
 | a directory | wherever you say | nothing |
 | a git remote | `~/.passbox` made a repo, pushed on each sync | `git` |
 | an rclone remote | any of rclone's backends | `rclone` |
@@ -405,7 +405,7 @@ A failed generation can leave a private key with no certificate. `ykman piv info
 
 ```bash
 brew install gabrielkoerich/tap/passbox
-cp -R ~/Library/Mobile\ Documents/com~apple~CloudDocs/passbox ~/.passbox
+cp -R ~/Library/Mobile\ Documents/com~apple~CloudDocs/.passbox ~/.passbox
 passbox machine add
 ```
 
