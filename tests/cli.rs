@@ -1199,6 +1199,10 @@ impl Drop for Held<'_> {
 /* A prompt left open stops nothing that needs no prompt. A token read is answered at once,
 and a second read that does need a prompt waits for the open one instead of raising its own. */
 #[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
 fn a_prompt_left_open_holds_up_no_token_read_and_raises_no_second_prompt() {
     let bound = Bound::new();
     let token = bound
