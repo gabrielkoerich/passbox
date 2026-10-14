@@ -1,5 +1,6 @@
 //! The Secure Enclave helper's commands with no Enclave and no prompt, for `mock-enclave` tests.
-//! Each prompt goes to `PASSBOX_FAKE_ENCLAVE_LOG`. `<log>.deny` holds `all`, a count or `unavailable`
+//! Each prompt goes to `PASSBOX_FAKE_ENCLAVE_LOG`. `<log>.deny` holds `all`, a count or `unavailable`,
+//! and while `<log>.hold` exists a prompt stays open, as it does when nobody is at the Mac
 
 use std::io::{Read, Write};
 
@@ -48,6 +49,11 @@ fn unwrap(reason: &str) {
             .open(&log)
             .expect("open the prompt log");
         writeln!(file, "{reason}").expect("write the prompt log");
+        drop(file);
+        let hold = format!("{log}.hold");
+        while std::path::Path::new(&hold).exists() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let deny = format!("{log}.deny");
         // The real helper's wording for a closed lid, where no prompt can be shown at all
         if std::fs::read_to_string(&deny).is_ok_and(|t| t.trim() == "unavailable") {

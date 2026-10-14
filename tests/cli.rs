@@ -3,6 +3,7 @@
 use std::io::{BufRead, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 const PASSPHRASE: &str = "correct horse battery staple";
 
@@ -1149,6 +1150,24 @@ impl Bound {
         let _ = std::fs::remove_file(self.log.path().join("prompts"));
     }
 
+    /// Every prompt from here on stays open until the guard drops, as when nobody is at the Mac
+    fn hold(&self) -> Held<'_> {
+        std::fs::write(self.log.path().join("prompts.hold"), "").unwrap();
+        Held(self)
+    }
+
+    fn wait_for_prompts(&self, count: usize) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while self.prompts().len() < count {
+            assert!(
+                Instant::now() < until,
+                "no prompt arrived: {:?}",
+                self.prompts()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// `all` refuses every prompt from here on, a number refuses that many, and `unavailable`
     /// fails the way a closed lid does
     fn deny(&self, how_many: &str) {
@@ -1160,6 +1179,78 @@ impl Bound {
         self.deny("0");
         self.run(&["audit", "--tail", "100"], None).unwrap()
     }
+}
+
+/// Closes the held prompt when dropped, so a failing assertion cannot leave a test hanging
+struct Held<'a>(&'a Bound);
+
+impl Held<'_> {
+    fn release(&self) {
+        let _ = std::fs::remove_file(self.0.log.path().join("prompts.hold"));
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/* A prompt left open stops nothing that needs no prompt. A token read is answered at once,
+and a second read that does need a prompt waits for the open one instead of raising its own. */
+#[test]
+fn a_prompt_left_open_holds_up_no_token_read_and_raises_no_second_prompt() {
+    let bound = Bound::new();
+    let token = bound
+        .run(&["grant", "demo/one", "--for", "60"], None)
+        .unwrap();
+    let token = token.trim();
+    bound.forget_prompts();
+
+    std::thread::scope(|scope| {
+        let held = bound.hold();
+        let first = scope.spawn(|| bound.run(&["get", "--reveal", "demo/two"], None));
+        bound.wait_for_prompts(1);
+        let second = scope.spawn(|| bound.run(&["get", "--reveal", "demo/two"], None));
+
+        let mut read = bound
+            .cmd()
+            .env("PASSBOX_TOKEN", token)
+            .args(["get", "--reveal", "demo/one"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while read.try_wait().unwrap().is_none() {
+            if Instant::now() > until {
+                let _ = read.kill();
+                panic!("a token read waited behind the open prompt");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let out = read.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "value-one");
+
+        // Long enough for the second read to reach the broker and queue
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            bound.prompts().len(),
+            1,
+            "a second dialog: {:?}",
+            bound.prompts()
+        );
+
+        held.release();
+        assert_eq!(first.join().unwrap().unwrap(), "value-two");
+        assert_eq!(second.join().unwrap().unwrap(), "value-two");
+    });
+    assert_eq!(bound.prompts().len(), 2, "{:?}", bound.prompts());
 }
 
 /// Whether the audit log holds a record of `decision` for `secret`

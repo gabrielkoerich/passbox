@@ -74,7 +74,7 @@ Per-agent allowlists are therefore not implemented. They need verifiable identit
 
 ## The broker
 
-A single process serving a unix socket at 0600, one connection at a time. No async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so there is no launchd plist and no install step.
+A single process serving a unix socket at 0600, a thread per connection. A prompt holds the broker's lock, so only one dialog is ever on screen and the next request that needs one waits for it, as long as it takes, with no timeout and no retry. Tokens sit behind a lock of their own, so a token read is answered while a prompt waits. No async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so there is no launchd plist and no install step.
 
 It holds the store key for 300 seconds of inactivity and then exits. Exiting is how the key is dropped. A live token holds its values only in the broker, so while one lives the broker drops just the key and stays up, and exits once the last token lapses.
 

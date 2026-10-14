@@ -128,13 +128,26 @@ struct AuditRecord<'a> {
     caller: &'a str,
 }
 
+/* Tokens, held past the store key's life. The key opens everything and so is dropped quickly,
+a token covers only the secrets it was granted, to whoever holds it. They sit behind their own
+lock, so a token read is answered while a prompt holds the broker. */
+#[cfg(feature = "host")]
+type Tokens = std::sync::Arc<std::sync::Mutex<HashMap<String, TokenGrant>>>;
+
+/// A token answers only for what it was granted, and only until it expires
+#[cfg(feature = "host")]
+fn token_value(tokens: &Tokens, token: &str, name: &str) -> Option<String> {
+    let now = store::now();
+    let mut tokens = tokens.lock().expect("tokens");
+    tokens.retain(|_, g| now < g.expires);
+    token_lookup(&tokens, token, name, now)
+}
+
 #[cfg(feature = "host")]
 struct Broker {
     store: Store,
     key: Option<x25519::Identity>,
-    /* Tokens, held past the store key's life. The key opens everything and so is dropped
-    quickly; a token covers only the secrets it was granted, to whoever holds it. */
-    tokens: HashMap<String, TokenGrant>,
+    tokens: Tokens,
     key_at: u64,
     #[cfg(feature = "host")]
     grants: Vec<Grant>,
@@ -142,12 +155,12 @@ struct Broker {
 
 #[cfg(feature = "host")]
 impl Broker {
-    fn new(store: Store) -> Self {
+    fn new(store: Store, tokens: Tokens) -> Self {
         Broker {
             store,
             key: None,
             key_at: 0,
-            tokens: HashMap::new(),
+            tokens,
             #[cfg(feature = "host")]
             grants: Vec::new(),
         }
@@ -337,7 +350,7 @@ impl Broker {
 
         let token = store::new_id() + &store::new_id();
         let granted: Vec<String> = values.keys().cloned().collect();
-        self.tokens.insert(
+        self.tokens.lock().expect("tokens").insert(
             token.clone(),
             TokenGrant {
                 values,
@@ -350,11 +363,8 @@ impl Broker {
         Ok(format!("{token}\n{}", granted.join("\n")))
     }
 
-    /// A token answers only for what it was granted, and only until it expires
-    fn value_for_token(&mut self, token: &str, name: &str) -> Option<String> {
-        let now = store::now();
-        self.tokens.retain(|_, g| now < g.expires);
-        token_lookup(&self.tokens, token, name, now)
+    fn value_for_token(&self, token: &str, name: &str) -> Option<String> {
+        token_value(&self.tokens, token, name)
     }
 
     fn handle_get(
@@ -447,9 +457,17 @@ fn prompt_agent(chain: &str) -> String {
     "passbox".to_string()
 }
 
+/// What every connection thread shares. The token map is reachable without the broker's lock
+#[cfg(feature = "host")]
+struct Shared {
+    broker: std::sync::Mutex<Broker>,
+    tokens: Tokens,
+    store: Store,
+}
+
 #[cfg(feature = "host")]
 fn reply<S: std::io::Read + Write>(
-    broker: &std::sync::Mutex<Broker>,
+    shared: &Shared,
     stream: &mut S,
     caller: &str,
     cwd: Option<&std::path::Path>,
@@ -472,7 +490,26 @@ fn reply<S: std::io::Read + Write>(
                     "passbox".to_string()
                 };
             }
-            match broker.lock().expect("broker").handle(&request, caller, cwd) {
+            // A token read needs no key and no prompt, so it never waits behind one
+            let by_token = (request.op == Op::Get && !request.token.is_empty())
+                .then(|| token_value(&shared.tokens, &request.token, &request.name))
+                .flatten();
+            let answer = match by_token {
+                Some(value) => append_audit(
+                    &shared.store,
+                    &request.agent,
+                    &request.name,
+                    "by token",
+                    caller,
+                )
+                .map(|()| value),
+                None => shared
+                    .broker
+                    .lock()
+                    .expect("broker")
+                    .handle(&request, caller, cwd),
+            };
+            match answer {
                 Ok(value) => Response {
                     ok: true,
                     value: Some(value),
@@ -502,23 +539,23 @@ local user could reach it, and every interface would put a secrets daemon on the
 `tailscale whois` names the peer, and unlike the agent string a caller sends, the control plane
 authenticated it. That is the first caller identity in passbox that is not self declared. */
 #[cfg(feature = "host")]
-fn serve_tailnet(
-    listener: std::net::TcpListener,
-    broker: std::sync::Arc<std::sync::Mutex<Broker>>,
-) {
+fn serve_tailnet(listener: std::net::TcpListener, shared: std::sync::Arc<Shared>) {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
-        let caller = stream
-            .peer_addr()
-            .ok()
-            .and_then(|a| crate::tailnet::whois(a.ip()))
-            .unwrap_or_else(|| "an unidentified tailnet peer".to_string());
-        eprintln!("tailnet request from {caller}");
-        if let Err(e) = reply(&broker, &mut stream, &caller, None, false) {
-            eprintln!("tailnet request failed: {e:#}");
-        }
-        LAST_SEEN.store(store::now(), Ordering::Relaxed);
+        let shared = std::sync::Arc::clone(&shared);
+        std::thread::spawn(move || {
+            let caller = stream
+                .peer_addr()
+                .ok()
+                .and_then(|a| crate::tailnet::whois(a.ip()))
+                .unwrap_or_else(|| "an unidentified tailnet peer".to_string());
+            eprintln!("tailnet request from {caller}");
+            if let Err(e) = reply(&shared, &mut stream, &caller, None, false) {
+                eprintln!("tailnet request failed: {e:#}");
+            }
+            LAST_SEEN.store(store::now(), Ordering::Relaxed);
+        });
     }
 }
 
@@ -550,8 +587,13 @@ pub fn serve(store: Store) -> Result<()> {
     std::fs::set_permissions(&socket, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
 
     LAST_SEEN.store(store::now(), Ordering::Relaxed);
-    let broker = std::sync::Arc::new(std::sync::Mutex::new(Broker::new(store)));
-    watchdog(socket.clone(), broker.clone());
+    let tokens = Tokens::default();
+    let shared = std::sync::Arc::new(Shared {
+        broker: std::sync::Mutex::new(Broker::new(store.clone(), tokens.clone())),
+        tokens,
+        store,
+    });
+    watchdog(socket.clone(), shared.clone());
 
     /* Loopback, exposed to the tailnet by `tailscale serve`, rather than bound to the tailnet
     address directly. Measured 2026-09-27: macOS runs Tailscale as a network extension, and a
@@ -568,7 +610,7 @@ pub fn serve(store: Store) -> Result<()> {
                     "listening on 127.0.0.1:{TAILNET_PORT}; expose it with\n  \
                      tailscale serve --bg --tcp {TAILNET_PORT} tcp://127.0.0.1:{TAILNET_PORT}"
                 );
-                let shared = std::sync::Arc::clone(&broker);
+                let shared = std::sync::Arc::clone(&shared);
                 std::thread::spawn(move || serve_tailnet(tcp, shared));
             }
             Err(e) => eprintln!("not listening for tailnet peers: {e}"),
@@ -581,22 +623,26 @@ pub fn serve(store: Store) -> Result<()> {
         clock()
     );
 
+    // A thread per connection, so a prompt left open does not stop the next request being read.
+    // Prompts still take the broker's lock, so only one is ever on screen
     for stream in listener.incoming() {
         let mut stream = stream?;
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
-
-        let pid = peer_pid(&stream);
-        let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
-        let cwd = pid.and_then(caller_cwd);
-        let _ = reply(&broker, &mut stream, &caller, cwd.as_deref(), true);
-        LAST_SEEN.store(store::now(), Ordering::Relaxed);
+        let shared = std::sync::Arc::clone(&shared);
+        std::thread::spawn(move || {
+            let pid = peer_pid(&stream);
+            let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
+            let cwd = pid.and_then(caller_cwd);
+            let _ = reply(&shared, &mut stream, &caller, cwd.as_deref(), true);
+            LAST_SEEN.store(store::now(), Ordering::Relaxed);
+        });
     }
     Ok(())
 }
 
 /// Exiting is how the key is dropped, which is blunter and surer than clearing it in place
 #[cfg(feature = "host")]
-fn watchdog(socket: std::path::PathBuf, broker: std::sync::Arc<std::sync::Mutex<Broker>>) {
+fn watchdog(socket: std::path::PathBuf, shared: std::sync::Arc<Shared>) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(30));
@@ -607,7 +653,7 @@ fn watchdog(socket: std::path::PathBuf, broker: std::sync::Arc<std::sync::Mutex<
             }
             let idle = store::now().saturating_sub(LAST_SEEN.load(Ordering::Relaxed));
             // A held lock is a request in flight, often waiting on a prompt, so try again later
-            let mut broker = match broker.try_lock() {
+            let mut broker = match shared.broker.try_lock() {
                 Ok(broker) => broker,
                 Err(std::sync::TryLockError::WouldBlock) => continue,
                 Err(std::sync::TryLockError::Poisoned(_)) => {
@@ -637,15 +683,18 @@ impl Broker {
             return false;
         }
         let now = store::now();
-        self.tokens.retain(|_, g| now < g.expires);
-        if self.tokens.is_empty() {
+        let live = {
+            let mut tokens = self.tokens.lock().expect("tokens");
+            tokens.retain(|_, g| now < g.expires);
+            tokens.len()
+        };
+        if live == 0 {
             return true;
         }
         if self.key.take().is_some() {
             eprintln!(
-                "{} idle {idle}s, dropped the key, {} live token(s) keep the broker up",
-                clock(),
-                self.tokens.len()
+                "{} idle {idle}s, dropped the key, {live} live token(s) keep the broker up",
+                clock()
             );
         }
         false
@@ -1012,11 +1061,14 @@ mod tests {
     #[test]
     fn an_idle_broker_outlives_a_live_token_and_drops_the_key() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut broker = Broker::new(Store {
-            dir: tmp.path().to_path_buf(),
-        });
+        let mut broker = Broker::new(
+            Store {
+                dir: tmp.path().to_path_buf(),
+            },
+            Tokens::default(),
+        );
         broker.key = Some(x25519::Identity::generate());
-        broker.tokens.insert(
+        broker.tokens.lock().unwrap().insert(
             "t".into(),
             TokenGrant {
                 values: HashMap::from([("a/b".into(), "v".into())]),
@@ -1031,7 +1083,7 @@ mod tests {
         assert!(broker.key.is_none());
         assert_eq!(broker.value_for_token("t", "a/b").as_deref(), Some("v"));
 
-        broker.tokens.get_mut("t").unwrap().expires = store::now();
+        broker.tokens.lock().unwrap().get_mut("t").unwrap().expires = store::now();
         assert!(broker.sweep(KEY_TTL_SECS));
     }
 
