@@ -58,7 +58,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The Rust example is its own Cargo project with its own target, so it is cached separately
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            examples/rust -> target
 
       # The reference implementation, so the interop test runs rather than skipping
       - name: Install age
