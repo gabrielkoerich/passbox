@@ -671,7 +671,7 @@ fn clock() -> String {
 }
 
 /// The peer pid comes from the kernel, so the caller cannot fake its own path
-#[cfg(feature = "host")]
+#[cfg(all(feature = "host", target_os = "macos"))]
 fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
     use std::os::unix::io::AsRawFd;
     // SOL_LOCAL and LOCAL_PEERPID, which libc does not expose on every release
@@ -692,10 +692,32 @@ fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
     (got == 0 && pid > 0).then_some(pid)
 }
 
+// Linux runs the host build only in CI, where the tests need a real caller pid
+#[cfg(all(feature = "host", not(target_os = "macos")))]
+fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
+    use std::os::unix::io::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = size_of::<libc::ucred>() as libc::socklen_t;
+    let got = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &raw mut len,
+        )
+    };
+    (got == 0 && cred.pid > 0).then_some(cred.pid)
+}
+
 /* The project a grant belongs to is the caller's working directory, read from the kernel rather
 than taken from the request. A caller that could name its own directory could point at a manifest
 it wrote and approved somewhere else. */
-#[cfg(feature = "host")]
+#[cfg(all(feature = "host", target_os = "macos"))]
 fn caller_cwd(pid: libc::pid_t) -> Option<std::path::PathBuf> {
     let out = std::process::Command::new("lsof")
         .args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
@@ -705,6 +727,11 @@ fn caller_cwd(pid: libc::pid_t) -> Option<std::path::PathBuf> {
         .lines()
         .find_map(|l| l.strip_prefix('n'))
         .map(std::path::PathBuf::from)
+}
+
+#[cfg(all(feature = "host", not(target_os = "macos")))]
+fn caller_cwd(pid: libc::pid_t) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 /// Walk up the process tree, because the caller is `passbox` and the agent is somewhere above it

@@ -7,7 +7,7 @@ on:
 permissions:
   contents: write
 
-# A newer push replaces the run in progress, so two runs never wait on macOS runners together
+# A newer push replaces the run in progress, so two runs never wait on a runner together
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -38,35 +38,25 @@ jobs:
             | tar -xz -C /tmp gitleaks
           /tmp/gitleaks dir . --config .gitleaks.toml --no-banner --redact --exit-code=1
 
-  # A client build carries no Enclave, no broker server and no store crypto. It is what a
-  # Linux box will run, so it has to keep compiling even while nothing here uses it yet.
-  client-build:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-all-crates: true
-      - name: Clippy, client only
-        run: cargo clippy --no-default-features -- -D warnings
-
-  # macOS only, because the Secure Enclave is the point of the product. Clippy and the tests share
-  # nothing, so each runs on its own runner in parallel. The examples have their own workflow
-  clippy-macos:
-    runs-on: macos-latest
+  # Every check runs on Linux. The host build compiles there with the test fake in place of the
+  # Enclave, and macOS runs only the release build, after all of this has passed
+  clippy:
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
+      # The client build is what a Linux box runs, the host build is the Mac's
       - name: Clippy
         run: |
+          cargo clippy --no-default-features -- -D warnings
           cargo clippy --all-targets -- -D warnings
           cargo clippy --all-targets --features mock-enclave -- -D warnings
 
-  test-macos:
-    runs-on: macos-latest
+  test:
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     # A broken headless check then fails the job instead of reaching for an Enclave
     env:
@@ -79,31 +69,16 @@ jobs:
 
       # The reference implementation, so the interop test runs rather than skipping
       - name: Install age
-        run: brew install age
+        run: sudo apt-get install -yq age
 
       # The fake enclave runs the broker tests that would otherwise need a finger
       - name: Test
         run: cargo test --features mock-enclave
 
-      # A second implementation opening what CryptoKit sealed is the evidence that the
-      # construction is standard. Wrapping uses only a public key, so no Enclave is involved.
-      - name: Cross-check the Secure Enclave ECIES against an independent implementation
-        run: |
-          swiftc -O -o /tmp/passbox-se swift/passbox-se.swift
-          python3 -m venv /tmp/venv
-          /tmp/venv/bin/pip install --quiet cryptography
-          /tmp/venv/bin/python tests/ecies.py /tmp/passbox-se
-
-      # The binary the tests built. The linker signs it ad hoc whatever its features, so no rebuild
-      - name: Confirm the binary needs no developer identity
-        run: |
-          codesign -dvvv target/debug/passbox 2>&1 | tee sig.txt
-          grep -q "Signature=adhoc" sig.txt
-
   # The version has to be known before the binaries build, or every release ships a
   # binary stamped with the previous number.
   version:
-    needs: [lint, gitleaks, clippy-macos, test-macos, client-build]
+    needs: [lint, gitleaks, clippy, test]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
@@ -208,7 +183,7 @@ jobs:
 
   # CI pays the build cost once so nobody installing has to. Public repos get free minutes.
   binaries:
-    needs: [lint, gitleaks, clippy-macos, test-macos, client-build, version]
+    needs: [lint, gitleaks, clippy, test, version]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
     strategy:
       matrix:
@@ -254,6 +229,16 @@ jobs:
           PY
           grep -m1 '^version' Cargo.toml
 
+      # A second implementation opening what CryptoKit sealed is the evidence that the
+      # construction is standard. Wrapping uses only a public key, so no Enclave is involved.
+      - name: Cross-check the Secure Enclave ECIES against an independent implementation
+        if: runner.os == 'macOS'
+        run: |
+          swiftc -O -o /tmp/passbox-se swift/passbox-se.swift
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet cryptography
+          /tmp/venv/bin/python tests/ecies.py /tmp/passbox-se
+
       - name: Build
         env:
           TARGET: ${{ matrix.target }}
@@ -265,7 +250,10 @@ jobs:
           # The hardened runtime stops a same-user debugger reading the broker's memory
           if [[ "$TARGET" == *apple-darwin ]]; then
             codesign -s - --force --options runtime "target/$TARGET/release/passbox"
-            codesign -dv "target/$TARGET/release/passbox" 2>&1 | grep -q "runtime"
+            codesign -dv "target/$TARGET/release/passbox" 2>&1 | tee sig.txt
+            grep -q "runtime" sig.txt
+            # Ad hoc, so the binary needs no developer identity
+            grep -q "Signature=adhoc" sig.txt
           fi
           # The mock enclave must never ship, whatever this build was configured with. Only the
           # gated code holds that name, and a mock build aborts outside a cargo target directory
@@ -284,7 +272,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [lint, gitleaks, clippy-macos, test-macos, client-build, version, binaries]
+    needs: [lint, gitleaks, clippy, test, version, binaries]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
     runs-on: ubuntu-latest
     permissions:

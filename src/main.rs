@@ -1431,7 +1431,12 @@ mod tests {
             // The same request usually returns the same block, now that dealloc has wiped it
             let q = alloc(layout);
             let seen = std::slice::from_raw_parts(q, 4099);
-            assert!(seen.iter().all(|&b| b == 0), "freed bytes were not wiped");
+            // glibc writes up to four free-list pointers at the start of a freed block, so skip them
+            let meta = 4 * size_of::<usize>();
+            assert!(
+                seen[meta..].iter().all(|&b| b == 0),
+                "freed bytes were not wiped"
+            );
             dealloc(q, layout);
         }
     }

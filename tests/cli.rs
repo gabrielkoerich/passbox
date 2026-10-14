@@ -46,6 +46,15 @@ impl Cli {
         cmd.env("PASSBOX_SCRYPT_LOG_N", "10");
         // A test must never reach the developer's fingerprint, whatever else breaks
         cmd.env("PASSBOX_NO_ENCLAVE", "1");
+        // A CI runner has no git identity, and the store commits after a write
+        for (key, value) in [
+            ("GIT_AUTHOR_NAME", "passbox test"),
+            ("GIT_AUTHOR_EMAIL", "test@passbox.invalid"),
+            ("GIT_COMMITTER_NAME", "passbox test"),
+            ("GIT_COMMITTER_EMAIL", "test@passbox.invalid"),
+        ] {
+            cmd.env(key, value);
+        }
         cmd
     }
 
@@ -1088,7 +1097,7 @@ impl Bound {
         bound.run(&["init"], None).expect("init");
         bound.run(&["add", "demo/one"], Some("value-one")).unwrap();
         bound.run(&["add", "demo/two"], Some("value-two")).unwrap();
-        // Replacing the second name needs the key, so setup raises a prompt of its own
+        // Adding the second name needs the key to check it is new, so setup raises a prompt
         bound.forget_prompts();
         bound
     }

@@ -172,6 +172,10 @@ Rejected: a Rust trait with the Swift helper and a fake behind it. It adds an ab
 
 Rejected: gating on `debug_assertions` alone. Every debug build would honour the override, including a `target/debug/passbox` someone uses for real.
 
+CI runs clippy and the tests on Linux, where the host build compiles with an empty Enclave helper and the fake in its place. The caller lookup has a Linux version, `SO_PEERCRED` and `/proc/<pid>/cwd`, beside the macOS one. macOS runs only the release build, which also cross-checks the ECIES and checks the ad hoc signature. The cost: the macOS caller lookup, `LOCAL_PEERPID` and `lsof`, is compiled by the release build but never tested, so a bug in which directory a project grant matches would ship.
+
+Rejected: tests on a macOS runner. They cover the shipped caller lookup, but a macOS runner is slower to start and slower to run, and CI waited on it every push.
+
 Cost: the fake's source ships in the crates.io package, since the binary target must exist to publish, and it builds only with the feature. A plain `cargo test` skips the broker tests, so the full run needs the flag.
 
 ## Releasing

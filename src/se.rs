@@ -8,7 +8,12 @@ use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
 /// The helper rides inside this binary so `cargo install` stays a single step
+#[cfg(target_os = "macos")]
 const HELPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/passbox-se"));
+
+// A host build elsewhere exists for CI, where the test fake stands in for the Enclave
+#[cfg(not(target_os = "macos"))]
+const HELPER: &[u8] = &[];
 
 /// Everything needed to open the store key on this machine, minus the fingerprint
 #[derive(Serialize, Deserialize)]
@@ -59,6 +64,9 @@ fn fake_helper() -> Option<PathBuf> {
 fn helper() -> Result<PathBuf> {
     if let Some(fake) = fake_helper() {
         return Ok(fake);
+    }
+    if HELPER.is_empty() {
+        bail!("the Secure Enclave helper exists only in a macOS build");
     }
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
     let dir = PathBuf::from(home).join("Library/Caches/passbox");
