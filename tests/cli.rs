@@ -579,6 +579,34 @@ fn git_runs_inside_the_store_and_ignores_the_socket() {
     assert!(!out.contains("broker.sock"), "{out}");
 }
 
+#[test]
+fn a_write_pushes_when_the_repo_has_a_remote() {
+    let cli = Cli::new();
+    let bare = tempfile::tempdir().unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(git(bare.path(), &["init", "-q", "--bare"]).status.success());
+
+    cli.run(&["git", "init"], None).unwrap();
+    cli.run(&["add", "a/one"], Some("v"))
+        .expect("a write with no remote still succeeds");
+
+    let url = bare.path().to_string_lossy().to_string();
+    cli.run(&["git", "remote", "add", "origin", &url], None)
+        .unwrap();
+    cli.run(&["add", "a/two"], Some("v")).unwrap();
+
+    let local = git(cli.path(), &["rev-parse", "HEAD"]).stdout;
+    let pushed = git(bare.path(), &["rev-parse", "HEAD"]).stdout;
+    assert_eq!(local, pushed, "the write should reach the remote");
+}
+
 /* pass entries carry `key: value` lines under the password, and bean's get_fields reads them, so
 the import has to keep the whole body rather than the first line. */
 #[test]

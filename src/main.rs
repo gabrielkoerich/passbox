@@ -385,6 +385,7 @@ fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
 fn written(store: &Store, what: &str) {
     commit(store, what);
     mirror(store);
+    push(store);
 }
 
 /// Optional history alongside the copy. A subject naming an entry would undo the encrypted names.
@@ -421,9 +422,8 @@ fn commit(store: &Store, what: &str) {
 /* A write that is only on this Mac is a write you can lose. Committing gives history, but the
 copy elsewhere is what survives the machine, so a write updates it too.
 
-Only the mirror, and only one that was already chosen: a directory copy is a few milliseconds,
-while pushing to git or rclone is a network round trip nobody wants on every `add`. Those stay
-on `passbox sync`.
+Only a directory that was already chosen. An rclone remote is a slow round trip and stays on
+`passbox sync`, git pushes separately in `push`.
 
 Best effort by design. The value is already written and encrypted; failing the command because a
 USB stick was unplugged would be the tail wagging the dog. Set PASSBOX_NO_AUTOSYNC to turn it
@@ -449,14 +449,47 @@ fn mirror(store: &Store) {
 #[cfg(not(feature = "host"))]
 fn mirror(_store: &Store) {}
 
-/// Sync is where a commit leaves the machine, because pushing on every write would be slow
 #[cfg(feature = "host")]
 fn git_push(store: &Store) {
     if !in_git(store) {
         return;
     }
     commit(store, "update");
-    git_quietly(store, &["push"]);
+    push(store);
+}
+
+/// A commit only on this Mac is lost with it, so a repo with a remote pushes on every write.
+/// Best effort like the mirror, and `-u` so a remote added with no upstream still works
+fn push(store: &Store) {
+    if !in_git(store) {
+        return;
+    }
+    let remotes = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&store.dir)
+        .arg("remote")
+        .output();
+    let Some(remote) = remotes.ok().and_then(|o| {
+        String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .next()
+            .map(str::to_string)
+    }) else {
+        return;
+    };
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&store.dir)
+        .args(["push", "-q", "-u", &remote, "HEAD"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => eprintln!(
+            "not pushed to {remote}: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => eprintln!("not pushed to {remote}: {e}"),
+    }
 }
 
 /// Advisory, since the broker cannot verify it. The prompt shows it beside the secret name.

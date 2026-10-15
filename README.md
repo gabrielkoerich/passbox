@@ -259,11 +259,13 @@ passbox git init
 passbox git remote add origin git@github.com:you/passbox-store.git
 ```
 
-After that every write commits on its own, the way `pass` does: `add`, `rm`, `restore` and `import-pass`. `sync` pushes, since pushing on every write would be slow. Nothing happens until you run `git init`.
+After that every write commits on its own, the way `pass` does: `add`, `rm`, `restore` and `import-pass`. Once the repo has a remote, every write also pushes, so no change lives on this Mac alone. A failed push warns and the write still succeeds. Nothing happens until you run `git init`.
+
+A second Mac clones instead of running `git init`, so both share one history: `git clone <remote> ~/.passbox`, then `passbox machine add`. `passbox git pull` fetches the other Mac's writes.
 
 **A write also updates the copy.** Once `sync --enable` has chosen a directory, every write copies to it, because nobody remembers to run `sync`, and a secret that exists only on this Mac can be lost. A delete travels too, as a tombstone.
 
-This applies only to a directory, where the copy takes a few milliseconds. Git and rclone remotes are a network round trip and stay on `passbox sync`. It is best effort: the value is already written and encrypted, so an unplugged USB stick warns rather than failing the command. `PASSBOX_NO_AUTOSYNC=1` turns it off for a script that writes in a loop.
+This applies only to a directory, where the copy takes a few milliseconds. An rclone remote is a slow round trip and stays on `passbox sync`. It is best effort: the value is already written and encrypted, so an unplugged USB stick warns rather than failing the command. `PASSBOX_NO_AUTOSYNC=1` turns it off for a script that writes in a loop.
 
 Commit subjects name the operation and never the entry, because a subject naming a secret would undo the work of keeping names out of filenames.
 
