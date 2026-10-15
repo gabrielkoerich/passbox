@@ -145,6 +145,9 @@ enum Command {
         /// After the value, ask for `key: value` fields and notes, one per line
         #[arg(short, long)]
         multiline: bool,
+        /// After the value, ask for this field, such as `username`. Repeatable
+        #[arg(long = "field", value_name = "NAME")]
+        fields: Vec<String>,
     },
     /// Print a secret
     Get {
@@ -285,9 +288,11 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Init => init(&store),
-        Command::Add { name, multiline } => {
-            add(&store, &name, multiline).inspect(|()| written(&store, "add a secret"))
-        }
+        Command::Add {
+            name,
+            multiline,
+            fields,
+        } => add(&store, &name, multiline, &fields).inspect(|()| written(&store, "add a secret")),
         Command::Get {
             name,
             field,
@@ -877,9 +882,9 @@ fn ask(prompt: &str) -> Result<String> {
     }
 }
 
-fn add(store: &Store, name: &str, multiline: bool) -> Result<()> {
+fn add(store: &Store, name: &str, multiline: bool, fields: &[String]) -> Result<()> {
     let recipient = store.recipient()?;
-    let value = read_value(multiline)?;
+    let value = read_value(multiline, fields)?;
     if value.is_empty() {
         bail!("refusing to store an empty value");
     }
@@ -1440,11 +1445,21 @@ fn find_deleted(store: &Store, name: &str, key: &age::x25519::Identity) -> Resul
     bail!("no secret named {name}")
 }
 
-fn read_value(multiline: bool) -> Result<String> {
+fn read_value(multiline: bool, fields: &[String]) -> Result<String> {
+    for field in fields {
+        let lower = field.trim().to_lowercase();
+        if lower.is_empty() || lower == "password" || field.contains([':', '\n']) {
+            bail!("{field:?} cannot be a field name, the first line is the password");
+        }
+    }
     if std::io::stdin().is_terminal() {
         let mut value = rpassword::prompt_password("value: ")?;
         if rpassword::prompt_password("again: ")? != value {
             bail!("values do not match");
+        }
+        for line in named_fields(fields, std::io::stdin().lock(), |f| eprint!("{f}: "))? {
+            value.push('\n');
+            value.push_str(&line);
         }
         if multiline {
             eprintln!("fields and notes, one per line, empty line to finish:");
@@ -1458,6 +1473,25 @@ fn read_value(multiline: bool) -> Result<String> {
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
     Ok(buf.trim_end_matches('\n').to_string())
+}
+
+/// One `name: value` line per field asked for. A field left empty is skipped
+fn named_fields(
+    names: &[String],
+    mut input: impl std::io::BufRead,
+    prompt: impl Fn(&str),
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for name in names {
+        prompt(name);
+        let mut line = String::new();
+        input.read_line(&mut line)?;
+        let value = line.trim();
+        if !value.is_empty() {
+            out.push(format!("{}: {value}", name.trim()));
+        }
+    }
+    Ok(out)
 }
 
 /// Lines after the value, up to an empty line or end of input. They echo, since they are the
@@ -1476,7 +1510,18 @@ fn extra_lines(input: impl std::io::BufRead) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extra_lines, fields};
+    use super::{extra_lines, fields, named_fields};
+
+    #[test]
+    fn each_named_field_is_asked_once_and_reads_back() {
+        let names = ["username".to_string(), "url".to_string(), "otp".to_string()];
+        let lines = named_fields(&names, "admin\nhttps://db\n\n".as_bytes(), |_| {}).unwrap();
+        assert_eq!(lines, ["username: admin", "url: https://db"]);
+
+        let entry = format!("pw\n{}", lines.join("\n"));
+        assert_eq!(fields(&entry)["username"], "admin");
+        assert_eq!(fields(&entry)["url"], "https://db");
+    }
 
     #[test]
     fn extra_lines_stop_at_the_first_empty_line_and_read_as_fields() {
