@@ -140,7 +140,12 @@ enum Command {
     /// Create the store, bound to this Mac's Secure Enclave and nothing else
     Init,
     /// Add a secret, reading the value from stdin or a prompt. An existing name is refused
-    Add { name: String },
+    Add {
+        name: String,
+        /// After the value, ask for `key: value` fields and notes, one per line
+        #[arg(short, long)]
+        multiline: bool,
+    },
     /// Print a secret
     Get {
         name: String,
@@ -280,7 +285,9 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Init => init(&store),
-        Command::Add { name } => add(&store, &name).inspect(|()| written(&store, "add a secret")),
+        Command::Add { name, multiline } => {
+            add(&store, &name, multiline).inspect(|()| written(&store, "add a secret"))
+        }
         Command::Get {
             name,
             field,
@@ -870,9 +877,9 @@ fn ask(prompt: &str) -> Result<String> {
     }
 }
 
-fn add(store: &Store, name: &str) -> Result<()> {
+fn add(store: &Store, name: &str, multiline: bool) -> Result<()> {
     let recipient = store.recipient()?;
-    let value = read_value()?;
+    let value = read_value(multiline)?;
     if value.is_empty() {
         bail!("refusing to store an empty value");
     }
@@ -1433,11 +1440,18 @@ fn find_deleted(store: &Store, name: &str, key: &age::x25519::Identity) -> Resul
     bail!("no secret named {name}")
 }
 
-fn read_value() -> Result<String> {
+fn read_value(multiline: bool) -> Result<String> {
     if std::io::stdin().is_terminal() {
-        let value = rpassword::prompt_password("value: ")?;
+        let mut value = rpassword::prompt_password("value: ")?;
         if rpassword::prompt_password("again: ")? != value {
             bail!("values do not match");
+        }
+        if multiline {
+            eprintln!("fields and notes, one per line, empty line to finish:");
+            for line in extra_lines(std::io::stdin().lock())? {
+                value.push('\n');
+                value.push_str(&line);
+            }
         }
         return Ok(value);
     }
@@ -1446,9 +1460,34 @@ fn read_value() -> Result<String> {
     Ok(buf.trim_end_matches('\n').to_string())
 }
 
+/// Lines after the value, up to an empty line or end of input. They echo, since they are the
+/// username and notes beside the secret, which is the layout `fields` reads
+fn extra_lines(input: impl std::io::BufRead) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for line in input.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            break;
+        }
+        out.push(line);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::fields;
+    use super::{extra_lines, fields};
+
+    #[test]
+    fn extra_lines_stop_at_the_first_empty_line_and_read_as_fields() {
+        let typed = "username: admin\nrotated quarterly\n\nnot part of it\n";
+        let lines = extra_lines(typed.as_bytes()).unwrap();
+        assert_eq!(lines, ["username: admin", "rotated quarterly"]);
+
+        let entry = format!("pw\n{}", lines.join("\n"));
+        assert_eq!(fields(&entry)["username"], "admin");
+        assert_eq!(fields(&entry)["password"], "pw");
+    }
 
     /* A freed block must come back zeroed, or a secret the broker decrypted would linger in
     memory a debugger or core dump could reach. Uses an odd size to miss the small-bin reuse

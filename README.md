@@ -612,6 +612,8 @@ passbox get db/prod --field username  # just that one
 passbox copy db/prod --field username # that one, to the clipboard
 ```
 
+At a terminal, `passbox add db/prod -m` asks for the password hidden and twice, as usual, then reads fields and notes one per line, shown as you type, until an empty line. Without `-m`, `add` asks for the password alone. Piped input is stored whole either way.
+
 Reading one field hands a caller the password without the note beside it.
 
 ### Using it from a program
