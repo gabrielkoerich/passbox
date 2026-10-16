@@ -84,6 +84,8 @@ fn skip(relative: &Path) -> bool {
         || text.starts_with(".git/")
         || text == ".gitignore"
         || text.starts_with("store/.versions")
+        // A copy cut off before its rename, never a real file
+        || text.ends_with(".partial")
         || (text.starts_with("grants-") && text.ends_with(".age"))
 }
 
@@ -106,17 +108,21 @@ fn walk(root: &Path, base: &Path, out: &mut BTreeMap<PathBuf, SystemTime>) -> Re
     Ok(())
 }
 
-/// Copy preserving the modification time, so the next run does not copy it straight back
+/// Copy preserving the modification time, so the next run does not copy it straight back. The
+/// rename makes it whole or absent, since a cut-off copy would look newest and win the next sync
 fn copy(from: &Path, to: &Path) -> Result<()> {
-    if let Some(parent) = to.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(from, to)?;
+    let parent = to.parent().context("a copy needs a parent directory")?;
+    fs::create_dir_all(parent)?;
+    let mut partial = to.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    fs::copy(from, &partial)?;
     let when = fs::metadata(from)?.modified()?;
     fs::File::options()
         .write(true)
-        .open(to)?
+        .open(&partial)?
         .set_modified(when)?;
+    fs::rename(&partial, to)?;
     Ok(())
 }
 
@@ -403,6 +409,7 @@ mod tests {
         assert!(skip(Path::new(".git/config")));
         assert!(skip(Path::new(".git/objects/ab/cdef")));
         assert!(skip(Path::new(".gitignore")));
+        assert!(skip(Path::new("store/0a1b.age.partial")));
         assert!(!skip(Path::new("store/abc123.age")));
     }
 
