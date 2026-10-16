@@ -126,7 +126,15 @@ Deletes travel as tombstones. A `rm` writes `<id>.tomb`, which copies like any o
 
 `sync --enable` asks two questions: how a copy is opened, and where it goes. They were one question before, which meant a store that already had a passphrase wrap skipped straight past the destination and silently copied to iCloud. A wrap says nothing about where the copy belongs.
 
-The destination goes in `~/.passbox/remote` rather than a shell profile, so a bare `passbox sync` cannot fall back to the iCloud default behind your back. passbox tells the four kinds apart by shape, and tests the git URL forms before the rclone colon so `git@host:repo` is not read as an rclone remote. That file is excluded from the copy, since each machine picks its own destination.
+The destination goes in `~/.passbox/config.toml` rather than a shell profile, so a bare `passbox sync` cannot fall back to the iCloud default behind your back. An `engine` key names the kind. The file is excluded from the copy and from git, since each machine picks its own destination.
+
+Rejected: the one-line `~/.passbox/remote` it replaces. It held a bare path, and the kind was guessed from its shape. An accidental YubiKey touch in an editor holding the file open typed a code and a newline into the path, and the next write created a folder with that name and synced there for a day, apart from every other Mac. TOML fails to parse on a stray line, and every value is checked on read. The old file is still read when there is no config.
+
+Only `--enable` creates a destination. Every other sync refuses a folder that is missing, overlaps the store, or holds other files and no passbox copy. Cost: an unplugged USB stick turns each write's copy into a warning, and a new folder has to be chosen with `--enable` or made by hand.
+
+Rejected: syncing the config itself. One edit would move every Mac, but a USB path on one Mac means nothing on another.
+
+A destination given with `--remote` or `PASSBOX_REMOTE` names no engine, so passbox tells the four kinds apart by shape, and tests the git URL forms before the rclone colon so `git@host:repo` is not read as an rclone remote.
 
 Rejected: rclone for the default path. It is an external binary in the read path of a password store, and the default remote is a local directory where a file copy does the whole job. `rclone bisync` needs a `--resync` baseline and a state database because it must tell a delete from a file it has not seen. Immutable ids plus tombstones remove that problem. rclone stays available for real cloud backends.
 

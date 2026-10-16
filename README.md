@@ -299,7 +299,27 @@ Where should the copy go?
   4) An rclone remote, for S3, B2, Drive and the rest
 ```
 
-The answer is written to `~/.passbox/remote`, so later runs of bare `passbox sync` go to the same place. Running `--enable` again shows the current destination and offers to change it. `PASSBOX_REMOTE` overrides one run without changing the file.
+The answer is written to `~/.passbox/config.toml`, so later runs of bare `passbox sync` go to the same place. Running `--enable` again shows the current destination and offers to change it. `PASSBOX_REMOTE` or `--remote` overrides one run without changing the file.
+
+```toml
+[sync]
+engine = "icloud"        # icloud | directory | git | rclone
+directory = ".passbox"   # icloud: one folder in iCloud Drive, .passbox when left out
+# path = "/Volumes/usb/passbox"         directory: an absolute path
+# remote = "git@github.com:you/s.git"   git, or "b2:passbox" for rclone
+```
+
+To move the copy, edit one line. The file stays on this Mac and is never synced, since a USB path on one Mac means nothing on another. The older one-line `~/.passbox/remote` is deprecated. It is still read when there is no config, with a warning, and stops being read in v2. `passbox sync --enable` replaces it.
+
+**A destination that makes no sense is refused.** passbox checks the config on every read and stops with the reason, instead of copying somewhere new:
+
+- the file is not valid TOML, names an unknown engine or key, or misses the key its engine needs;
+- a value is empty, has a space at either end, or holds a control character such as a newline;
+- the iCloud `directory` is not one folder name, or a `path` is not absolute;
+- the folder does not exist. Only `--enable` creates it, so a path changed by accident or an unplugged USB stick never gets a fresh copy;
+- the folder overlaps the store, or holds other files and no passbox copy.
+
+A write that cannot reach its copy still succeeds and says why it was not copied.
 
 | Answer | Goes to | Needs |
 |---|---|---|
@@ -310,7 +330,7 @@ The answer is written to `~/.passbox/remote`, so later runs of bare `passbox syn
 
 iCloud Drive is an ordinary directory on macOS, so the default path is a directory to directory copy. It needs no account, no rclone and no network code.
 
-passbox tells them apart by shape. A remote starting `git@`, `ssh://` or `https://`, or ending `.git`, is git. One starting `/`, `~` or `.` is a directory. Anything else holding a colon goes to `rclone bisync`. The rest is a directory.
+The config names the kind with `engine`. A destination given with `--remote` or `PASSBOX_REMOTE` has no engine, so passbox tells it apart by shape. A remote starting `git@`, `ssh://` or `https://`, or ending `.git`, is git. One starting `/`, `~` or `.` is a directory. Anything else holding a colon goes to `rclone bisync`. The rest is a directory.
 
 Git commits after the copy, which gives you history and an off-site remote.
 
