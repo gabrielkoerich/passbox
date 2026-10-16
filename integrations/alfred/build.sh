@@ -8,7 +8,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 work=$(mktemp -d)
 trap 'rm -r "$work"' EXIT
-cp "$here/info.plist" "$here/filter.sh" "$here/copy.sh" "$work/"
+cp "$here/info.plist" "$here/list.sh" "$here/filter.sh" "$here/copy.sh" "$work/"
 
 python3 - "$work/info.plist" "${version#v}" <<'PY'
 import plistlib, sys
@@ -20,5 +20,5 @@ with open(path, "wb") as f:
     plistlib.dump(plist, f)
 PY
 
-(cd "$work" && zip -qX "$out" info.plist filter.sh copy.sh)
+(cd "$work" && zip -qX "$out" info.plist list.sh filter.sh copy.sh)
 echo "built $out, version ${version#v}"

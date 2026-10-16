@@ -128,11 +128,16 @@ jobs:
           export PASSBOX_DIR="$RUNNER_TEMP/alfred" PASSBOX_PASSPHRASE="correct horse battery staple"
           passbox init
           printf 'v' | passbox add github/token
-          PASSBOX="$(command -v passbox)" ./filter.sh > "$RUNNER_TEMP/alfred.json"
-          python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); assert [i["title"] for i in d["items"]] == ["github/token"], d' "$RUNNER_TEMP/alfred.json"
+          printf 'v' | passbox add db/password
+          # list.sh hands the names to filter.sh as an Alfred variable, so this replays that handoff
+          PASSBOX="$(command -v passbox)" ./list.sh > "$RUNNER_TEMP/list.json"
+          names=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["alfredworkflow"]["variables"]["names"])' "$RUNNER_TEMP/list.json")
+          names="$names" ./filter.sh > "$RUNNER_TEMP/alfred.json"
+          python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); assert sorted(i["title"] for i in d["items"]) == ["db/password", "github/token"], d' "$RUNNER_TEMP/alfred.json"
+          error="denied" ./filter.sh | grep -q '"passbox ls failed"'
           # The same package the release attaches
           ./build.sh 0.0.0 "$RUNNER_TEMP/passbox.alfredworkflow"
-          unzip -Z1 "$RUNNER_TEMP/passbox.alfredworkflow" | sort | tr '\n' ' ' | grep -qx 'copy.sh filter.sh info.plist '
+          unzip -Z1 "$RUNNER_TEMP/passbox.alfredworkflow" | sort | tr '\n' ' ' | grep -qx 'copy.sh filter.sh info.plist list.sh '
 
       # GitHub's runner image has shellcheck, act's does not
       - name: Shellcheck the example scripts
