@@ -682,6 +682,15 @@ fn enable_sync(store: &Store) -> Result<()> {
 /// Asked once and remembered, so a later bare `passbox sync` cannot surprise you with iCloud
 #[cfg(feature = "host")]
 fn choose_remote(store: &Store) -> Result<()> {
+    if let Some(moved) = sync::migrate(store)? {
+        eprintln!(
+            "{} now names {}, the old remote file is gone",
+            sync::config_path(store).display(),
+            moved.target
+        );
+        return Ok(());
+    }
+
     // Only `sync --enable` reaches here, so a destination already set is one to offer changing
     // A broken file is one to replace, so it does not block choosing again
     if let Some(already) = sync::configured(store).unwrap_or(None) {

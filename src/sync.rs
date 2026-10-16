@@ -142,6 +142,19 @@ pub fn configured(store: &Store) -> Result<Option<Destination>> {
         let config: Config = toml::from_str(&text).with_context(invalid)?;
         return config.sync.resolve().map(Some).with_context(invalid);
     }
+    let old = legacy(store)?;
+    if old.is_some() {
+        eprintln!(
+            "passbox: {} is deprecated and stops being read in v2, run `passbox sync --enable` to \
+             move it to {}",
+            remote_path(store).display(),
+            config_path(store).display()
+        );
+    }
+    Ok(old)
+}
+
+fn legacy(store: &Store) -> Result<Option<Destination>> {
     let Ok(text) = fs::read_to_string(remote_path(store)) else {
         return Ok(None);
     };
@@ -156,13 +169,29 @@ pub fn configured(store: &Store) -> Result<Option<Destination>> {
     if text.is_empty() {
         return Ok(None);
     }
-    eprintln!(
-        "passbox: {} is deprecated and stops being read in v2, run `passbox sync --enable` to \
-         write {}",
-        remote_path(store).display(),
-        config_path(store).display()
-    );
     Ok(Some(Destination::guess(text)))
+}
+
+/// Writes the old `remote` file to the config with the same destination, for `--enable`
+pub fn migrate(store: &Store) -> Result<Option<Destination>> {
+    if config_path(store).exists() {
+        return Ok(None);
+    }
+    let Some(old) = legacy(store)? else {
+        return Ok(None);
+    };
+    let engine = match old.kind {
+        Kind::Git => Engine::Git { remote: old.target },
+        Kind::Rclone => Engine::Rclone { remote: old.target },
+        Kind::Directory => match Path::new(&old.target).strip_prefix(icloud_root()?) {
+            Ok(name) if name == Path::new(".passbox") => Engine::Icloud { directory: None },
+            Ok(name) if name.components().count() == 1 => Engine::Icloud {
+                directory: Some(name.to_string_lossy().to_string()),
+            },
+            _ => Engine::Directory { path: old.target },
+        },
+    };
+    choose(store, engine).map(Some)
 }
 
 /// Written by `--enable`, and it replaces the old `remote` file
@@ -436,6 +465,40 @@ mod tests {
             configured(&one).unwrap().unwrap().target,
             "/Volumes/stick/passbox"
         );
+    }
+
+    #[test]
+    fn migrating_keeps_the_old_destination_and_names_its_engine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (one, _key) = store(tmp.path());
+        let icloud = icloud_root().unwrap();
+        let cases = [
+            (
+                icloud.join(".passbox").display().to_string(),
+                "engine = \"icloud\"\n",
+            ),
+            (
+                icloud.join("vault").display().to_string(),
+                "directory = \"vault\"",
+            ),
+            ("/Volumes/stick/passbox".into(), "engine = \"directory\""),
+            ("git@github.com:me/store.git".into(), "engine = \"git\""),
+            ("b2:passbox".into(), "engine = \"rclone\""),
+        ];
+        for (old, expected) in cases {
+            let _ = fs::remove_file(config_path(&one));
+            crate::store::write_private(&remote_path(&one), old.as_bytes()).unwrap();
+            assert_eq!(migrate(&one).unwrap().unwrap().target, old);
+            let text = fs::read_to_string(config_path(&one)).unwrap();
+            assert!(text.contains(expected), "{old}: {text}");
+            assert!(!remote_path(&one).exists(), "{old}");
+            assert_eq!(configured(&one).unwrap().unwrap().target, old);
+        }
+
+        // A config already written is left alone, and so is a store with no old file
+        crate::store::write_private(&remote_path(&one), b"/elsewhere").unwrap();
+        assert_eq!(migrate(&one).unwrap(), None);
+        assert!(remote_path(&one).exists());
     }
 
     #[test]

@@ -309,7 +309,7 @@ directory = ".passbox"   # icloud: one folder in iCloud Drive, .passbox when lef
 # remote = "git@github.com:you/s.git"   git, or "b2:passbox" for rclone
 ```
 
-To move the copy, edit one line. The file stays on this Mac and is never synced, since a USB path on one Mac means nothing on another. The older one-line `~/.passbox/remote` is deprecated. It is still read when there is no config, with a warning, and stops being read in v2. `passbox sync --enable` replaces it.
+To move the copy, edit one line. The file stays on this Mac and is never synced, since a USB path on one Mac means nothing on another. The older one-line `~/.passbox/remote` is deprecated. It is still read when there is no config, with a warning, and stops being read in v2. `passbox sync --enable` moves it to the config, with the same destination.
 
 **A destination that makes no sense is refused.** passbox checks the config on every read and stops with the reason, instead of copying somewhere new:
 
