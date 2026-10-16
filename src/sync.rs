@@ -38,11 +38,20 @@ pub fn remote_path(store: &Store) -> PathBuf {
     store.dir.join("remote")
 }
 
-pub fn configured_remote(store: &Store) -> Option<String> {
-    std::fs::read_to_string(remote_path(store))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// One line only. A YubiKey touched while editing the file types a code and a newline, and the
+/// path with that newline inside it would quietly become a second mirror
+pub fn configured_remote(store: &Store) -> Result<Option<String>> {
+    let Ok(text) = std::fs::read_to_string(remote_path(store)) else {
+        return Ok(None);
+    };
+    let text = text.trim();
+    if text.contains(['\n', '\r']) {
+        bail!(
+            "{} holds more than one line, write the destination on one line",
+            remote_path(store).display()
+        );
+    }
+    Ok(Some(text.to_string()).filter(|s| !s.is_empty()))
 }
 
 /// The environment wins, then whatever was chosen, then iCloud Drive
@@ -50,7 +59,7 @@ pub fn default_remote(store: &Store) -> Result<String> {
     if let Some(set) = std::env::var_os("PASSBOX_REMOTE") {
         return Ok(set.to_string_lossy().to_string());
     }
-    if let Some(chosen) = configured_remote(store) {
+    if let Some(chosen) = configured_remote(store)? {
         return Ok(chosen);
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;
@@ -250,13 +259,22 @@ mod tests {
     fn a_chosen_remote_outlives_the_shell() {
         let tmp = tempfile::tempdir().unwrap();
         let (one, _key) = store(tmp.path());
-        assert!(configured_remote(&one).is_none());
+        assert!(configured_remote(&one).unwrap().is_none());
 
-        crate::store::write_private(&remote_path(&one), b"/Volumes/stick/passbox").unwrap();
+        crate::store::write_private(&remote_path(&one), b"/Volumes/stick/passbox\n").unwrap();
         assert_eq!(
-            configured_remote(&one).as_deref(),
+            configured_remote(&one).unwrap().as_deref(),
             Some("/Volumes/stick/passbox")
         );
+    }
+
+    #[test]
+    fn a_remote_split_by_a_yubikey_touch_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (one, _key) = store(tmp.path());
+        crate::store::write_private(&remote_path(&one), b"/icloud/.ccdbkdtdu\npassbox\n").unwrap();
+        assert!(configured_remote(&one).is_err());
+        assert!(default_remote(&one).is_err());
     }
 
     #[test]

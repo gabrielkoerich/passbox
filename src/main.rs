@@ -445,8 +445,13 @@ fn mirror(store: &Store) {
     if std::env::var_os("PASSBOX_NO_AUTOSYNC").is_some() {
         return;
     }
-    let Some(remote) = sync::configured_remote(store) else {
-        return;
+    let remote = match sync::configured_remote(store) {
+        Ok(Some(remote)) => remote,
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("not copied: {e:#}");
+            return;
+        }
     };
     if sync::classify(&remote) != sync::Kind::Directory {
         return;
@@ -680,7 +685,8 @@ fn enable_sync(store: &Store) -> Result<()> {
 #[cfg(feature = "host")]
 fn choose_remote(store: &Store) -> Result<()> {
     // Only `sync --enable` reaches here, so a destination already set is one to offer changing
-    if let Some(already) = sync::configured_remote(store) {
+    // A broken file is one to replace, so it does not block choosing again
+    if let Some(already) = sync::configured_remote(store).unwrap_or(None) {
         eprintln!("copies currently go to {already}");
         eprint!("Change that? [y/N] ");
         let mut answer = String::new();
