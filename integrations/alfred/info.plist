@@ -8,7 +8,59 @@
 	<string>Tools</string>
 	<key>connections</key>
 	<dict>
-		<key>5A1F0001-0000-4000-8000-000000000001</key>
+		<key>5A1F0002-0000-4000-8000-000000000002</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>5A1F0003-0000-4000-8000-000000000003</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>5A1F0004-0000-4000-8000-000000000004</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>5A1F0005-0000-4000-8000-000000000005</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>5A1F0005-0000-4000-8000-000000000005</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>5A1F0006-0000-4000-8000-000000000006</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>5A1F0007-0000-4000-8000-000000000007</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>5A1F0008-0000-4000-8000-000000000008</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>5A1F0008-0000-4000-8000-000000000008</key>
 		<array>
 			<dict>
 				<key>destinationuid</key>
@@ -27,19 +79,6 @@
 				<integer>1048576</integer>
 				<key>modifiersubtext</key>
 				<string>Copy the username</string>
-				<key>vitoclose</key>
-				<false/>
-			</dict>
-		</array>
-		<key>5A1F0002-0000-4000-8000-000000000002</key>
-		<array>
-			<dict>
-				<key>destinationuid</key>
-				<string>5A1F0003-0000-4000-8000-000000000003</string>
-				<key>modifiers</key>
-				<integer>0</integer>
-				<key>modifiersubtext</key>
-				<string></string>
 				<key>vitoclose</key>
 				<false/>
 			</dict>
@@ -66,8 +105,6 @@
 				<integer>1</integer>
 				<key>escaping</key>
 				<integer>0</integer>
-				<key>keyword</key>
-				<string>pb</string>
 				<key>queuedelaycustom</key>
 				<integer>3</integer>
 				<key>queuedelayimmediatelyinitially</key>
@@ -76,8 +113,6 @@
 				<integer>0</integer>
 				<key>queuemode</key>
 				<integer>1</integer>
-				<key>runningsubtext</key>
-				<string>Waiting for Touch ID…</string>
 				<key>script</key>
 				<string>./filter.sh</string>
 				<key>scriptargtype</key>
@@ -85,18 +120,16 @@
 				<key>scriptfile</key>
 				<string></string>
 				<key>subtext</key>
-				<string>Copy a secret</string>
+				<string>Type a name to copy it</string>
 				<key>title</key>
 				<string>passbox</string>
 				<key>type</key>
 				<integer>0</integer>
-				<key>withspace</key>
-				<true/>
 			</dict>
 			<key>type</key>
 			<string>alfred.workflow.input.scriptfilter</string>
 			<key>uid</key>
-			<string>5A1F0001-0000-4000-8000-000000000001</string>
+			<string>5A1F0008-0000-4000-8000-000000000008</string>
 			<key>version</key>
 			<integer>3</integer>
 		</dict>
@@ -144,39 +177,138 @@
 			<key>version</key>
 			<integer>1</integer>
 		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>pbx</string>
+				<key>subtext</key>
+				<string>Touch ID, then pick a secret to copy</string>
+				<key>text</key>
+				<string>passbox</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>5A1F0004-0000-4000-8000-000000000004</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<false/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>./list.sh</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>5A1F0005-0000-4000-8000-000000000005</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>externaltriggerid</key>
+				<string>show</string>
+				<key>passinputasargument</key>
+				<false/>
+				<key>passvariables</key>
+				<true/>
+				<key>workflowbundleid</key>
+				<string>self</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.callexternaltrigger</string>
+			<key>uid</key>
+			<string>5A1F0006-0000-4000-8000-000000000006</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>availableviaurlhandler</key>
+				<false/>
+				<key>triggerid</key>
+				<string>show</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.external</string>
+			<key>uid</key>
+			<string>5A1F0007-0000-4000-8000-000000000007</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
 	</array>
 	<key>readme</key>
-	<string>Type pb, pick a name, press return to copy the password or cmd-return for the username. The clipboard clears itself after 20 seconds.
-
-cache_seconds above 0 keeps the name list in Alfred's cache, on disk and unencrypted, so a use costs one fingerprint instead of two.</string>
+	<string>Type pbx and touch the sensor. Alfred closes for the prompt and reopens with your secret names. Pick one and press return to copy the password, or cmd-return for the username. The clipboard clears itself after 20 seconds.</string>
 	<key>uidata</key>
 	<dict>
-		<key>5A1F0001-0000-4000-8000-000000000001</key>
+		<key>5A1F0002-0000-4000-8000-000000000002</key>
+		<dict>
+			<key>xpos</key>
+			<integer>480</integer>
+			<key>ypos</key>
+			<integer>200</integer>
+		</dict>
+		<key>5A1F0003-0000-4000-8000-000000000003</key>
+		<dict>
+			<key>xpos</key>
+			<integer>700</integer>
+			<key>ypos</key>
+			<integer>200</integer>
+		</dict>
+		<key>5A1F0004-0000-4000-8000-000000000004</key>
 		<dict>
 			<key>xpos</key>
 			<integer>40</integer>
 			<key>ypos</key>
 			<integer>40</integer>
 		</dict>
-		<key>5A1F0002-0000-4000-8000-000000000002</key>
+		<key>5A1F0005-0000-4000-8000-000000000005</key>
 		<dict>
 			<key>xpos</key>
 			<integer>260</integer>
 			<key>ypos</key>
 			<integer>40</integer>
 		</dict>
-		<key>5A1F0003-0000-4000-8000-000000000003</key>
+		<key>5A1F0006-0000-4000-8000-000000000006</key>
 		<dict>
 			<key>xpos</key>
 			<integer>480</integer>
 			<key>ypos</key>
 			<integer>40</integer>
 		</dict>
-	</dict>
-	<key>variables</key>
-	<dict>
-		<key>cache_seconds</key>
-		<string>0</string>
+		<key>5A1F0007-0000-4000-8000-000000000007</key>
+		<dict>
+			<key>xpos</key>
+			<integer>40</integer>
+			<key>ypos</key>
+			<integer>200</integer>
+		</dict>
+		<key>5A1F0008-0000-4000-8000-000000000008</key>
+		<dict>
+			<key>xpos</key>
+			<integer>260</integer>
+			<key>ypos</key>
+			<integer>200</integer>
+		</dict>
 	</dict>
 	<key>webaddress</key>
 	<string>https://github.com/gabrielkoerich/passbox</string>

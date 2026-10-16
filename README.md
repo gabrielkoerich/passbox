@@ -64,7 +64,7 @@ passbox copy github/token     # to the clipboard, cleared after a few seconds
 
 ### Alfred
 
-The [Alfred workflow](integrations/alfred) copies a secret from Alfred: type `pb`, pick a name, and `⏎` copies the password or `⌘⏎` the username, through `passbox copy`. It needs the Powerpack.
+The [Alfred workflow](integrations/alfred) copies a secret from Alfred: type `pbx`, press `⏎` and touch the sensor, Alfred reopens with your names, pick one, and `⏎` copies the password or `⌘⏎` the username, through `passbox copy`. It needs the Powerpack.
 
 ```bash
 curl -fsSLO https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox.alfredworkflow
