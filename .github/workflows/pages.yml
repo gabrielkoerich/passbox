@@ -49,4 +49,4 @@ jobs:
           build-command: ./build.sh
           deploy: "true"
           cloudflare-token: ${{ secrets.CF_API_TOKEN }}
-          indexnow-key: 1d0e571ac19d48adf5e168b3585deb31
+          indexnow-key: 1d0e571ac19d48adf5e168b3585deb31 # gitleaks:allow, IndexNow publishes this key at /<key>.txt

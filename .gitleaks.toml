@@ -6,8 +6,3 @@ useDefault = true
 [[allowlists]]
 description = "Build output, which carries key material from vendored crates"
 paths = ['''^target/''', '''^examples/[^/]+/target/''', '''^\.claude/''']
-
-[[allowlists]]
-description = "The IndexNow key, which IndexNow requires published at /<key>.txt on the site"
-regexTarget = "line"
-regexes = ['''^\s*indexnow-key:''']
