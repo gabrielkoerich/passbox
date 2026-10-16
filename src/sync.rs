@@ -126,6 +126,35 @@ pub struct Report {
     pub pulled: usize,
 }
 
+/* Only choosing a destination creates it, so a path that changed by accident or a stick that is
+unplugged fails here instead of getting a fresh mirror that splits the store. A folder holding
+other files is refused too, since the union would copy all of them into the store. */
+fn check_destination(store: &Store, remote: &Path) -> Result<()> {
+    let shown = remote.display();
+    let again = "run `passbox sync --enable` to choose again";
+    if !remote.is_absolute() {
+        bail!("{shown} is not an absolute path, {again}");
+    }
+    if !remote.is_dir() {
+        bail!("{shown} does not exist. Create it, or {again}");
+    }
+    let (there, here) = (remote.canonicalize()?, store.dir.canonicalize()?);
+    if there.starts_with(&here) || here.starts_with(&there) {
+        bail!(
+            "{shown} overlaps the store at {}, {again}",
+            store.dir.display()
+        );
+    }
+    let mirror = remote.join("store").is_dir() || remote.join("wraps").is_dir();
+    let empty = fs::read_dir(remote)?
+        .filter_map(|e| e.ok())
+        .all(|e| e.file_name() == ".DS_Store");
+    if !mirror && !empty {
+        bail!("{shown} holds other files and no passbox copy, {again} with an empty folder");
+    }
+    Ok(())
+}
+
 /// Union both sides, newest modification time wins, and keep whatever it replaced.
 pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
     if remote.to_string_lossy().contains(':') {
@@ -134,7 +163,7 @@ pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
             remote.display()
         );
     }
-    fs::create_dir_all(remote)?;
+    check_destination(store, remote)?;
 
     let mut here = BTreeMap::new();
     let mut there = BTreeMap::new();
@@ -266,6 +295,28 @@ mod tests {
             configured_remote(&one).unwrap().as_deref(),
             Some("/Volumes/stick/passbox")
         );
+    }
+
+    #[test]
+    fn only_an_empty_folder_or_a_passbox_copy_is_a_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (one, _key) = store(&tmp.path().join("store"));
+        let refused = |remote: &Path| check_destination(&one, remote).is_err();
+
+        assert!(refused(Path::new("relative/passbox")));
+        assert!(refused(&tmp.path().join("missing")));
+        assert!(refused(&one.dir));
+        assert!(refused(&one.dir.join("store")));
+        assert!(refused(tmp.path()), "a folder holding the store");
+
+        let dropbox = tmp.path().join("dropbox");
+        fs::create_dir_all(&dropbox).unwrap();
+        fs::write(dropbox.join(".DS_Store"), "").unwrap();
+        assert!(!refused(&dropbox), "an empty folder is a new mirror");
+        fs::write(dropbox.join("taxes.pdf"), "").unwrap();
+        assert!(refused(&dropbox), "a folder with other files");
+        fs::create_dir(dropbox.join("store")).unwrap();
+        assert!(!refused(&dropbox), "a passbox copy");
     }
 
     #[test]

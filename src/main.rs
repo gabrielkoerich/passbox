@@ -712,7 +712,16 @@ fn choose_remote(store: &Store) -> Result<()> {
 
     let remote = match answer.trim() {
         "1" => sync::default_remote(store)?,
-        "2" => prompt("directory: ")?,
+        "2" => {
+            let dir = prompt("directory: ")?;
+            match (dir.strip_prefix("~/"), std::env::var_os("HOME")) {
+                (Some(rest), Some(home)) => std::path::Path::new(&home)
+                    .join(rest)
+                    .to_string_lossy()
+                    .to_string(),
+                _ => dir,
+            }
+        }
         "3" => {
             let url = prompt("git remote, such as git@github.com:you/passbox-store.git: ")?;
             git(store, &["init".into()]).ok();
@@ -727,8 +736,12 @@ fn choose_remote(store: &Store) -> Result<()> {
         other => bail!("expected 1 to 4, got {other}"),
     };
 
-    store::write_private(&sync::remote_path(store), remote.trim().as_bytes())?;
-    eprintln!("copies go to {}", remote.trim());
+    let remote = remote.trim();
+    if sync::classify(remote) == sync::Kind::Directory {
+        std::fs::create_dir_all(remote)?;
+    }
+    store::write_private(&sync::remote_path(store), remote.as_bytes())?;
+    eprintln!("copies go to {remote}");
     Ok(())
 }
 
