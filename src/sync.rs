@@ -33,40 +33,185 @@ pub fn classify(remote: &str) -> Kind {
     Kind::Directory
 }
 
-/// Where a chosen destination is kept, so a later bare `passbox sync` goes to the same place
+/// The old one-line destination, read when there is no config and replaced by the next `--enable`
 pub fn remote_path(store: &Store) -> PathBuf {
     store.dir.join("remote")
 }
 
-/// One line only. A YubiKey touched while editing the file types a code and a newline, and the
-/// path with that newline inside it would quietly become a second mirror
-pub fn configured_remote(store: &Store) -> Result<Option<String>> {
-    let Ok(text) = std::fs::read_to_string(remote_path(store)) else {
+/// Machine local, since a USB path on one Mac means nothing on another
+pub fn config_path(store: &Store) -> PathBuf {
+    store.dir.join("config.toml")
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct Config {
+    sync: Engine,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq, Clone)]
+#[serde(tag = "engine", rename_all = "lowercase", deny_unknown_fields)]
+pub enum Engine {
+    Icloud {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
+    },
+    Directory {
+        path: String,
+    },
+    Git {
+        remote: String,
+    },
+    Rclone {
+        remote: String,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Destination {
+    pub kind: Kind,
+    pub target: String,
+}
+
+impl Destination {
+    /// For `--remote`, `PASSBOX_REMOTE` and the old file, which name no engine
+    pub fn guess(target: &str) -> Self {
+        Destination {
+            kind: classify(target),
+            target: target.trim().to_string(),
+        }
+    }
+}
+
+fn icloud_root() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join("Library/Mobile Documents/com~apple~CloudDocs"))
+}
+
+fn clean(what: &str, value: &str) -> Result<()> {
+    if value.is_empty() || value != value.trim() || value.chars().any(char::is_control) {
+        bail!("{what} {value:?} is empty, has a space at either end, or holds a control character");
+    }
+    Ok(())
+}
+
+impl Engine {
+    /// Checked on every read, so a stray keystroke in the file is an error and never a new folder
+    pub fn resolve(&self) -> Result<Destination> {
+        let (kind, target) = match self {
+            Engine::Icloud { directory } => {
+                let name = directory.as_deref().unwrap_or(".passbox");
+                clean("directory", name)?;
+                if name.contains('/') || name == "." || name == ".." {
+                    bail!("directory {name:?} must be one folder name inside iCloud Drive");
+                }
+                let target = icloud_root()?.join(name).to_string_lossy().to_string();
+                (Kind::Directory, target)
+            }
+            Engine::Directory { path } => {
+                clean("path", path)?;
+                if !Path::new(path).is_absolute() {
+                    bail!("path {path:?} must be absolute");
+                }
+                (Kind::Directory, path.clone())
+            }
+            Engine::Git { remote } => {
+                clean("remote", remote)?;
+                if classify(remote) != Kind::Git {
+                    bail!("remote {remote:?} is not a git URL");
+                }
+                (Kind::Git, remote.clone())
+            }
+            Engine::Rclone { remote } => {
+                clean("remote", remote)?;
+                if classify(remote) != Kind::Rclone {
+                    bail!("remote {remote:?} is not an rclone remote such as b2:passbox");
+                }
+                (Kind::Rclone, remote.clone())
+            }
+        };
+        Ok(Destination { kind, target })
+    }
+}
+
+/// The chosen destination: the config, then the old `remote` file, then nothing
+pub fn configured(store: &Store) -> Result<Option<Destination>> {
+    let path = config_path(store);
+    if let Ok(text) = fs::read_to_string(&path) {
+        let invalid = || format!("{} is not valid", path.display());
+        let config: Config = toml::from_str(&text).with_context(invalid)?;
+        return config.sync.resolve().map(Some).with_context(invalid);
+    }
+    let old = legacy(store)?;
+    if old.is_some() {
+        eprintln!(
+            "passbox: {} is deprecated and stops being read in v2, run `passbox sync --enable` to \
+             move it to {}",
+            remote_path(store).display(),
+            config_path(store).display()
+        );
+    }
+    Ok(old)
+}
+
+fn legacy(store: &Store) -> Result<Option<Destination>> {
+    let Ok(text) = fs::read_to_string(remote_path(store)) else {
         return Ok(None);
     };
     let text = text.trim();
+    // A YubiKey touched while editing the file types a code and a newline into the path
     if text.contains(['\n', '\r']) {
         bail!(
             "{} holds more than one line, write the destination on one line",
             remote_path(store).display()
         );
     }
-    Ok(Some(text.to_string()).filter(|s| !s.is_empty()))
+    if text.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Destination::guess(text)))
+}
+
+/// Writes the old `remote` file to the config with the same destination, for `--enable`
+pub fn migrate(store: &Store) -> Result<Option<Destination>> {
+    if config_path(store).exists() {
+        return Ok(None);
+    }
+    let Some(old) = legacy(store)? else {
+        return Ok(None);
+    };
+    let engine = match old.kind {
+        Kind::Git => Engine::Git { remote: old.target },
+        Kind::Rclone => Engine::Rclone { remote: old.target },
+        Kind::Directory => match Path::new(&old.target).strip_prefix(icloud_root()?) {
+            Ok(name) if name == Path::new(".passbox") => Engine::Icloud { directory: None },
+            Ok(name) if name.components().count() == 1 => Engine::Icloud {
+                directory: Some(name.to_string_lossy().to_string()),
+            },
+            _ => Engine::Directory { path: old.target },
+        },
+    };
+    choose(store, engine).map(Some)
+}
+
+/// Written by `--enable`, and it replaces the old `remote` file
+pub fn choose(store: &Store, engine: Engine) -> Result<Destination> {
+    let destination = engine.resolve()?;
+    let text = toml::to_string(&Config { sync: engine })?;
+    crate::store::write_private(&config_path(store), text.as_bytes())?;
+    let _ = fs::remove_file(remote_path(store));
+    Ok(destination)
 }
 
 /// The environment wins, then whatever was chosen, then iCloud Drive
-pub fn default_remote(store: &Store) -> Result<String> {
+pub fn default_destination(store: &Store) -> Result<Destination> {
     if let Some(set) = std::env::var_os("PASSBOX_REMOTE") {
-        return Ok(set.to_string_lossy().to_string());
+        return Ok(Destination::guess(&set.to_string_lossy()));
     }
-    if let Some(chosen) = configured_remote(store)? {
+    if let Some(chosen) = configured(store)? {
         return Ok(chosen);
     }
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home)
-        .join("Library/Mobile Documents/com~apple~CloudDocs/.passbox")
-        .to_string_lossy()
-        .to_string())
+    Engine::Icloud { directory: None }.resolve()
 }
 
 /* The socket is a live endpoint and the versions are this machine's own history. Grants stay put
@@ -76,6 +221,7 @@ fn skip(relative: &Path) -> bool {
     let text = relative.to_string_lossy();
     text == "broker.sock"
         || text == "remote"
+        || text == "config.toml"
         || text == "names"
         || text == "plugins"
         // A repo is this machine's history. Copying it into a shared directory would put two
@@ -84,6 +230,8 @@ fn skip(relative: &Path) -> bool {
         || text.starts_with(".git/")
         || text == ".gitignore"
         || text.starts_with("store/.versions")
+        // A copy cut off before its rename, never a real file
+        || text.ends_with(".partial")
         || (text.starts_with("grants-") && text.ends_with(".age"))
 }
 
@@ -106,17 +254,21 @@ fn walk(root: &Path, base: &Path, out: &mut BTreeMap<PathBuf, SystemTime>) -> Re
     Ok(())
 }
 
-/// Copy preserving the modification time, so the next run does not copy it straight back
+/// Copy preserving the modification time, so the next run does not copy it straight back. The
+/// rename makes it whole or absent, since a cut-off copy would look newest and win the next sync
 fn copy(from: &Path, to: &Path) -> Result<()> {
-    if let Some(parent) = to.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(from, to)?;
+    let parent = to.parent().context("a copy needs a parent directory")?;
+    fs::create_dir_all(parent)?;
+    let mut partial = to.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    fs::copy(from, &partial)?;
     let when = fs::metadata(from)?.modified()?;
     fs::File::options()
         .write(true)
-        .open(to)?
+        .open(&partial)?
         .set_modified(when)?;
+    fs::rename(&partial, to)?;
     Ok(())
 }
 
@@ -124,6 +276,35 @@ fn copy(from: &Path, to: &Path) -> Result<()> {
 pub struct Report {
     pub pushed: usize,
     pub pulled: usize,
+}
+
+/* Only choosing a destination creates it, so a path that changed by accident or a stick that is
+unplugged fails here instead of getting a fresh mirror that splits the store. A folder holding
+other files is refused too, since the union would copy all of them into the store. */
+fn check_destination(store: &Store, remote: &Path) -> Result<()> {
+    let shown = remote.display();
+    let again = "run `passbox sync --enable` to choose again";
+    if !remote.is_absolute() {
+        bail!("{shown} is not an absolute path, {again}");
+    }
+    if !remote.is_dir() {
+        bail!("{shown} does not exist. Create it, or {again}");
+    }
+    let (there, here) = (remote.canonicalize()?, store.dir.canonicalize()?);
+    if there.starts_with(&here) || here.starts_with(&there) {
+        bail!(
+            "{shown} overlaps the store at {}, {again}",
+            store.dir.display()
+        );
+    }
+    let mirror = remote.join("store").is_dir() || remote.join("wraps").is_dir();
+    let empty = fs::read_dir(remote)?
+        .filter_map(|e| e.ok())
+        .all(|e| e.file_name() == ".DS_Store");
+    if !mirror && !empty {
+        bail!("{shown} holds other files and no passbox copy, {again} with an empty folder");
+    }
+    Ok(())
 }
 
 /// Union both sides, newest modification time wins, and keep whatever it replaced.
@@ -134,7 +315,7 @@ pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
             remote.display()
         );
     }
-    fs::create_dir_all(remote)?;
+    check_destination(store, remote)?;
 
     let mut here = BTreeMap::new();
     let mut there = BTreeMap::new();
@@ -259,13 +440,154 @@ mod tests {
     fn a_chosen_remote_outlives_the_shell() {
         let tmp = tempfile::tempdir().unwrap();
         let (one, _key) = store(tmp.path());
-        assert!(configured_remote(&one).unwrap().is_none());
+        assert!(configured(&one).unwrap().is_none());
 
         crate::store::write_private(&remote_path(&one), b"/Volumes/stick/passbox\n").unwrap();
+        let chosen = configured(&one).unwrap().unwrap();
+        assert_eq!(chosen.target, "/Volumes/stick/passbox");
+        assert_eq!(chosen.kind, Kind::Directory);
+    }
+
+    #[test]
+    fn choosing_writes_a_config_that_wins_over_the_old_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (one, _key) = store(tmp.path());
+        crate::store::write_private(&remote_path(&one), b"/old/place").unwrap();
+
+        let engine = Engine::Directory {
+            path: "/Volumes/stick/passbox".into(),
+        };
+        choose(&one, engine).unwrap();
+        assert!(!remote_path(&one).exists(), "the old file is replaced");
+        let text = fs::read_to_string(config_path(&one)).unwrap();
+        assert!(text.contains("engine = \"directory\""), "{text}");
         assert_eq!(
-            configured_remote(&one).unwrap().as_deref(),
-            Some("/Volumes/stick/passbox")
+            configured(&one).unwrap().unwrap().target,
+            "/Volumes/stick/passbox"
         );
+    }
+
+    #[test]
+    fn migrating_keeps_the_old_destination_and_names_its_engine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (one, _key) = store(tmp.path());
+        let icloud = icloud_root().unwrap();
+        let cases = [
+            (
+                icloud.join(".passbox").display().to_string(),
+                "engine = \"icloud\"\n",
+            ),
+            (
+                icloud.join("vault").display().to_string(),
+                "directory = \"vault\"",
+            ),
+            ("/Volumes/stick/passbox".into(), "engine = \"directory\""),
+            ("git@github.com:me/store.git".into(), "engine = \"git\""),
+            ("b2:passbox".into(), "engine = \"rclone\""),
+        ];
+        for (old, expected) in cases {
+            let _ = fs::remove_file(config_path(&one));
+            crate::store::write_private(&remote_path(&one), old.as_bytes()).unwrap();
+            assert_eq!(migrate(&one).unwrap().unwrap().target, old);
+            let text = fs::read_to_string(config_path(&one)).unwrap();
+            assert!(text.contains(expected), "{old}: {text}");
+            assert!(!remote_path(&one).exists(), "{old}");
+            assert_eq!(configured(&one).unwrap().unwrap().target, old);
+        }
+
+        // A config already written is left alone, and so is a store with no old file
+        crate::store::write_private(&remote_path(&one), b"/elsewhere").unwrap();
+        assert_eq!(migrate(&one).unwrap(), None);
+        assert!(remote_path(&one).exists());
+    }
+
+    #[test]
+    fn the_engine_names_the_kind_and_icloud_names_one_folder() {
+        let parse = |text: &str| toml::from_str::<Config>(text).map(|c| c.sync.resolve());
+        let icloud = parse("[sync]\nengine = \"icloud\"\n").unwrap().unwrap();
+        assert!(
+            icloud.target.ends_with("com~apple~CloudDocs/.passbox"),
+            "{icloud:?}"
+        );
+        let named = parse("[sync]\nengine = \"icloud\"\ndirectory = \"vault\"\n");
+        assert!(named.unwrap().unwrap().target.ends_with("CloudDocs/vault"));
+
+        // A path holding a colon stays a directory, since the engine says so
+        let odd = parse("[sync]\nengine = \"directory\"\npath = \"/Volumes/a:b\"\n");
+        assert_eq!(odd.unwrap().unwrap().kind, Kind::Directory);
+        let git = parse("[sync]\nengine = \"git\"\nremote = \"git@github.com:you/s.git\"\n");
+        assert_eq!(git.unwrap().unwrap().kind, Kind::Git);
+    }
+
+    #[test]
+    fn a_config_that_makes_no_sense_is_refused() {
+        let refused = |text: &str| {
+            toml::from_str::<Config>(text)
+                .map_err(anyhow::Error::from)
+                .and_then(|c| c.sync.resolve())
+                .is_err()
+        };
+        assert!(refused(
+            "[sync]\nengine = \"icloud\"\ndirectory = \".ccdbkdtdu\npassbox\"\n"
+        ));
+        assert!(refused(
+            "[sync]\nengine = \"icloud\"\ndirectory = \"a/b\"\n"
+        ));
+        assert!(refused("[sync]\nengine = \"icloud\"\ndirectory = \"..\"\n"));
+        assert!(refused(
+            "[sync]\nengine = \"icloud\"\ndirectory = \" .passbox\"\n"
+        ));
+        assert!(refused(
+            "[sync]\nengine = \"directory\"\npath = \"relative\"\n"
+        ));
+        assert!(
+            refused("[sync]\nengine = \"directory\"\n"),
+            "a path is required"
+        );
+        assert!(
+            refused("[sync]\nengine = \"dropbox\"\n"),
+            "an unknown engine"
+        );
+        assert!(
+            refused("[sync]\nengine = \"icloud\"\npath = \"/x\"\n"),
+            "a key the engine has not"
+        );
+        assert!(refused(
+            "[sync]\nengine = \"git\"\nremote = \"/not/a/url\"\n"
+        ));
+        assert!(refused(
+            "[sync]\nengine = \"rclone\"\nremote = \"no-colon\"\n"
+        ));
+        assert!(
+            refused("[sync]\nengine = \"icloud\"\n.ccdbkdtdu\n"),
+            "a stray line"
+        );
+        assert!(
+            refused("[sync]\nengine = \"icloud\"\n[other]\n"),
+            "an unknown section"
+        );
+    }
+
+    #[test]
+    fn only_an_empty_folder_or_a_passbox_copy_is_a_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (one, _key) = store(&tmp.path().join("store"));
+        let refused = |remote: &Path| check_destination(&one, remote).is_err();
+
+        assert!(refused(Path::new("relative/passbox")));
+        assert!(refused(&tmp.path().join("missing")));
+        assert!(refused(&one.dir));
+        assert!(refused(&one.dir.join("store")));
+        assert!(refused(tmp.path()), "a folder holding the store");
+
+        let dropbox = tmp.path().join("dropbox");
+        fs::create_dir_all(&dropbox).unwrap();
+        fs::write(dropbox.join(".DS_Store"), "").unwrap();
+        assert!(!refused(&dropbox), "an empty folder is a new mirror");
+        fs::write(dropbox.join("taxes.pdf"), "").unwrap();
+        assert!(refused(&dropbox), "a folder with other files");
+        fs::create_dir(dropbox.join("store")).unwrap();
+        assert!(!refused(&dropbox), "a passbox copy");
     }
 
     #[test]
@@ -273,8 +595,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (one, _key) = store(tmp.path());
         crate::store::write_private(&remote_path(&one), b"/icloud/.ccdbkdtdu\npassbox\n").unwrap();
-        assert!(configured_remote(&one).is_err());
-        assert!(default_remote(&one).is_err());
+        assert!(configured(&one).is_err());
+        assert!(default_destination(&one).is_err());
+
+        // and the same touch inside the config fails the parse
+        fs::write(
+            config_path(&one),
+            "[sync]\nengine = \"icloud\"\ndirectory = \".ccdbkdtdu\npassbox\"\n",
+        )
+        .unwrap();
+        assert!(configured(&one).is_err());
     }
 
     #[test]
@@ -352,6 +682,7 @@ mod tests {
         assert!(skip(Path::new(".git/config")));
         assert!(skip(Path::new(".git/objects/ab/cdef")));
         assert!(skip(Path::new(".gitignore")));
+        assert!(skip(Path::new("store/0a1b.age.partial")));
         assert!(!skip(Path::new("store/abc123.age")));
     }
 

@@ -338,7 +338,7 @@ fn ensure_store_gitignore(store: &Store) -> Result<()> {
     if !path.exists() {
         std::fs::write(
             &path,
-            "broker.sock\nnames\nremote\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\n",
+            "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\n",
         )?;
     }
     Ok(())
@@ -369,12 +369,13 @@ fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
         );
     }
 
-    let remote = match remote {
-        Some(given) => given.to_string(),
-        None => sync::default_remote(store)?,
+    let sync::Destination { kind, target } = match remote {
+        Some(given) => sync::Destination::guess(given),
+        None => sync::default_destination(store)?,
     };
+    let remote = target;
 
-    match sync::classify(&remote) {
+    match kind {
         // git carries its own history, so there is no directory to copy into
         sync::Kind::Git => git_push(store),
         sync::Kind::Rclone => {
@@ -445,17 +446,14 @@ fn mirror(store: &Store) {
     if std::env::var_os("PASSBOX_NO_AUTOSYNC").is_some() {
         return;
     }
-    let remote = match sync::configured_remote(store) {
-        Ok(Some(remote)) => remote,
-        Ok(None) => return,
+    let remote = match sync::configured(store) {
+        Ok(Some(chosen)) if chosen.kind == sync::Kind::Directory => chosen.target,
+        Ok(_) => return,
         Err(e) => {
             eprintln!("not copied: {e:#}");
             return;
         }
     };
-    if sync::classify(&remote) != sync::Kind::Directory {
-        return;
-    }
     match sync::sync(store, std::path::Path::new(&remote)) {
         Ok(report) if report.pushed > 0 => eprintln!("{} copied to {remote}", report.pushed),
         Ok(_) => {}
@@ -684,17 +682,25 @@ fn enable_sync(store: &Store) -> Result<()> {
 /// Asked once and remembered, so a later bare `passbox sync` cannot surprise you with iCloud
 #[cfg(feature = "host")]
 fn choose_remote(store: &Store) -> Result<()> {
+    if let Some(moved) = sync::migrate(store)? {
+        eprintln!(
+            "{} now names {}, the old remote file is gone",
+            sync::config_path(store).display(),
+            moved.target
+        );
+        return Ok(());
+    }
+
     // Only `sync --enable` reaches here, so a destination already set is one to offer changing
     // A broken file is one to replace, so it does not block choosing again
-    if let Some(already) = sync::configured_remote(store).unwrap_or(None) {
-        eprintln!("copies currently go to {already}");
+    if let Some(already) = sync::configured(store).unwrap_or(None) {
+        eprintln!("copies currently go to {}", already.target);
         eprint!("Change that? [y/N] ");
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
             return Ok(());
         }
-        std::fs::remove_file(sync::remote_path(store)).ok();
     }
 
     eprintln!();
@@ -710,25 +716,45 @@ fn choose_remote(store: &Store) -> Result<()> {
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
 
-    let remote = match answer.trim() {
-        "1" => sync::default_remote(store)?,
-        "2" => prompt("directory: ")?,
-        "3" => {
-            let url = prompt("git remote, such as git@github.com:you/passbox-store.git: ")?;
-            git(store, &["init".into()]).ok();
-            git(
-                store,
-                &["remote".into(), "add".into(), "origin".into(), url.clone()],
-            )
-            .ok();
-            url
+    let engine = match answer.trim() {
+        "1" => sync::Engine::Icloud { directory: None },
+        "2" => {
+            let dir = prompt("directory: ")?;
+            let path = match (dir.strip_prefix("~/"), std::env::var_os("HOME")) {
+                (Some(rest), Some(home)) => std::path::Path::new(&home)
+                    .join(rest)
+                    .to_string_lossy()
+                    .to_string(),
+                _ => dir,
+            };
+            sync::Engine::Directory { path }
         }
-        "4" => prompt("rclone remote, such as b2:passbox: ")?,
+        "3" => sync::Engine::Git {
+            remote: prompt("git remote, such as git@github.com:you/passbox-store.git: ")?,
+        },
+        "4" => sync::Engine::Rclone {
+            remote: prompt("rclone remote, such as b2:passbox: ")?,
+        },
         other => bail!("expected 1 to 4, got {other}"),
     };
 
-    store::write_private(&sync::remote_path(store), remote.trim().as_bytes())?;
-    eprintln!("copies go to {}", remote.trim());
+    // Checked before anything is created, so a bad answer leaves no folder or repo behind
+    let destination = engine.resolve()?;
+    match destination.kind {
+        sync::Kind::Directory => std::fs::create_dir_all(&destination.target)?,
+        sync::Kind::Git => {
+            ensure_store_gitignore(store)?;
+            git_quietly(store, &["init"]);
+            git_quietly(store, &["remote", "add", "origin", &destination.target]);
+        }
+        sync::Kind::Rclone => {}
+    }
+    sync::choose(store, engine)?;
+    eprintln!(
+        "copies go to {}, set in {}",
+        destination.target,
+        sync::config_path(store).display()
+    );
     Ok(())
 }
 

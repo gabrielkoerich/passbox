@@ -700,6 +700,97 @@ fn a_missing_secret_fails_loudly() {
     assert!(err.contains("no secret named nope"), "{err}");
 }
 
+#[test]
+fn the_old_remote_file_still_syncs_and_says_it_is_deprecated() {
+    let cli = Cli::new();
+    let mirror = tempfile::tempdir().unwrap();
+    let remote = mirror.path().to_string_lossy().to_string();
+    std::fs::write(cli.dir.path().join("remote"), &remote).unwrap();
+
+    let out = cli.cmd(PASSPHRASE).arg("sync").output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(mirror.path().join("wraps").is_dir(), "{stderr}");
+    assert!(stderr.contains("deprecated"), "{stderr}");
+}
+
+#[test]
+fn enable_moves_the_old_remote_file_into_the_config() {
+    let cli = Cli::new();
+    let mirror = tempfile::tempdir().unwrap();
+    let remote = mirror.path().to_string_lossy().to_string();
+    std::fs::write(cli.dir.path().join("remote"), &remote).unwrap();
+    cli.run(&["add", "before/move"], Some("value-before"))
+        .unwrap();
+    cli.run(&["sync"], None).unwrap();
+
+    let out = cli
+        .cmd(PASSPHRASE)
+        .args(["sync", "--enable"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(!cli.dir.path().join("remote").exists(), "{stderr}");
+    let config = std::fs::read_to_string(cli.dir.path().join("config.toml")).unwrap();
+    assert!(config.contains("engine = \"directory\""), "{config}");
+    assert!(config.contains(&remote), "{config}");
+
+    // A write after the move reaches the same mirror through the config alone
+    cli.run(&["add", "after/move"], Some("value-after"))
+        .unwrap();
+    let out = cli.cmd(PASSPHRASE).arg("sync").output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(!stderr.contains("deprecated"), "{stderr}");
+
+    let two = Cli::empty();
+    two.sync(mirror.path());
+    for store in [&cli, &two] {
+        for (name, value) in [
+            ("before/move", "value-before"),
+            ("after/move", "value-after"),
+        ] {
+            assert_eq!(store.run(&["get", "--reveal", name], None).unwrap(), value);
+        }
+    }
+}
+
+// The #25 incident: a destination edited by accident must stop the copy and create nothing
+#[test]
+fn a_write_follows_the_config_and_a_broken_one_creates_nothing() {
+    let cli = Cli::new();
+    let mirror = tempfile::tempdir().unwrap();
+    let config = cli.dir.path().join("config.toml");
+    let body = format!(
+        "[sync]\nengine = \"directory\"\npath = \"{}\"\n",
+        mirror.path().display()
+    );
+    std::fs::write(&config, body).unwrap();
+
+    cli.run(&["add", "one/secret"], Some("value")).expect("add");
+    assert!(
+        mirror.path().join("store").is_dir(),
+        "the write should reach the configured mirror"
+    );
+
+    let stray = mirror.path().join("gone");
+    let body = format!(
+        "[sync]\nengine = \"directory\"\npath = \"{}\"\n",
+        stray.display()
+    );
+    std::fs::write(&config, body).unwrap();
+    cli.run(&["add", "two/secret"], Some("value"))
+        .expect("the write itself still succeeds");
+    assert!(!stray.exists(), "a missing destination must not be created");
+
+    std::fs::write(&config, "[sync]\nengine = \"icloud\"\n.ccdbkdtdu\n").unwrap();
+    let out = cli.cmd(PASSPHRASE).arg("sync").output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a broken config must stop sync");
+    assert!(stderr.contains("config.toml is not valid"), "{stderr}");
+}
+
 /* Git and the mirror answer different questions and a write does both. They were only ever
 tested apart, and together the repo was being copied into the mirror, which swamped the sync
 and left the secrets behind: one commit, nothing backed up, and no error saying so. */
