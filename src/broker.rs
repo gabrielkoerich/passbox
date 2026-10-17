@@ -328,7 +328,8 @@ impl Broker {
     ) -> Result<ssh_key::Signature> {
         let label = crate::ssh::label(wanted);
         let slot = format!("ssh:{label}");
-        self.ask(&format!("sign with SSH key {label} for {agent}"))
+        let purpose = crate::ssh::purpose(data);
+        self.ask(&format!("sign {purpose} with SSH key {label} for {agent}"))
             .map_err(|e| self.refused(agent, &[&slot], e, caller))?;
         let key = self.key.clone().expect("just unlocked");
         let keys = crate::ssh::keys(&self.store, &key)?;

@@ -1490,7 +1490,7 @@ fn agent_round_trip(kind: &str) {
     let prompts = bound.prompts();
     assert_eq!(prompts.len(), 2, "{prompts:?}");
     assert!(
-        prompts[0].starts_with("sign with SSH key test@passbox.dev for "),
+        prompts[0].starts_with("sign a test signature with SSH key test@passbox.dev for "),
         "{prompts:?}"
     );
 

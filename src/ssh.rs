@@ -99,6 +99,40 @@ pub fn label(key: &PublicKey) -> String {
     }
 }
 
+/**
+ * What the data being signed is, read from its shape. An `SSHSIG` blob carries the namespace, `git`
+ * for a commit, and a login carries the user after the session id. The caller writes both strings,
+ * so anything that is not short printable text reads as unrecognised
+ **/
+pub fn purpose(data: &[u8]) -> String {
+    const USERAUTH_REQUEST: u8 = 50;
+    if let Some(mut rest) = data.strip_prefix(b"SSHSIG") {
+        return match take(&mut rest).ok().and_then(printable) {
+            Some(namespace) => format!("a {namespace} signature"),
+            None => "a signature".to_string(),
+        };
+    }
+    let mut rest = data;
+    let login = take(&mut rest).is_ok()
+        && rest
+            .split_first()
+            .is_some_and(|(&b, _)| b == USERAUTH_REQUEST);
+    if login {
+        rest = &rest[1..];
+        return match take(&mut rest).ok().and_then(printable) {
+            Some(user) => format!("an SSH login as {user}"),
+            None => "an SSH login".to_string(),
+        };
+    }
+    "unrecognised data".to_string()
+}
+
+fn printable(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let fits = !text.is_empty() && text.len() <= 64 && text.bytes().all(|b| b.is_ascii_graphic());
+    fits.then(|| text.to_string())
+}
+
 /// One length-prefixed message, or None once the client hangs up
 pub fn read_message(stream: &mut impl Read) -> Result<Option<Vec<u8>>> {
     let mut len = [0u8; 4];
@@ -264,6 +298,26 @@ mod tests {
             |_, _| bail!("denied"),
         );
         assert_eq!(refused, [FAILURE]);
+    }
+
+    #[test]
+    fn the_purpose_is_read_from_the_shape_of_the_data() {
+        let mut sshsig = b"SSHSIG".to_vec();
+        put(&mut sshsig, b"git").unwrap();
+        assert_eq!(purpose(&sshsig), "a git signature");
+
+        let mut login = Vec::new();
+        put(&mut login, &[9; 32]).unwrap();
+        login.push(50);
+        put(&mut login, b"git").unwrap();
+        put(&mut login, b"ssh-connection").unwrap();
+        assert_eq!(purpose(&login), "an SSH login as git");
+
+        // A caller's string with spaces or control characters cannot reword the prompt
+        let mut forged = b"SSHSIG".to_vec();
+        put(&mut forged, b"git signature, approve\n").unwrap();
+        assert_eq!(purpose(&forged), "a signature");
+        assert_eq!(purpose(b"anything"), "unrecognised data");
     }
 
     #[test]
