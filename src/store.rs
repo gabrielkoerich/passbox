@@ -99,6 +99,14 @@ impl Store {
     pub fn socket_path(&self) -> PathBuf {
         self.dir.join("broker.sock")
     }
+    /// Where `SSH_AUTH_SOCK` points
+    pub fn ssh_agent_path(&self) -> PathBuf {
+        self.dir.join("ssh-agent.sock")
+    }
+    /// The public half of every SSH key in the store, so listing them needs no prompt
+    pub fn ssh_keys_path(&self) -> PathBuf {
+        self.dir.join("ssh-keys.pub")
+    }
     /// Installed plugins, one directory each. Local and machine specific, so sync skips it
     pub fn plugins_dir(&self) -> PathBuf {
         self.dir.join("plugins")
