@@ -502,14 +502,15 @@ fn prompt_agent(chain: &str) -> String {
     "passbox".to_string()
 }
 
-/// ssh is always the peer on the agent socket, so a program that ran it, such as git, names it
+/// The peer names the request, except that ssh gives way to a program that ran it, such as git
 #[cfg(feature = "host")]
 fn ssh_requester(chain: &str) -> String {
     let mut names = programs(chain);
-    let peer = names.next().filter(|n| !n.is_empty() && *n != "unknown");
-    match (peer, names.next()) {
-        (_, Some(parent)) if !parent.is_empty() && !SHELLS.contains(&parent) => parent.to_string(),
-        (Some(peer), _) => peer.to_string(),
+    match (names.next(), names.next()) {
+        (Some("ssh"), Some(parent)) if !parent.is_empty() && !SHELLS.contains(&parent) => {
+            parent.to_string()
+        }
+        (Some(peer), _) if !peer.is_empty() && peer != "unknown" => peer.to_string(),
         _ => "ssh".to_string(),
     }
 }
@@ -1233,6 +1234,8 @@ mod tests {
         assert_eq!(ssh_requester("/usr/bin/ssh < -zsh < login"), "ssh");
         assert_eq!(ssh_requester("ssh"), "ssh");
         assert_eq!(ssh_requester("unknown"), "ssh");
+        // A peer that speaks the protocol itself is named, never hidden behind its parent
+        assert_eq!(ssh_requester("evil < node < zsh"), "evil");
     }
 
     #[test]
