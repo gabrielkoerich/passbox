@@ -38,6 +38,9 @@ secrecy = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10.9"
+signature = "2.2.0"
+# Ed25519 and P-256 only. RSA would pull in the `rsa` crate for a key type few still make
+ssh-key = { version = "0.6.7", default-features = false, features = ["std", "ed25519", "p256"] }
 toml = "0.9.8"
 zeroize = "1.9.0"
 

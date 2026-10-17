@@ -76,7 +76,7 @@ Per-agent allowlists are therefore not implemented. They need verifiable identit
 
 A single process serving a unix socket at 0600, a thread per connection. A prompt holds the broker's lock, so only one dialog is ever on screen and the next request that needs one waits for it, as long as it takes, with no timeout and no retry. Tokens sit behind a lock of their own, so a token read is answered while a prompt waits. No async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so there is no launchd plist and no install step.
 
-It holds the store key for 300 seconds of inactivity and then exits. Exiting is how the key is dropped. A live token holds its values only in the broker, so while one lives the broker drops just the key and stays up, and exits once the last token lapses. It also exits when the binary it was started as is replaced, as `brew upgrade` does, between requests, so launchd starts the new version. Rejected: a Homebrew `post_install` that restarts the LaunchAgent, which knows only that one install path. The cost is the same as any restart: live grants end.
+It holds the store key for 300 seconds of inactivity and then drops it, and keeps running. Rejected: exiting to drop the key, which it did before the SSH agent. `SSH_AUTH_SOCK` must always reach a live socket, or every `ssh` and `git` call fails until something starts the broker again. Cost: the key is cleared in place, which relies on the wiping allocator below, where exiting handed the memory back to the kernel. It exits when the binary it was started as is replaced, as `brew upgrade` does, between requests, so launchd starts the new version. Rejected: a Homebrew `post_install` that restarts the LaunchAgent, which knows only that one install path. The cost is the same as any restart: live grants end.
 
 Every read raises the prompt. A grant token is the only way to skip it: the broker holds the granted values in memory and releases them without asking again until the token lapses.
 
@@ -85,6 +85,16 @@ Rejected: per-secret modes and a per-agent approval window. An earlier version l
 While the broker holds the key it is the boundary, so it is hardened to hold it. It refuses a same-user debugger with `PT_DENY_ATTACH`, takes no core dump, and runs under a global allocator that wipes every freed block, so a decrypted secret does not linger in freed memory. The binary and the Enclave helper are signed with the hardened runtime, which needs no developer account. Root still gets past all of this.
 
 Cost: the broker holds the key in memory while it runs, so a grant can release its secrets without asking again. The hardening stops a reader running as the same user. Root still reaches the key.
+
+## The SSH agent
+
+The broker serves the `ssh-agent` protocol on a second socket, `ssh-agent.sock`, next to its own. A secret is an SSH key when its value is an unencrypted Ed25519 or P-256 OpenSSH private key, so there is no naming rule and no change to the secret format. Rejected: keys only under `ssh/`, a rule to remember for no gain.
+
+Listing keys does not prompt, because ssh lists before every connection. The public halves sit in the clear in `ssh-keys.pub`, which `add` writes and every unlock that reads values rewrites, so a removed key drops out and a synced one appears. Each line carries the key's own comment, never the secret's name. Cost: the comment and public key of every SSH key are readable without a prompt, and a key synced from another Mac is offered only after something on this one opens the store, such as `passbox ls`.
+
+Every signature prompts, naming the key by its comment and the program that ran ssh, such as git. The prompt opens the store, the broker finds the private key whose public half matches, signs, and audits the secret name with the decision `signed`. The list decides only what is offered; the store decides what signs. Grants and project manifests do not cover signatures yet.
+
+Rejected: `ssh-agent-lib`, which needs an async runtime the broker does not have. The protocol is two requests, listing and signing, and everything else fails. Rejected: RSA, which would pull in the `rsa` crate. Secure Enclave keys, which never leave the hardware but are P-256 only and do not sync, are a follow-up.
 
 ## Project manifests
 

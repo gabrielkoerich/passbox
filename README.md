@@ -71,6 +71,18 @@ curl -fsSLO https://github.com/gabrielkoerich/passbox/releases/latest/download/p
 open passbox.alfredworkflow
 ```
 
+### SSH keys
+
+The broker is also an SSH agent. Add a key as a secret, point `SSH_AUTH_SOCK` at the broker, and every signature asks for your fingerprint. The private key never leaves the broker.
+
+```bash
+passbox add ssh/github < ~/.ssh/id_ed25519
+export SSH_AUTH_SOCK=~/.passbox/ssh-agent.sock   # in ~/.zshrc
+ssh-add -L                                        # lists it, no prompt
+```
+
+Unencrypted Ed25519 and P-256 keys only. Remove a passphrase with `ssh-keygen -p -f KEY`, then delete the file once the key is in the store. The prompt names the key by its comment, and a key synced from another Mac is offered once `passbox ls` has run there. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
+
 ### Coming from pass
 
 ```bash
