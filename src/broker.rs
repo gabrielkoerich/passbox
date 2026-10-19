@@ -149,7 +149,8 @@ fn token_value(tokens: &Tokens, token: &str, name: &str) -> Option<String> {
 #[cfg(feature = "host")]
 struct Broker {
     store: Store,
-    key: Option<x25519::Identity>,
+    // Boxed, so dropping it frees a block the wiping allocator clears, where `take` would leave a copy
+    key: Option<Box<x25519::Identity>>,
     tokens: Tokens,
     key_at: u64,
     #[cfg(feature = "host")]
@@ -174,7 +175,7 @@ impl Broker {
         if store::now().saturating_sub(self.key_at) >= KEY_TTL_SECS {
             self.key = None;
         }
-        self.key.as_ref()
+        self.key.as_deref()
     }
 
     /// The Touch ID prompt is the approval, so a prompt and an unlock are the same act
@@ -209,7 +210,7 @@ impl Broker {
         {
             self.grants = project::load(&self.store, &key);
         }
-        self.key = Some(key);
+        self.key = Some(Box::new(key));
         self.key_at = store::now();
         Ok(())
     }
@@ -307,7 +308,41 @@ impl Broker {
         let key = self.key.clone().expect("just unlocked");
         self.audit(&key, &request.agent, "<list>", "approved", caller)?;
         let names = self.store.names(&key)?;
+        // A key synced from another Mac is offered once something here has opened the store
+        if let Err(e) =
+            crate::ssh::keys(&self.store, &key).and_then(|k| crate::ssh::refresh(&self.store, &k))
+        {
+            eprintln!("{} could not refresh the SSH keys: {e:#}", clock());
+        }
         Ok(names.join("\n"))
+    }
+
+    // Every signature prompts. The prompt names the key by its comment, since its secret name is
+    // inside the ciphertext the prompt opens, and the store decides which key signs, not the list
+    fn sign(
+        &mut self,
+        wanted: &ssh_key::PublicKey,
+        data: &[u8],
+        agent: &str,
+        caller: &str,
+    ) -> Result<ssh_key::Signature> {
+        let label = crate::ssh::label(wanted);
+        let slot = format!("ssh:{label}");
+        let purpose = crate::ssh::purpose(data);
+        self.ask(&format!("sign {purpose} with SSH key {label} for {agent}"))
+            .map_err(|e| self.refused(agent, &[&slot], e, caller))?;
+        let key = self.key.clone().expect("just unlocked");
+        let keys = crate::ssh::keys(&self.store, &key)?;
+        crate::ssh::refresh(&self.store, &keys)?;
+        let Some((name, private)) = keys
+            .iter()
+            .find(|(_, k)| k.public_key().key_data() == wanted.key_data())
+        else {
+            self.audit(&key, agent, &slot, "unknown", caller)?;
+            bail!("no SSH key in the store matches {label}");
+        };
+        self.audit(&key, agent, name, "signed", caller)?;
+        signature::Signer::try_sign(private, data).map_err(|e| anyhow!("could not sign: {e}"))
     }
 
     /* One approval covers a name or a whole namespace, and yields a token that opens exactly
@@ -441,23 +476,74 @@ too, so it is not gated behind the host feature. */
 pub const TAILNET_PORT: u16 = 8787;
 
 #[cfg(feature = "host")]
-/// The caller's process chain names the agent when none was given: the first ancestor that is
-/// not passbox and not a shell, such as claude or codex, or passbox when the chain has none
-fn prompt_agent(chain: &str) -> String {
-    const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "fish", "dash", "ksh"];
-    for comm in chain.split(" < ") {
-        let name = comm
-            .trim()
+const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "fish", "dash", "ksh"];
+
+/// The program names in a process chain, nearest first, without their paths or login dashes
+#[cfg(feature = "host")]
+fn programs(chain: &str) -> impl Iterator<Item = &str> {
+    chain.split(" < ").map(|comm| {
+        comm.trim()
             .rsplit('/')
             .next()
             .unwrap_or("")
-            .trim_start_matches('-');
+            .trim_start_matches('-')
+    })
+}
+
+#[cfg(feature = "host")]
+/// The caller's process chain names the agent when none was given: the first ancestor that is
+/// not passbox and not a shell, such as claude or codex, or passbox when the chain has none
+fn prompt_agent(chain: &str) -> String {
+    for name in programs(chain) {
         if name.is_empty() || name == "unknown" || name == "passbox" || SHELLS.contains(&name) {
             continue;
         }
         return name.to_string();
     }
     "passbox".to_string()
+}
+
+/// The peer names the request, except that ssh gives way to a program that ran it, such as git
+#[cfg(feature = "host")]
+fn ssh_requester(chain: &str) -> String {
+    let mut names = programs(chain);
+    match (names.next(), names.next()) {
+        (Some("ssh"), Some(parent)) if !parent.is_empty() && !SHELLS.contains(&parent) => {
+            parent.to_string()
+        }
+        (Some(peer), _) if !peer.is_empty() && peer != "unknown" => peer.to_string(),
+        _ => "ssh".to_string(),
+    }
+}
+
+/// One loop per connection, since ssh sends several requests on one, and only signing takes the lock
+#[cfg(feature = "host")]
+fn serve_ssh(listener: UnixListener, shared: std::sync::Arc<Shared>) {
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { continue };
+        let shared = std::sync::Arc::clone(&shared);
+        std::thread::spawn(move || {
+            let pid = peer_pid(&stream);
+            while let Ok(Some(request)) = crate::ssh::read_message(&mut stream) {
+                IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+                let offered = crate::ssh::offered(&shared.store);
+                let reply = crate::ssh::answer(&request, &offered, |key, data| {
+                    let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
+                    let agent = ssh_requester(&caller);
+                    shared
+                        .broker
+                        .lock()
+                        .expect("broker")
+                        .sign(key, data, &agent, &caller)
+                });
+                LAST_SEEN.store(store::now(), Ordering::Relaxed);
+                IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+                if crate::ssh::write_message(&mut stream, &reply).is_err() {
+                    break;
+                }
+            }
+        });
+    }
 }
 
 /// What every connection thread shares. The token map is reachable without the broker's lock
@@ -579,17 +665,25 @@ fn harden() {
     }
 }
 
+/// A socket only this user can reach, replacing one a previous broker left behind
+#[cfg(feature = "host")]
+fn bind_private(path: &std::path::Path) -> Result<UnixListener> {
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    let listener = UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    Ok(listener)
+}
+
 #[cfg(feature = "host")]
 pub fn serve(store: Store) -> Result<()> {
     #[cfg(target_os = "macos")]
     harden();
     let socket = store.socket_path();
-    if socket.exists() {
-        std::fs::remove_file(&socket)?;
-    }
     store::private_dir(&store.dir)?;
-    let listener = UnixListener::bind(&socket)?;
-    std::fs::set_permissions(&socket, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    let listener = bind_private(&socket)?;
+    let agent = bind_private(&store.ssh_agent_path())?;
 
     LAST_SEEN.store(store::now(), Ordering::Relaxed);
     let tokens = Tokens::default();
@@ -599,6 +693,8 @@ pub fn serve(store: Store) -> Result<()> {
         store,
     });
     watchdog(socket.clone(), shared.clone());
+    let for_agent = std::sync::Arc::clone(&shared);
+    std::thread::spawn(move || serve_ssh(agent, for_agent));
 
     /* Loopback, exposed to the tailnet by `tailscale serve`, rather than bound to the tailnet
     address directly. Measured 2026-09-27: macOS runs Tailscale as a network extension, and a
@@ -684,7 +780,7 @@ impl Binary {
     }
 }
 
-/// Exiting is how the key is dropped, which is blunter and surer than clearing it in place
+/// Drops the key when idle. Exits only for an upgrade or a deleted store, since ssh needs the socket
 #[cfg(feature = "host")]
 fn watchdog(socket: std::path::PathBuf, shared: std::sync::Arc<Shared>) {
     let binary = Binary::current();
@@ -722,42 +818,27 @@ fn watchdog(socket: std::path::PathBuf, shared: std::sync::Arc<Shared>) {
                     std::process::exit(1);
                 }
             };
-            if broker.sweep(idle) {
-                eprintln!(
-                    "{} idle {idle}s and no live token, exiting to drop the key",
-                    clock()
-                );
-                let _ = std::fs::remove_file(&socket);
-                std::process::exit(0);
-            }
+            broker.sweep(idle);
         }
     });
 }
 
 #[cfg(feature = "host")]
 impl Broker {
-    /* Called by the watchdog. A live token holds its values only here, so exiting would end a
-    grant early and the next read would prompt again. While one lives, only the key goes. */
-    fn sweep(&mut self, idle: u64) -> bool {
+    // Called by the watchdog. Tokens hold their values only here, so the broker keeps running and
+    // only the key goes, which also keeps `SSH_AUTH_SOCK` pointing at a live socket
+    fn sweep(&mut self, idle: u64) {
         if idle < KEY_TTL_SECS {
-            return false;
+            return;
         }
         let now = store::now();
-        let live = {
-            let mut tokens = self.tokens.lock().expect("tokens");
-            tokens.retain(|_, g| now < g.expires);
-            tokens.len()
-        };
-        if live == 0 {
-            return true;
-        }
+        self.tokens
+            .lock()
+            .expect("tokens")
+            .retain(|_, g| now < g.expires);
         if self.key.take().is_some() {
-            eprintln!(
-                "{} idle {idle}s, dropped the key, {live} live token(s) keep the broker up",
-                clock()
-            );
+            eprintln!("{} idle {idle}s, dropped the key", clock());
         }
-        false
     }
 }
 
@@ -1149,7 +1230,17 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_broker_outlives_a_live_token_and_drops_the_key() {
+    fn an_ssh_request_is_named_by_the_program_that_ran_ssh() {
+        assert_eq!(ssh_requester("ssh < git < zsh < login"), "git");
+        assert_eq!(ssh_requester("/usr/bin/ssh < -zsh < login"), "ssh");
+        assert_eq!(ssh_requester("ssh"), "ssh");
+        assert_eq!(ssh_requester("unknown"), "ssh");
+        // A peer that speaks the protocol itself is named, never hidden behind its parent
+        assert_eq!(ssh_requester("evil < node < zsh"), "evil");
+    }
+
+    #[test]
+    fn an_idle_broker_drops_the_key_and_keeps_live_tokens() {
         let tmp = tempfile::tempdir().unwrap();
         let mut broker = Broker::new(
             Store {
@@ -1157,7 +1248,7 @@ mod tests {
             },
             Tokens::default(),
         );
-        broker.key = Some(x25519::Identity::generate());
+        broker.key = Some(Box::new(x25519::Identity::generate()));
         broker.tokens.lock().unwrap().insert(
             "t".into(),
             TokenGrant {
@@ -1166,15 +1257,16 @@ mod tests {
             },
         );
 
-        assert!(!broker.sweep(KEY_TTL_SECS - 1));
+        broker.sweep(KEY_TTL_SECS - 1);
         assert!(broker.key.is_some());
 
-        assert!(!broker.sweep(KEY_TTL_SECS));
+        broker.sweep(KEY_TTL_SECS);
         assert!(broker.key.is_none());
         assert_eq!(broker.value_for_token("t", "a/b").as_deref(), Some("v"));
 
         broker.tokens.lock().unwrap().get_mut("t").unwrap().expires = store::now();
-        assert!(broker.sweep(KEY_TTL_SECS));
+        broker.sweep(KEY_TTL_SECS);
+        assert!(broker.tokens.lock().unwrap().is_empty());
     }
 
     #[test]

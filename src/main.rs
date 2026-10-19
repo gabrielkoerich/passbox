@@ -9,6 +9,8 @@ mod plugin;
 mod project;
 #[cfg(feature = "host")]
 mod se;
+#[cfg(feature = "host")]
+mod ssh;
 mod store;
 #[cfg(feature = "host")]
 mod sync;
@@ -941,6 +943,8 @@ fn add(store: &Store, name: &str, multiline: bool, fields: &[String]) -> Result<
     };
     store.put(&id, &secret, &recipient)?;
     eprintln!("stored {name}");
+    #[cfg(feature = "host")]
+    ssh::remember(store, &secret.value)?;
     Ok(())
 }
 

@@ -47,6 +47,8 @@ impl Cli {
         cmd.env("PASSBOX_SCRYPT_LOG_N", "10");
         // A test must never reach the developer's fingerprint, whatever else breaks
         cmd.env("PASSBOX_NO_ENCLAVE", "1");
+        // Nor the developer's git config, which may sign every commit through a password manager
+        cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
         // A CI runner has no git identity, and the store commits after a write
         for (key, value) in [
             ("GIT_AUTHOR_NAME", "passbox test"),
@@ -1412,6 +1414,103 @@ fn every_read_prompts() {
         bound.prompts(),
         ["release the password for demo/one to test-agent"; 2]
     );
+}
+
+/// Runs an OpenSSH tool against the broker's agent socket, and never the developer's own agent
+fn with_agent(bound: &Bound, program: &str, args: &[&str]) -> std::process::Output {
+    Command::new(program)
+        .args(args)
+        .env("SSH_AUTH_SOCK", bound.cli.dir.path().join("ssh-agent.sock"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn the_ssh_agent_offers_a_stored_key_and_every_signature_prompts() {
+    for kind in ["ed25519", "ecdsa"] {
+        agent_round_trip(kind);
+    }
+}
+
+fn agent_round_trip(kind: &str) {
+    let bound = Bound::new();
+    let keys = tempfile::tempdir().unwrap();
+    let path = keys.path().join("id");
+    let made = Command::new("ssh-keygen")
+        .args(["-q", "-t", kind, "-N", "", "-C", "test@passbox.dev", "-f"])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let private = std::fs::read_to_string(&path).unwrap();
+    bound.run(&["add", "ssh/test"], Some(&private)).unwrap();
+    // Starts the broker, which serves the agent socket beside its own
+    bound.run(&["ls"], None).unwrap();
+    bound.forget_prompts();
+
+    let listed = with_agent(&bound, "ssh-add", &["-L"]);
+    let public = std::fs::read_to_string(path.with_extension("pub")).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout).trim(),
+        public.trim()
+    );
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+
+    let pubkey = path.with_extension("pub");
+    let sign = |message: &Path| {
+        std::fs::write(message, "signed through passbox").unwrap();
+        with_agent(
+            &bound,
+            "ssh-keygen",
+            &[
+                "-Y",
+                "sign",
+                "-n",
+                "test",
+                "-f",
+                pubkey.to_str().unwrap(),
+                message.to_str().unwrap(),
+            ],
+        )
+    };
+    let message = keys.path().join("message");
+    for target in [&message, &keys.path().join("again")] {
+        let signed = sign(target);
+        assert!(
+            signed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+    }
+    let prompts = bound.prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(
+        prompts[0].starts_with("sign a test signature with SSH key test@passbox.dev for "),
+        "{prompts:?}"
+    );
+
+    let checked = Command::new("ssh-keygen")
+        .args(["-Y", "check-novalidate", "-n", "test", "-s"])
+        .arg(message.with_extension("sig"))
+        .stdin(std::fs::File::open(&message).unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+
+    bound.deny("all");
+    assert!(!sign(&keys.path().join("refused")).status.success());
+    let log = bound.audit();
+    assert!(decided(&log, "ssh/test", "signed"), "{log}");
+    assert!(decided(&log, "ssh:test@passbox.dev", "denied"), "{log}");
 }
 
 #[test]
