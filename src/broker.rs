@@ -25,6 +25,9 @@ const KEY_TTL_SECS: u64 = 300;
 a token becomes a password that never lapses, which is the thing this exists to avoid. */
 #[cfg(feature = "host")]
 const MAX_GRANT_SECS: u64 = 86_400;
+// A child mints with no prompt, so a holder could otherwise fill the broker's memory with them
+#[cfg(feature = "host")]
+const MAX_CHILDREN: usize = 64;
 #[cfg(feature = "host")]
 static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
 /// Connections being answered, token reads included, so an upgrade restart never cuts one off
@@ -69,11 +72,93 @@ fn token_lookup(
         .flatten()
 }
 
-/// What one token opens: the values it was granted, and when it stops working
+/// What one token opens: the values it was granted, when it stops working, and the approval behind it
 #[cfg(feature = "host")]
 struct TokenGrant {
     values: HashMap<String, String>,
     expires: u64,
+    // Shared by a grant and every child of it, so each read traces back to the one fingerprint
+    grant: String,
+}
+
+/* A child narrows its parent by name and never outlives it, so minting one needs no prompt. An
+unset ttl takes the parent's expiry, since workers restart and re-read all day. Anything wider
+than the parent is None, and the caller falls back to a grant that prompts */
+#[cfg(feature = "host")]
+fn delegate(
+    tokens: &HashMap<String, TokenGrant>,
+    parent: &str,
+    names: &[String],
+    ttl: u64,
+    now: u64,
+) -> Option<Result<TokenGrant>> {
+    let parent = tokens.get(parent).filter(|p| now < p.expires)?;
+    let expires = if ttl == 0 {
+        parent.expires
+    } else {
+        now.saturating_add(ttl)
+    };
+    if names.is_empty() || expires > parent.expires {
+        return None;
+    }
+
+    let mut values = HashMap::new();
+    for name in names {
+        values.insert(name.clone(), parent.values.get(name)?.clone());
+    }
+    // The count takes in the root grant itself, which is live while any child is
+    let live = tokens
+        .values()
+        .filter(|g| g.grant == parent.grant && now < g.expires)
+        .count();
+    if live > MAX_CHILDREN {
+        return Some(Err(anyhow!(
+            "this grant already has {MAX_CHILDREN} live child tokens, wait for one to lapse"
+        )));
+    }
+
+    Some(Ok(TokenGrant {
+        values,
+        expires,
+        grant: parent.grant.clone(),
+    }))
+}
+
+/// Mints a child under the token lock alone, so it never waits behind a prompt
+#[cfg(feature = "host")]
+fn mint_child(shared: &Shared, request: &Request, caller: &str) -> Option<Result<String>> {
+    let now = store::now();
+    let mut tokens = shared.tokens.lock().expect("tokens");
+    tokens.retain(|_, g| now < g.expires);
+    let child = match delegate(&tokens, &request.token, &request.names, request.ttl, now)? {
+        Ok(child) => child,
+        Err(e) => return Some(Err(e)),
+    };
+    let token = store::new_id() + &store::new_id();
+    let mut granted: Vec<String> = child.values.keys().cloned().collect();
+    granted.sort();
+    let grant = child.grant.clone();
+    tokens.insert(token.clone(), child);
+    drop(tokens);
+
+    for name in &granted {
+        let to = match shared.store.recipient() {
+            Ok(to) => to,
+            Err(e) => return Some(Err(e)),
+        };
+        if let Err(e) = append_audit_to(
+            &shared.store,
+            &to,
+            &request.agent,
+            name,
+            "delegated",
+            caller,
+            &grant,
+        ) {
+            return Some(Err(e));
+        }
+    }
+    Some(Ok(format!("{token}\n{}", granted.join("\n"))))
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -129,6 +214,9 @@ struct AuditRecord<'a> {
     secret: &'a str,
     decision: &'a str,
     caller: &'a str,
+    /// The approval a token read or a child came from, absent for everything else
+    #[serde(skip_serializing_if = "str::is_empty")]
+    grant: &'a str,
 }
 
 /* Tokens, held past the store key's life. The key opens everything and so is dropped quickly,
@@ -137,13 +225,14 @@ lock, so a token read is answered while a prompt holds the broker. */
 #[cfg(feature = "host")]
 type Tokens = std::sync::Arc<std::sync::Mutex<HashMap<String, TokenGrant>>>;
 
-/// A token answers only for what it was granted, and only until it expires
+/// A token answers only for what it was granted, and only until it expires. The grant id comes too
 #[cfg(feature = "host")]
-fn token_value(tokens: &Tokens, token: &str, name: &str) -> Option<String> {
+fn token_value(tokens: &Tokens, token: &str, name: &str) -> Option<(String, String)> {
     let now = store::now();
     let mut tokens = tokens.lock().expect("tokens");
     tokens.retain(|_, g| now < g.expires);
-    token_lookup(&tokens, token, name, now)
+    let value = token_lookup(&tokens, token, name, now)?;
+    Some((value, tokens[token].grant.clone()))
 }
 
 #[cfg(feature = "host")]
@@ -387,21 +476,32 @@ impl Broker {
         }
 
         let token = store::new_id() + &store::new_id();
+        let grant = store::new_id();
         let granted: Vec<String> = values.keys().cloned().collect();
         self.tokens.lock().expect("tokens").insert(
             token.clone(),
             TokenGrant {
                 values,
                 expires: store::now() + ttl,
+                grant: grant.clone(),
             },
         );
         for name in &granted {
-            self.audit(&key, &request.agent, name, "granted", caller)?;
+            let to = key.to_public();
+            append_audit_to(
+                &self.store,
+                &to,
+                &request.agent,
+                name,
+                "granted",
+                caller,
+                &grant,
+            )?;
         }
         Ok(format!("{token}\n{}", granted.join("\n")))
     }
 
-    fn value_for_token(&self, token: &str, name: &str) -> Option<String> {
+    fn value_for_token(&self, token: &str, name: &str) -> Option<(String, String)> {
         token_value(&self.tokens, token, name)
     }
 
@@ -413,9 +513,18 @@ impl Broker {
     ) -> Result<String> {
         // A token is the narrowest thing that can answer, so it is tried first
         if !request.token.is_empty()
-            && let Some(value) = self.value_for_token(&request.token, &request.name)
+            && let Some((value, grant)) = self.value_for_token(&request.token, &request.name)
         {
-            self.audit_by(&request.agent, &request.name, "by token", caller)?;
+            let to = self.store.recipient()?;
+            append_audit_to(
+                &self.store,
+                &to,
+                &request.agent,
+                &request.name,
+                "by token",
+                caller,
+                &grant,
+            )?;
             return Ok(value);
         }
 
@@ -466,7 +575,7 @@ impl Broker {
         decision: &str,
         caller: &str,
     ) -> Result<()> {
-        append_audit_to(&self.store, to, agent, secret, decision, caller)
+        append_audit_to(&self.store, to, agent, secret, decision, caller, "")
     }
 }
 
@@ -596,20 +705,31 @@ fn reply<S: std::io::Read + Write>(
             if !local {
                 request.agent = remote_agent(&request.agent, caller);
             }
-            // A token read needs no key and no prompt, so it never waits behind one
+            // A token read or a child grant needs no key and no prompt, so it never waits behind one
             let by_token = (request.op == Op::Get && !request.token.is_empty())
                 .then(|| token_value(&shared.tokens, &request.token, &request.name))
                 .flatten();
-            let answer = match by_token {
-                Some(value) => append_audit(
-                    &shared.store,
-                    &request.agent,
-                    &request.name,
-                    "by token",
-                    caller,
-                )
-                .map(|()| value),
-                None => shared
+            let child = (request.op == Op::Grant && !request.token.is_empty())
+                .then(|| mint_child(shared, &request, caller))
+                .flatten();
+            let answer = match (by_token, child) {
+                (Some((value, grant)), _) => shared
+                    .store
+                    .recipient()
+                    .and_then(|to| {
+                        append_audit_to(
+                            &shared.store,
+                            &to,
+                            &request.agent,
+                            &request.name,
+                            "by token",
+                            caller,
+                            &grant,
+                        )
+                    })
+                    .map(|()| value),
+                (None, Some(answer)) => answer,
+                (None, None) => shared
                     .broker
                     .lock()
                     .expect("broker")
@@ -959,7 +1079,15 @@ pub(crate) fn append_audit(
     decision: &str,
     caller: &str,
 ) -> Result<()> {
-    append_audit_to(store, &store.recipient()?, agent, secret, decision, caller)
+    append_audit_to(
+        store,
+        &store.recipient()?,
+        agent,
+        secret,
+        decision,
+        caller,
+        "",
+    )
 }
 
 fn append_audit_to(
@@ -969,6 +1097,7 @@ fn append_audit_to(
     secret: &str,
     decision: &str,
     caller: &str,
+    grant: &str,
 ) -> Result<()> {
     let record = AuditRecord {
         at: crate::store::now(),
@@ -976,6 +1105,7 @@ fn append_audit_to(
         secret,
         decision,
         caller,
+        grant,
     };
     let line = crate::crypto::encrypt_line(&serde_json::to_vec(&record)?, to)?;
     let mut file = std::fs::OpenOptions::new()
@@ -1059,7 +1189,7 @@ pub fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<S
             name: String::new(),
             agent: agent.to_string(),
             op: Op::Grant,
-            token: String::new(),
+            token: crate::held_token().unwrap_or_default().to_string(),
             ttl,
             names: names.to_vec(),
             action: String::new(),
@@ -1290,6 +1420,7 @@ mod tests {
             TokenGrant {
                 values: HashMap::from([("a/b".into(), "v".into())]),
                 expires: store::now() + 43_200,
+                grant: "g".into(),
             },
         );
 
@@ -1298,7 +1429,10 @@ mod tests {
 
         broker.sweep(KEY_TTL_SECS);
         assert!(broker.key.is_none());
-        assert_eq!(broker.value_for_token("t", "a/b").as_deref(), Some("v"));
+        assert_eq!(
+            broker.value_for_token("t", "a/b"),
+            Some(("v".into(), "g".into()))
+        );
 
         broker.tokens.lock().unwrap().get_mut("t").unwrap().expires = store::now();
         broker.sweep(KEY_TTL_SECS);
@@ -1326,6 +1460,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             expires,
+            grant: "root".into(),
         }
     }
 
@@ -1396,6 +1531,91 @@ mod tests {
         tokens.insert("tok".to_string(), grant_of(&[("acme/pk", "v")], 2_000));
         assert!(token_lookup(&tokens, "tok", "acme/pk", 2_000).is_none());
         assert!(token_lookup(&tokens, "tok", "acme/pk", 9_999).is_none());
+    }
+
+    #[test]
+    fn a_child_opens_a_subset_of_its_parent_and_never_outlives_it() {
+        let mut tokens = HashMap::new();
+        let parent = grant_of(&[("w/a", "1"), ("w/b", "2")], 2_000);
+        tokens.insert("parent".to_string(), parent);
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mint = |tokens: &HashMap<String, TokenGrant>, from: &str, n: &[&str], ttl, now| {
+            delegate(tokens, from, &names(n), ttl, now).map(|r| r.unwrap())
+        };
+
+        let child = mint(&tokens, "parent", &["w/a"], 0, 1_000).unwrap();
+        assert_eq!(child.expires, 2_000);
+        assert_eq!(child.grant, "root");
+        assert_eq!(child.values.keys().collect::<Vec<_>>(), ["w/a"]);
+        assert_eq!(
+            mint(&tokens, "parent", &["w/a"], 500, 1_000)
+                .unwrap()
+                .expires,
+            1_500
+        );
+        assert_eq!(
+            mint(&tokens, "parent", &["w/a"], 1_000, 1_000)
+                .unwrap()
+                .expires,
+            2_000
+        );
+        let twice = mint(&tokens, "parent", &["w/a", "w/a"], 0, 1_000).unwrap();
+        assert_eq!(twice.values.len(), 1);
+
+        // A name the parent lacks, a later expiry, a lapsed parent or no parent at all prompts
+        assert!(mint(&tokens, "parent", &["w/a", "w/c"], 0, 1_000).is_none());
+        assert!(mint(&tokens, "parent", &["w/a"], 1_001, 1_000).is_none());
+        assert!(mint(&tokens, "parent", &["w/a"], u64::MAX, 1_000).is_none());
+        assert!(mint(&tokens, "parent", &["w/a"], 0, 2_000).is_none());
+        assert!(mint(&tokens, "guessed", &["w/a"], 0, 1_000).is_none());
+        assert!(mint(&tokens, "", &["w/a"], 0, 1_000).is_none());
+        assert!(mint(&tokens, "parent", &[], 0, 1_000).is_none());
+
+        // A child of a child still ends with the first parent
+        tokens.insert("child".to_string(), child);
+        let grandchild = mint(&tokens, "child", &["w/a"], 0, 1_500).unwrap();
+        assert_eq!(grandchild.expires, 2_000);
+        assert!(mint(&tokens, "child", &["w/a"], 600, 1_500).is_none());
+        assert!(mint(&tokens, "child", &["w/b"], 0, 1_500).is_none());
+    }
+
+    #[test]
+    fn a_grant_mints_at_most_its_cap_of_live_children() {
+        let mut tokens = HashMap::new();
+        tokens.insert("root".to_string(), grant_of(&[("w/a", "1")], 2_000));
+        let names = vec!["w/a".to_string()];
+        for i in 0..MAX_CHILDREN {
+            let child = delegate(&tokens, "root", &names, 0, 1_000)
+                .unwrap()
+                .unwrap();
+            tokens.insert(format!("c{i}"), child);
+        }
+
+        // A child minting its own child counts against the same root
+        let err = delegate(&tokens, "c0", &names, 0, 1_000)
+            .unwrap()
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("64 live child tokens"), "{err}");
+        assert!(
+            delegate(&tokens, "root", &names, 0, 1_000)
+                .unwrap()
+                .is_err()
+        );
+
+        // A lapsed child frees its place
+        tokens.get_mut("c1").unwrap().expires = 1_000;
+        assert!(delegate(&tokens, "root", &names, 0, 1_000).unwrap().is_ok());
+
+        // Another grant has its own count
+        let mut other = grant_of(&[("w/a", "1")], 2_000);
+        other.grant = "other".into();
+        tokens.insert("other".to_string(), other);
+        assert!(
+            delegate(&tokens, "other", &names, 0, 1_000)
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]

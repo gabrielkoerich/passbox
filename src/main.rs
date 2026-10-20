@@ -117,9 +117,34 @@ unsafe extern "C" {
     static environ: *mut *mut libc::c_char;
 }
 
-/// The token this process was started with, held outside the environment
+static STDIN_TOKEN: std::sync::OnceLock<zeroize::Zeroizing<String>> = std::sync::OnceLock::new();
+
+/// The token this process was started with, held outside the environment. `--token-stdin` wins
 pub fn held_token() -> Option<&'static str> {
+    if let Some(token) = STDIN_TOKEN.get() {
+        return Some(token.as_str());
+    }
+
     HELD.get()?.token.as_deref().map(String::as_str)
+}
+
+// One line, a byte at a time, so a buffer cannot take input the exec child should get
+fn take_stdin_token() -> Result<()> {
+    use std::os::unix::io::FromRawFd;
+    // SAFETY: fd 0 stays open, ManuallyDrop keeps this File from closing it
+    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut token = zeroize::Zeroizing::new(String::new());
+    let mut byte = [0u8; 1];
+    while stdin.read(&mut byte)? == 1 && byte[0] != b'\n' {
+        token.push(byte[0] as char);
+    }
+    let token = zeroize::Zeroizing::new(token.trim().to_string());
+    if token.is_empty() {
+        bail!("--token-stdin read no token");
+    }
+
+    let _ = STDIN_TOKEN.set(token);
+    Ok(())
 }
 
 fn held_passphrase() -> Option<&'static str> {
@@ -176,9 +201,12 @@ enum Command {
         /// Secret names, such as `acme/api-key acme/signing-key`. A namespace is refused
         #[arg(required = true)]
         names: Vec<String>,
-        /// Seconds the token stays valid, capped at 24 hours
-        #[arg(long, default_value_t = 3600)]
-        r#for: u64,
+        /// Seconds the token stays valid, capped at 24 hours. Default an hour, or the parent's life
+        #[arg(long)]
+        r#for: Option<u64>,
+        /// Read a parent token from stdin. A subset of its names, ending no later, mints with no prompt
+        #[arg(long)]
+        token_stdin: bool,
     },
     /// List secret names
     Ls,
@@ -208,6 +236,9 @@ enum Command {
         /// Secret to pipe to the child on stdin
         #[arg(long)]
         stdin: Option<String>,
+        /// Read a token from the first line of stdin, so it is never in an environment
+        #[arg(long)]
+        token_stdin: bool,
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
@@ -301,7 +332,16 @@ fn run() -> Result<()> {
             reveal,
         } => get(&store, &name, field.as_deref(), reveal),
         Command::Copy { name, field, clear } => copy(&store, &name, field.as_deref(), clear),
-        Command::Grant { names, r#for } => grant(&store, &names, r#for),
+        Command::Grant {
+            names,
+            r#for,
+            token_stdin,
+        } => {
+            if token_stdin {
+                take_stdin_token()?;
+            }
+            grant(&store, &names, r#for)
+        }
         Command::Ls => ls(&store),
         Command::Rm { name } => rm(&store, &name).inspect(|()| written(&store, "remove a secret")),
         Command::Restore { name, index } => restore(&store, &name, index)
@@ -314,8 +354,14 @@ fn run() -> Result<()> {
         Command::Exec {
             envs,
             stdin,
+            token_stdin,
             command,
-        } => exec(&store, &envs, stdin.as_deref(), &command),
+        } => {
+            if token_stdin {
+                take_stdin_token()?;
+            }
+            exec(&store, &envs, stdin.as_deref(), &command)
+        }
         #[cfg(feature = "host")]
         Command::Audit { tail } => audit(&store, tail),
         #[cfg(feature = "host")]
@@ -1359,12 +1405,14 @@ pub fn run_child(
 /// A tree for a terminal, one name per line for anything reading the output
 /* The token goes to stdout and the rest to stderr, so `TOKEN=$(passbox grant acme/api-key)` picks up
 the token alone while a person still sees what it covers. */
-fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
+fn grant(store: &Store, names: &[String], ttl: Option<u64>) -> Result<()> {
     // A token lives in the broker, local or a configured host, and a passphrase store has none
     if !brokered(store) {
         bail!("a token needs the broker, which this store does not use");
     }
 
+    // Zero asks for the parent's expiry, when a held token makes this a child
+    let ttl = ttl.unwrap_or(if held_token().is_some() { 0 } else { 3600 });
     let answer = broker::grant(store, names, &agent(), ttl)?;
     let mut lines = answer.lines();
     let token = lines.next().context("the broker returned no token")?;
@@ -1372,7 +1420,10 @@ fn grant(store: &Store, names: &[String], ttl: u64) -> Result<()> {
 
     // The token goes to stdout only, since stderr lands in scrollback, CI logs and transcripts
     println!("{token}");
-    eprintln!("opens {} secret(s) for {ttl}s:", covered.len());
+    match ttl {
+        0 => eprintln!("opens {} secret(s):", covered.len()),
+        _ => eprintln!("opens {} secret(s) for {ttl}s:", covered.len()),
+    }
     for name in &covered {
         eprintln!("  {name}");
     }
