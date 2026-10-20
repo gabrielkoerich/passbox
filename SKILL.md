@@ -139,12 +139,14 @@ Three things have to be true on the Mac, and each fails silently in its own way:
 **Expose it with `tailscale serve`, not by binding the tailnet address.** macOS runs Tailscale as a network extension; a socket bound to the 100.x address accepts the connection and then fails the first read with `ENOTCONN`.
 
 ```bash
-tailscale serve --bg --tcp 8787 tcp://127.0.0.1:8787
+tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787
 ```
+
+`--proxy-protocol 1` is required. It tells the broker which tailnet host connected, so the prompt names it. Without it the broker refuses every remote request.
 
 In a container, give tailscaled a real `/dev/net/tun`. Userspace networking reaches the tailnet only through a SOCKS proxy, so `connect()` to a 100.x address times out with no hint why.
 
-The caller is not identified: traffic through `serve` has a loopback peer, so `whois` resolves nothing and the prompt says `an unidentified tailnet peer`.
+The prompt names the host from `tailscale whois`, such as `claude on legion (100.90.49.41)`. The agent part is still whatever the client sets in `PASSBOX_AGENT`.
 
 ## Gotchas
 
