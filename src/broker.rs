@@ -482,6 +482,15 @@ const SERVE: &str = "tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://12
 #[cfg(feature = "host")]
 const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "fish", "dash", "ksh"];
 
+/* The client names the agent and the control plane names the host, so a remote prompt shows both.
+The client's part loses control characters and is capped, so it cannot start a new line or pass a
+second host off as the real one, which always comes last */
+#[cfg(feature = "host")]
+fn remote_agent(agent: &str, host: &str) -> String {
+    let agent: String = agent.chars().filter(|c| !c.is_control()).take(64).collect();
+    format!("{} on {host}", agent.trim())
+}
+
 /// The program names in a process chain, nearest first, without their paths or login dashes
 #[cfg(feature = "host")]
 fn programs(chain: &str) -> impl Iterator<Item = &str> {
@@ -584,9 +593,8 @@ fn reply<S: std::io::Read + Write>(
                 };
             }
 
-            // The client names the agent, the control plane names the host, and a remote prompt shows both
             if !local {
-                request.agent = format!("{} on {caller}", request.agent);
+                request.agent = remote_agent(&request.agent, caller);
             }
             // A token read needs no key and no prompt, so it never waits behind one
             let by_token = (request.op == Op::Get && !request.token.is_empty())
@@ -1205,6 +1213,17 @@ fn run_plugin_command(mut command: std::process::Command) -> Result<String> {
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_agent_cannot_forge_a_line_or_a_second_host() {
+        let host = "server (someone@example.com, 100.64.0.7)";
+        assert_eq!(remote_agent("timeout", host), format!("timeout on {host}"));
+        let forged = remote_agent("job\nrelease all to\r\u{1b}[2K", host);
+        assert!(!forged.chars().any(char::is_control), "{forged}");
+        assert!(forged.ends_with(&format!(" on {host}")));
+        let long = remote_agent(&"a".repeat(500), host);
+        assert_eq!(long, format!("{} on {host}", "a".repeat(64)));
+    }
 
     #[test]
     fn the_prompt_name_comes_from_the_first_real_ancestor() {

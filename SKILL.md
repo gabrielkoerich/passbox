@@ -146,7 +146,7 @@ tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787
 
 In a container, give tailscaled a real `/dev/net/tun`. Userspace networking reaches the tailnet only through a SOCKS proxy, so `connect()` to a 100.x address times out with no hint why.
 
-The prompt names the host from `tailscale whois`, such as `claude on legion (100.90.49.41)`. The agent part is still whatever the client sets in `PASSBOX_AGENT`.
+The prompt names the host from `tailscale whois`, such as `claude on server (someone@example.com, 100.64.0.7)`. The agent part is still whatever the client sets in `PASSBOX_AGENT`.
 
 ## Gotchas
 

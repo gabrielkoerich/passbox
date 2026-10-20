@@ -546,7 +546,7 @@ The broker binds `127.0.0.1:8787` and Tailscale forwards to it. Binding the 100.
 
 Cost: loopback has none of the unix socket's `0600` protection, so any local user can reach that port. It is the only inbound path macOS actually delivers.
 
-`--proxy-protocol 1` makes Tailscale open each connection with the node's tailnet address, since through `serve` the broker only ever sees `127.0.0.1`. The broker resolves that address with `tailscale whois`, so the prompt and the audit log name the host, as in `claude on legion (100.90.49.41)`. The name comes from the control plane, not from the client. The broker refuses a connection without the header, because a client could otherwise send its own and claim any host. Set `PASSBOX_AGENT` on the client to name the job as well, such as an orch job id.
+`--proxy-protocol 1` makes Tailscale open each connection with the node's tailnet address, since through `serve` the broker only ever sees `127.0.0.1`. The broker resolves that address with `tailscale whois`, so the prompt and the audit log name the host, as in `claude on server (someone@example.com, 100.64.0.7)`. The name comes from the control plane, not from the client. The broker refuses a connection without the header, because a client could otherwise send its own and claim any host. Set `PASSBOX_AGENT` on the client to name the job as well, such as an orch job id.
 
 Cost: a local user who connects to the loopback port directly can write a header that names another tailnet host. It does not get past the prompt, but the prompt can then name the wrong host.
 
