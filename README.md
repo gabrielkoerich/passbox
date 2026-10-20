@@ -249,7 +249,7 @@ First-party plugins:
 |---|---|---|
 | `mail` | Mail.app, nothing to install | `recent`, `search`, `attachments`, `send` |
 | `calendar` | the `icalBuddy` CLI | `today`, `agenda` |
-| `things3` | the `things` CLI | `add`, `inbox`, `today`, `search` |
+| `things3` | the `things` CLI | `add`, `inbox`, `today`, `search`, and for jobs that parse JSON `today_json`, `inbox_json`, `search_json`, `upcoming`, `logbook`, `completed`, plus `all` and `trash` |
 | `git` | git | `push` |
 | `gh` | the `gh` CLI | `pr`, `issue` |
 
