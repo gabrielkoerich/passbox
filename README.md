@@ -378,11 +378,14 @@ A wrap only helps where the copy reaches. A USB stick in the same bag as the Mac
 
 A passphrase wrap is the one file in a synced copy worth attacking. A YubiKey wrap has nothing to grind, because the private half stays in the token.
 
-`passbox sync --enable` does the whole setup, so the commands below are only for adding a token to a store that already syncs.
+`passbox sync --enable` does the whole setup. One token is one way back, so add a second as a backup. A YubiKey cannot be copied, so the backup is a second token with its own identity, added to the same wrap. Plug it in and run:
 
 ```bash
-passbox yubikey-add age1yubikey1...    # the recipient from --list
+passbox yubikey-add                    # the plugged token the store does not hold yet
+passbox yubikey-add age1yubikey1...    # or name the recipient from --list
 ```
+
+With no recipient, passbox lists every plugged token and drops the ones the store already holds. A token with no identity gets the same setup as `sync --enable`, but only when no plugged token has one, so unplug the old token first. If several new tokens are plugged in, it shows each serial and asks. It then offers to check the new token by opening the wrap with that token alone.
 
 passbox uses the **PIV** applet. OpenPGP keys live in a separate applet on the same chip and are never touched. Before provisioning a slot it reads what PIV already holds and shows you, using `ykman` when it is installed.
 

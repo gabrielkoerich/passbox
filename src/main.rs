@@ -225,8 +225,8 @@ enum Command {
     #[cfg(feature = "host")]
     /// Wrap the store key to a YubiKey, so a backup needs the token rather than a passphrase
     YubikeyAdd {
-        /// The `age1yubikey1...` recipient from `age-plugin-yubikey --list`
-        recipient: String,
+        /// The `age1yubikey1...` recipient, or none to use the plugged token and set it up if needed
+        recipient: Option<String>,
     },
     /// Run a command with secrets injected, so the value never reaches the caller
     Exec {
@@ -349,7 +349,7 @@ fn run() -> Result<()> {
         #[cfg(feature = "host")]
         Command::MachineAdd => machine_add(&store),
         #[cfg(feature = "host")]
-        Command::YubikeyAdd { recipient } => yubikey_add(&store, &recipient)
+        Command::YubikeyAdd { recipient } => yubikey_add(&store, recipient.as_deref())
             .inspect(|()| written(&store, "wrap the store key to a YubiKey")),
         Command::Exec {
             envs,
@@ -820,45 +820,64 @@ fn prompt(label: &str) -> Result<String> {
 
 #[cfg(feature = "host")]
 fn enable_with_yubikey(store: &Store) -> Result<()> {
-    yubikey::offer_install()?;
-
-    let mut found = yubikey::recipients()?;
-    if found.is_empty() {
-        eprintln!("No age identity on the token yet. Generating one uses a PIV slot.");
-        match yubikey::piv_slots_in_use() {
-            Some(slots) if !slots.is_empty() => {
-                eprintln!("The PIV applet already holds:");
-                for slot in &slots {
-                    eprintln!("  {slot}");
-                }
-                eprintln!("A free slot is used, and your OpenPGP keys are a separate applet.");
-            }
-            Some(_) => eprintln!("The PIV applet is empty, and OpenPGP is a separate applet."),
-            None => eprintln!("Could not read the PIV applet. Install ykman to check it first."),
-        }
-        // Fail here rather than after the plugin has asked for a PIN it cannot use
-        yubikey::management_key_is_supported()?;
-        eprint!("Generate one now? [y/N] ");
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
-            bail!("run `age-plugin-yubikey --generate` when ready, then try again");
-        }
-        yubikey::offer_to_stop_scdaemon()?;
-        yubikey::generate()?;
-        found = yubikey::recipients()?;
-    }
-
-    let recipient = found
-        .first()
-        .context("no YubiKey recipient found, is the token plugged in?")?;
-    eprintln!("using {recipient}");
-
+    let recipient = new_token(store)?;
     let key = unlock(store, "turn on sync with a YubiKey")?;
-    let total = store.add_yubikey_recipient(&key, recipient)?;
+    let total = store.add_yubikey_recipient(&key, &recipient)?;
     eprintln!("sync is on, and the copy is useless without one of those {total} token(s)");
     eprintln!("add a second with `passbox yubikey-add`, or losing it loses the way back");
     Ok(())
+}
+
+/**
+ * The plugged token the store does not hold yet. Setup runs only when no plugged token has an
+ * identity, since generating on a token already added spends a slot and backs up nothing
+ **/
+#[cfg(feature = "host")]
+fn new_token(store: &Store) -> Result<String> {
+    yubikey::offer_install()?;
+    let stored = store.yubikey_recipients();
+
+    let plugged = yubikey::recipients()?;
+    let found = if plugged.is_empty() {
+        set_up_token()?;
+        yubikey::recipients()?
+    } else {
+        plugged
+    };
+    let seen = found.len();
+    let found = yubikey::not_added(found, &stored);
+    let terminal = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    yubikey::choose(found, seen, terminal, || {
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        Ok(answer)
+    })
+}
+
+#[cfg(feature = "host")]
+fn set_up_token() -> Result<()> {
+    eprintln!("No age identity on the token yet. Generating one uses a PIV slot.");
+    match yubikey::piv_slots_in_use() {
+        Some(slots) if !slots.is_empty() => {
+            eprintln!("The PIV applet already holds:");
+            for slot in &slots {
+                eprintln!("  {slot}");
+            }
+            eprintln!("A free slot is used, and your OpenPGP keys are a separate applet.");
+        }
+        Some(_) => eprintln!("The PIV applet is empty, and OpenPGP is a separate applet."),
+        None => eprintln!("Could not read the PIV applet. Install ykman to check it first."),
+    }
+    // Fail here rather than after the plugin has asked for a PIN it cannot use
+    yubikey::management_key_is_supported()?;
+    eprint!("Generate one now? [y/N] ");
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+        bail!("run `age-plugin-yubikey --generate` when ready, then try again");
+    }
+    yubikey::offer_to_stop_scdaemon()?;
+    yubikey::generate()
 }
 
 /// Sync needs this: no other machine can open the store without it
@@ -919,18 +938,52 @@ fn unlock(store: &Store, reason: &str) -> Result<age::x25519::Identity> {
     store.unlock_with_passphrase(SecretString::from(ask("passphrase: ")?))
 }
 
-/* A YubiKey wrap replaces the passphrase for recovery. Nothing in a synced copy can then be
-attacked offline, because the private half never leaves the token. */
+/**
+ * A YubiKey wrap replaces the passphrase for recovery. Nothing in a synced copy can then be
+ * attacked offline, because the private half never leaves the token
+ **/
 #[cfg(feature = "host")]
-fn yubikey_add(store: &Store, recipient: &str) -> Result<()> {
-    yubikey::offer_install()?;
+fn yubikey_add(store: &Store, recipient: Option<&str>) -> Result<()> {
+    let recipient = match recipient {
+        Some(r) => {
+            yubikey::offer_install()?;
+            r.to_string()
+        }
+        None => new_token(store)?,
+    };
     let key = unlock(store, "wrap the store key to a YubiKey")?;
-    let total = store.add_yubikey_recipient(&key, recipient)?;
+    let total = store.add_yubikey_recipient(&key, &recipient)?;
     eprintln!("wrapped to {recipient}");
     eprintln!("{total} token(s) can now open this store on any machine");
     if total == 1 {
         eprintln!("add a second with `passbox yubikey-add`, or losing it loses the way back");
     }
+    check_token(store, &key, &recipient)
+}
+
+/// Opens the wrap with the new token alone, the one proof that it is a way back
+#[cfg(feature = "host")]
+fn check_token(store: &Store, key: &age::x25519::Identity, recipient: &str) -> Result<()> {
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return Ok(());
+    }
+    eprint!("Check the new token now? Unplug every other YubiKey first. [y/N] ");
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+        return Ok(());
+    }
+
+    // The plugin opens with whichever token it finds, so a second one would pass for this one
+    let plugged = yubikey::recipients()?;
+    if plugged.len() != 1 || plugged[0].recipient != recipient {
+        bail!("plug in only the new token, then run `passbox yubikey-add {recipient}` again");
+    }
+    eprintln!("Touch the YubiKey.");
+    if store.unlock_with_yubikey()?.to_public() != key.to_public() {
+        bail!("the new token opened a different key, do not rely on it");
+    }
+    eprintln!("the new token opens this store");
     Ok(())
 }
 
