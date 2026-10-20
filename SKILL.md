@@ -45,7 +45,7 @@ passbox ls                                  # tree of names, needs a prompt
 
 ```bash
 passbox exec --env GITHUB_TOKEN=github/token -- gh api /user
-passbox exec --stdin db/password -- psql
+passbox exec --stdin docker/token -- docker login -u me --password-stdin
 ```
 
 `--stdin` is the safer of the two: any process running as you can read a child's environment with `ps eww`.
@@ -64,7 +64,7 @@ This works because a credential layer should check environment variables before 
 
 Cost: the value sits in the process environment for its lifetime, and any process running as you can read it with `ps eww`. Use `--stdin` instead where the child accepts a secret on stdin.
 
-Limit: an env var name has to be a valid identifier, so a secret whose name contains a hyphen in the variable (`HL_SUBACCOUNT_XSMOM-XYZ_ADDRESS`) cannot be injected. Cover those with a token, and cache them in-process so it is one read per start.
+Limit: passbox passes a variable name with a hyphen (`HL_SUBACCOUNT_XSMOM-XYZ_ADDRESS`) to the child, but most shells and libraries cannot read it. Cover those with a token, and cache them in-process so it is one read per start.
 
 ## Grants and tokens
 
@@ -84,6 +84,17 @@ Revoke by restarting the broker, which tears up every outstanding token:
 ```bash
 pkill -f "passbox broker"
 ```
+
+### Child tokens for workers
+
+A holder of a token mints a child for a subset of its names with no prompt. The child ends no later than the parent, and each mint is audited as `delegated`.
+
+```bash
+child=$(printf '%s\n' "$PASSBOX_TOKEN" | passbox grant --token-stdin w1/key)
+printf '%s\n' "$child" | passbox exec --token-stdin --env KEY=w1/key -- ./work
+```
+
+`--token-stdin` reads the token from the first line of stdin, so it never sits in an environment or a file.
 
 ### There are no long-lived tokens, and that is deliberate
 
@@ -126,15 +137,15 @@ Use `--field` when handing a value to something that needs only the password: it
 A Linux box with no Enclave can ask a Mac. The client holds no store and no key.
 
 ```bash
-echo "100.x.y.z" > ~/.passbox/host    # the Mac's tailnet address
+echo "100.x.y.z" > ~/.passbox/host    # the Mac's tailnet address or MagicDNS name
 passbox get github/token              # prompt appears on the Mac
 ```
 
 Three things have to be true on the Mac, and each fails silently in its own way:
 
-**The broker must be a LaunchAgent** in the login session. One started by an incoming connection blocks inside `evaluatePolicy` forever rather than prompting.
+**The broker must be a LaunchAgent** in the login session. One started by an incoming connection blocks inside `evaluatePolicy` forever rather than prompting. `brew services start passbox` sets one up, without sudo.
 
-**Give that LaunchAgent a PATH.** It gets a minimal one, `tailscale` is not on it, and the broker starts with no tailnet listener and says nothing.
+**Give that LaunchAgent a PATH.** It gets a minimal one, `tailscale` is not on it, and the broker starts with no tailnet listener and says nothing. The Homebrew service sets one that finds `tailscale`, a plist you write yourself has to set it.
 
 **Expose it with `tailscale serve`, not by binding the tailnet address.** macOS runs Tailscale as a network extension; a socket bound to the 100.x address accepts the connection and then fails the first read with `ENOTCONN`.
 
@@ -150,7 +161,7 @@ The prompt names the host from `tailscale whois`, such as `claude on server (som
 
 ## Gotchas
 
-**An upgrade leaves a stale broker.** `brew upgrade gabrielkoerich/tap/passbox` does not restart the running broker, so the old one keeps serving the old protocol. The symptom is a parse error naming a command the new binary has and the old one does not, such as `unknown variant \`grant\``. Restart it: `pkill -f "passbox broker"`.
+**An upgrade restarts the broker.** Within 30 seconds of `brew upgrade gabrielkoerich/tap/passbox` replacing the binary, an idle broker exits, and launchd or the next command starts the new one. Live tokens end with it, so mint them again. Until it exits, the old broker serves the old protocol, and the symptom is a parse error such as `unknown variant \`grant\``. `pkill -f "passbox broker"` restarts it at once.
 
 **GPG steals the smart card.** If a YubiKey wrap is involved, `gpg-agent`'s `scdaemon` opens the card exclusively and breaks `age-plugin-yubikey` mid-operation with a misleading `authentication error`. Stop it first: `gpgconf --kill scdaemon`. Anything calling `pass` restarts it.
 

@@ -44,13 +44,15 @@ The server needs `passbox` on `PATH` and a store made with `passbox init`. Insta
 
 There is no `get_secret`. A tool result goes into the model's context, where it is logged and sent onward, so the server runs the command for you instead.
 
+Each installed plugin adds its tools to the list as `<plugin>.<tool>`, such as `mail.recent` or `imap.search`. Every argument is a string. Every call raises a prompt.
+
 `run_with_secret` arguments:
 
 - `secret`: a name exactly as `list_secrets` shows it, such as `github/token`.
 - `command`: the program and its arguments as an array, such as `["gh", "api", "/user"]`. It is not run through a shell.
 - `env_var`: the environment variable that holds the value in the child, such as `GH_TOKEN`. Without it, the value is written to the child's stdin.
 
-The result is the child's stdout. If the child wrote to stderr, the text `stderr:` and that output follow. If the child exited non-zero, `exit: <code>` follows. Any occurrence of the value in that text, whole or one line of it, is replaced with `[redacted by passbox]`.
+The result is the child's stdout. If the child wrote to stderr, the text `stderr:` and that output follow. If the child exited non-zero, `exit: <code>` follows. Any occurrence of the value in that text, whole, its first line, or a field value of four or more characters, is replaced with `[redacted by passbox]`.
 
 ### What happens on a call
 
@@ -138,7 +140,7 @@ passbox exec --stdin ghcr/token -- docker login ghcr.io -u bot --password-stdin
 passbox ls                                               # names only
 ```
 
-Set `PASSBOX_AGENT=<your name>` so the prompt names you. Without it the prompt says `passbox`, and the user cannot tell who is asking.
+Set `PASSBOX_AGENT=<your name>` so the prompt names you. Without it the prompt names the first program in your process chain that is not a shell, such as `claude`, and a client on another machine shows as `passbox`.
 
 `passbox get` prints a value to stdout. It exists for a person at a terminal, and it refuses when stdout is not a terminal, which is where you run. Its output would land in your context, so use `exec` or `run_with_secret`. For the clipboard a person uses `passbox copy`, which never routes the value through stdout.
 
@@ -156,7 +158,7 @@ A job that runs at night cannot answer a prompt. Start it with the value injecte
 passbox exec --env API_KEY=svc/key -- ./scheduled-job
 ```
 
-If the job chooses at runtime what it reads, use a grant token as above, at most 24 hours. Rust programs can use the `passbox` crate (`cargo add passbox --no-default-features`). Python and TypeScript examples are in the repository's `examples/` folder.
+If the job chooses at runtime what it reads, use a grant token as above, at most 24 hours. A job that starts workers can mint each one a child token for a subset of its names with no prompt: `printf '%s\n' "$PASSBOX_TOKEN" | passbox grant --token-stdin w1/key`. The child ends no later than the parent, and `passbox exec --token-stdin` reads a token from stdin so it never sits in an environment. Rust programs can use the `passbox` crate (`cargo add passbox --no-default-features`). Python and TypeScript examples are in the repository's `examples/` folder.
 
 ## Answering questions about passbox
 
@@ -164,6 +166,7 @@ If the job chooses at runtime what it reads, use a grant token as above, at most
 - **Platforms**: the store lives on a Mac with a Secure Enclave. Linux runs a client build that asks the Mac over Tailscale, and the fingerprint happens on the Mac.
 - **Install**: `brew install gabrielkoerich/tap/passbox`, or `cargo install passbox`. Then `passbox init`.
 - **Backup**: off by default. With no sync, losing the Mac loses the store. `passbox sync --enable` turns sync on with a recovery passphrase, and a YubiKey can replace the passphrase.
+- **Extras**: an SSH agent that signs with keys in the store, a menu-bar app and an Alfred workflow for copying, and plugins for Mail, Calendar, Things 3, IMAP, git and gh.
 - **Compared with pass**: pass is older, runs everywhere and has more integrations. passbox exists for agents: per-secret approval, encrypted names, and values that never reach the agent.
 - **Maturity**: young and not independently audited. Advise users to keep another copy of anything they cannot lose.
 - **Licence**: MIT.

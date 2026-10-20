@@ -28,13 +28,13 @@ Cost: listing names decrypts every file. At a few hundred secrets that is millis
 
 ## One store key, several wraps
 
-One age x25519 key encrypts every secret. It is never written unwrapped. Two kinds of wrap open it: one Secure Enclave key per machine, and a recovery passphrase that exists only once sync is on.
+One age x25519 key encrypts every secret. It is never written unwrapped. Three kinds of wrap open it: one Secure Enclave key per machine, a YubiKey, and a recovery passphrase. The last two exist only once sync is on.
 
 ## Sync is off, and the passphrase comes with it
 
 `init` writes only the Enclave wrap. A fresh store holds no file that an attacker could take away and grind at, because the only wrap is bound to one Secure Enclave.
 
-The passphrase wrap is created by `passbox sync --enable`, never before. The passphrase is the weakest link in the design, and only sync needs it: a second machine cannot open the copy any other way. So the passphrase does not exist until the user asks for sync and is told the cost.
+The portable wrap, a YubiKey or a passphrase, is created by `passbox sync --enable`, never before. The passphrase is the weakest link in the design, and only sync needs it: a second machine cannot open the copy any other way. So the passphrase does not exist until the user asks for sync and is told the cost.
 
 Rejected: asking for a passphrase at `init`, which is what the first version did. It writes the one attackable file on day one, for a store that may never leave the Mac.
 
@@ -46,7 +46,7 @@ Rejected: a Secure Enclave recipient per secret. It gives hardware enforcement o
 
 Rejected: the age plugin protocol. With wraps the Enclave key never appears as an age recipient, so there is no plugin at runtime and the prompt text stays ours.
 
-Cost: one key opens everything, so the Touch ID prompt is the gate on a read, not the key. Cost: adding a Mac needs the recovery passphrase once.
+Cost: one key opens everything, so the Touch ID prompt is the gate on a read, not the key. Cost: adding a Mac needs the YubiKey or the recovery passphrase once.
 
 The public key sits in the clear at `wraps/recipient`. Writing a secret therefore needs no unlock and raises no prompt. Reading is what costs a prompt.
 
@@ -70,11 +70,13 @@ The caller sets the agent name with `PASSBOX_AGENT`. The broker cannot verify it
 
 Two things hold: no agent gets a secret without a finger on the sensor, and the prompt names the secret that gets read.
 
+For a request over the tailnet the host part is verified. The PROXY header gives the broker the node's address, `tailscale whois` names it from the control plane, and the prompt reads `<agent> on <host>`. The agent part is still what the client sent.
+
 Per-agent allowlists are therefore not implemented. They need verifiable identity, which means matching the ancestor's code signature.
 
 ## The broker
 
-A single process serving a unix socket at 0600, a thread per connection. A prompt holds the broker's lock, so only one dialog is ever on screen and the next request that needs one waits for it, as long as it takes, with no timeout and no retry. Tokens sit behind a lock of their own, so a token read is answered while a prompt waits. No async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so there is no launchd plist and no install step.
+A single process serving a unix socket at 0600, a thread per connection. A prompt holds the broker's lock, so only one dialog is ever on screen and the next request that needs one waits for it, as long as it takes, with no timeout and no retry. Tokens sit behind a lock of their own, so a token read is answered while a prompt waits. No async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so a local read needs no install step. `brew services start passbox` keeps it running as a LaunchAgent, which the SSH agent and tailnet clients need.
 
 It holds the store key for 300 seconds of inactivity and then drops it, and keeps running. Rejected: exiting to drop the key, which it did before the SSH agent. `SSH_AUTH_SOCK` must always reach a live socket, or every `ssh` and `git` call fails until something starts the broker again. Cost: the key is cleared in place, which relies on the wiping allocator below, where exiting handed the memory back to the kernel. It exits when the binary it was started as is replaced, as `brew upgrade` does, between requests, so launchd starts the new version. Rejected: a Homebrew `post_install` that restarts the LaunchAgent, which knows only that one install path. The cost is the same as any restart: live grants end.
 
@@ -160,7 +162,7 @@ Only `--enable` creates a destination. Every other sync refuses a folder that is
 
 Rejected: syncing the config itself. One edit would move every Mac, but a USB path on one Mac means nothing on another.
 
-A destination given with `--remote` or `PASSBOX_REMOTE` names no engine, so passbox tells the four kinds apart by shape, and tests the git URL forms before the rclone colon so `git@host:repo` is not read as an rclone remote.
+A destination given with `--remote` or `PASSBOX_REMOTE` names no engine, so passbox tells a directory, a git URL and an rclone remote apart by shape, and tests the git URL forms before the rclone colon so `git@host:repo` is not read as an rclone remote.
 
 Rejected: rclone for the default path. It is an external binary in the read path of a password store, and the default remote is a local directory where a file copy does the whole job. `rclone bisync` needs a `--resync` baseline and a state database because it must tell a delete from a file it has not seen. Immutable ids plus tombstones remove that problem. rclone stays available for real cloud backends.
 
@@ -225,4 +227,4 @@ A failure after the tag is pushed takes the tag back with it. A tag with no rele
 - `PASSBOX_PASSPHRASE` turns off the Enclave path. It exists for CI and headless use, and it makes the passphrase the only gate.
 - A token keeps its granted values in broker memory until it lapses, and whoever holds the token reads them without a prompt. That is the cost of running unattended, and why a grant names secrets rather than a namespace.
 - Tokens live in the broker's memory only, so restarting it revokes every one of them.
-- Linux builds the client half only, behind the `host` cargo feature being off. It has no Enclave, no broker server and no `sync`, so it opens the store with a passphrase. Asking a Mac to approve a read is designed, not built.
+- Linux builds the client half only, behind the `host` cargo feature being off. It has no Enclave, no broker server and no `sync`, so it opens a local store with a passphrase, or asks the Mac named in `~/.passbox/host` or `PASSBOX_HOST` to approve the read over the tailnet.
