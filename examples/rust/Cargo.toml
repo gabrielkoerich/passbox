@@ -4,9 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[dependencies]
-# From crates.io this is `passbox = { version = "0.13", default-features = false }`
-passbox = { path = "../..", default-features = false }
+# No passbox dependency: a program launched under `passbox exec` reads its environment
 
 # Not part of the passbox workspace
 [workspace]

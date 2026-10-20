@@ -60,7 +60,7 @@ passbox get github/token      # prints it, for a terminal
 passbox copy github/token     # to the clipboard, cleared after 20 seconds
 ```
 
-`get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. A deliberate capture passes `--reveal`. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after 20 seconds, or after `--clear N` seconds up to 60. For a command use `exec`.
+`get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. No flag overrides that. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after 20 seconds, or after `--clear N` seconds up to 60. For a command use `exec`.
 
 `add` refuses a name that already exists. To change a value, `passbox rm` it and add it again. The old value stays in its versions, so `passbox restore` brings it back.
 
@@ -670,7 +670,7 @@ The client appends port 8787 when the line has no port, and `host:port` names an
 fly launch --no-deploy --name passbox-poc
 fly secrets set TS_AUTHKEY=tskey-auth-... PASSBOX_HOST=100.x.y.z
 fly deploy --ha=false
-fly ssh console -C "passbox get --reveal github/token"
+fly ssh console --pty -C "passbox get github/token"
 ```
 
 Give the container a real tun device. `tailscaled --tun=userspace-networking` reaches the tailnet only through a SOCKS proxy, so an ordinary `connect()` to a 100.x address times out with no hint why. The entrypoint uses `/dev/net/tun` when the platform provides one.
@@ -761,27 +761,15 @@ Reading one field hands a caller the password without the note beside it.
 
 ### Using it from a program
 
-In Rust, add the crate without its default features. They build the CLI's Secure Enclave helper, which the library does not use:
+Launch the program under `passbox exec` and read the environment. It needs no library and no dependency:
 
 ```bash
-cargo add passbox --no-default-features
+passbox exec --env API_KEY=acme/api --env DB=acme/db -- ./deploy
 ```
 
-```rust
-use passbox::Passbox;
+One prompt covers every `--env`. The whole entry lands in the variable, so a program that wants a field splits the `key: value` lines itself. [`examples/rust`](examples/rust) runs itself this way.
 
-// One approval covers both secrets for 24 hours
-let mut pb = Passbox::new(Some("acme"), Some("my-job"), &["api", "db"]);
-
-// Preferred: the value goes from the broker into the child
-let out = pb.run_with("API_KEY", "api", &["./deploy"])?;
-
-// When a library needs the value in-process
-let db = pb.fields("db")?;
-let password = &db["password"];
-```
-
-The library runs the `passbox` binary on `PATH`, so it works on a Mac and on a Linux machine that asks one. [`examples/rust`](examples/rust) is a small project that depends on it.
+There is no in-process read. `passbox get` refuses a pipe, and the `passbox` crate is the CLI alone since 2.0.0, so `cargo install passbox` is still how it installs outside Homebrew.
 
 [`examples/`](examples) also holds [Python](examples/python) and [TypeScript](examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
 

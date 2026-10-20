@@ -13,26 +13,15 @@ That file is safe to commit. It documents what the service needs without being w
 
 [`.passbox.toml`](../../README.md#approving-a-project-once) is a different file. It asks the broker to approve a list of secrets in one prompt. `.env.passbox` says which variable each value lands in. A project can have both, and then one approval covers the whole startup.
 
-## Loading into process.env
-
-```ts
-import { config } from "./passbox.js";
-
-config({ namespace: "acme", agent: "api-server" });
-// the rest of the code keeps reading process.env and never knows the difference
-```
-
-One approval covers every name in the file. A variable already set is left alone, so a deployment can override without touching the file. If the grant fails, the reads fall back to prompting and the process keeps running.
-
-## Better: do not load them at all
+## Launching under passbox exec
 
 ```bash
 passbox exec --env DATABASE_URL=acme/db-url -- node server.js
 ```
 
-The value goes from the broker into the child. A heap dump or an unhandled rejection in the Node process cannot carry what the process never held. `execArgs()` builds that command line from the same manifest.
+`execArgs()` builds that command line from the manifest. The value goes from the broker into the child, and the code keeps reading `process.env`. A heap dump or an unhandled rejection in the process that launches it cannot carry what that process never held.
 
-Use `config()` only where something has to run in-process before the values are known.
+There is no in-process loader. It needed `passbox get` to print into a pipe, which passbox refuses.
 
 ## Running the self-check
 

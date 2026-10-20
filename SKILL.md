@@ -39,7 +39,7 @@ passbox copy github/token                   # to the clipboard, cleared after a 
 passbox ls                                  # tree of names, needs a prompt
 ```
 
-`get` writes to stdout, so it refuses a pipe, a file or an agent, where the value would leak. A deliberate capture passes `--reveal`. Use `copy` for the clipboard and `exec` for a command.
+`get` writes to stdout, so it refuses a pipe, a file or an agent, where the value would leak, and no flag overrides that. Use `copy` for the clipboard and `exec` for a command.
 
 **Prefer injection over reading.** The value goes broker to child and never through the caller, so a traceback or a crash dump cannot carry it.
 

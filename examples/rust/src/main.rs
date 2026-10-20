@@ -1,11 +1,16 @@
-//! Round trip against a throwaway store, so it needs no hardware and raises no prompt.
-//! Run with `cargo run`, with `passbox` on PATH.
+//! Runs itself under `passbox exec` against a throwaway store, so it needs no hardware and raises
+//! no prompt. Run with `cargo run`, with `passbox` on PATH.
 
-use passbox::Passbox;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn main() {
+    // The second run, launched by passbox, which only reads its environment
+    if let Ok(key) = std::env::var("API_KEY") {
+        assert_eq!(key.lines().next(), Some("s3cret"));
+        return;
+    }
+
     let dir = std::env::temp_dir().join(format!("passbox-example-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     unsafe {
@@ -34,23 +39,14 @@ fn main() {
         .expect("write");
     assert!(add.wait().expect("add").success(), "add failed");
 
-    let mut box_ = Passbox::new(Some("demo"), Some("self-check"), &["api"]);
-    assert!(box_.is_available(), "store should be usable");
-    assert_eq!(box_.get("api").unwrap().lines().next(), Some("s3cret"));
-
-    let fields = box_.fields("api").unwrap();
-    assert_eq!(fields["password"], "s3cret");
-    assert_eq!(fields["username"], "bot");
-    assert_eq!(fields["host"], "example.com");
-
-    let out = box_
-        .run_with(
-            "API_KEY",
-            "api",
-            &["sh", "-c", "test -n \"$API_KEY\" && echo ok"],
-        )
-        .unwrap();
-    assert_eq!(out.trim(), "ok");
+    let me = std::env::current_exe().expect("current exe");
+    let status = Command::new("passbox")
+        .args(["exec", "--env", "API_KEY=demo/api", "--"])
+        .arg(me)
+        .env("PASSBOX_AGENT", "self-check")
+        .status()
+        .expect("exec");
+    assert!(status.success(), "the child did not get API_KEY");
 
     std::fs::remove_dir_all(&dir).ok();
     println!("all checks passed");

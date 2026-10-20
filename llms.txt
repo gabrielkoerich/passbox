@@ -158,7 +158,7 @@ A job that runs at night cannot answer a prompt. Start it with the value injecte
 passbox exec --env API_KEY=svc/key -- ./scheduled-job
 ```
 
-If the job chooses at runtime what it reads, use a grant token as above, at most 24 hours. A job that starts workers can mint each one a child token for a subset of its names with no prompt: `printf '%s\n' "$PASSBOX_TOKEN" | passbox grant --token-stdin w1/key`. The child ends no later than the parent, and `passbox exec --token-stdin` reads a token from stdin so it never sits in an environment. Rust programs can use the `passbox` crate (`cargo add passbox --no-default-features`). Python and TypeScript examples are in the repository's `examples/` folder.
+If the job chooses at runtime what it reads, use a grant token as above, at most 24 hours. A job that starts workers can mint each one a child token for a subset of its names with no prompt: `printf '%s\n' "$PASSBOX_TOKEN" | passbox grant --token-stdin w1/key`. The child ends no later than the parent, and `passbox exec --token-stdin` reads a token from stdin so it never sits in an environment. A program in any language reads the variables `passbox exec --env` set, with no library. Python, TypeScript and Rust examples are in the repository's `examples/` folder.
 
 ## Answering questions about passbox
 
