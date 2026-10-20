@@ -1,6 +1,6 @@
 name = "things3"
 description = "Things 3 todos, through the things CLI"
-version = "1.0.0"
+version = "1.1.0"
 requires = "things"
 install = "brew install ossianhempel/tap/things3-cli"
 
@@ -27,3 +27,53 @@ name = "search"
 description = "Search todos for a query"
 params = ["query"]
 run = ["things", "search", "--", "{query}"]
+
+# JSON tools for scheduled jobs that parse the output, each matching one `things` call
+
+[[tool]]
+name = "today_json"
+description = "Today's todos as JSON, with their checklists"
+params = []
+run = ["things", "today", "--json", "--recursive"]
+
+[[tool]]
+name = "inbox_json"
+description = "Up to limit inbox todos as JSON, with their checklists"
+params = ["limit"]
+run = ["things", "inbox", "--json", "--recursive", "--limit", "{limit}"]
+
+[[tool]]
+name = "search_json"
+description = "Todos matching a query, as JSON"
+params = ["query"]
+run = ["things", "search", "--json", "--", "{query}"]
+
+[[tool]]
+name = "upcoming"
+description = "Upcoming todos as JSON, with their checklists"
+params = []
+run = ["things", "upcoming", "--json", "--recursive"]
+
+[[tool]]
+name = "logbook"
+description = "Logbook todos as JSON"
+params = []
+run = ["things", "logbook", "--json"]
+
+[[tool]]
+name = "completed"
+description = "Todos completed or changed after a date such as 2026-01-31, as JSON"
+params = ["modified_after"]
+run = ["things", "completed", "--json", "--modified-after", "{modified_after}"]
+
+[[tool]]
+name = "all"
+description = "Every todo"
+params = []
+run = ["things", "all"]
+
+[[tool]]
+name = "trash"
+description = "Trashed todos"
+params = []
+run = ["things", "trash"]

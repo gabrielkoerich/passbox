@@ -298,10 +298,10 @@ fn a_stale_first_party_plugin_is_flagged_for_update() {
     let toml = cli.path().join("plugins/things3/plugin.toml");
     let older = std::fs::read_to_string(&toml)
         .unwrap()
-        .replace("version = \"1.0.0\"", "version = \"0.1.0\"");
+        .replace("version = \"1.1.0\"", "version = \"0.1.0\"");
     std::fs::write(&toml, older).unwrap();
     let list = cli.run(&["plugin", "list"], None).unwrap();
-    assert!(list.contains("update available: 0.1.0 -> 1.0.0"), "{list}");
+    assert!(list.contains("update available: 0.1.0 -> 1.1.0"), "{list}");
 }
 
 #[test]

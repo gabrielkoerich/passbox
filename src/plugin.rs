@@ -276,6 +276,38 @@ mod tests {
     }
 
     #[test]
+    fn a_things3_job_tool_needs_its_limit_or_date() {
+        let text = std::fs::read_to_string("plugins/things3/plugin.toml").unwrap();
+        let manifest: Manifest = toml::from_str(&text).unwrap();
+        for (action, param) in [
+            ("inbox_json", "limit"),
+            ("completed", "modified_after"),
+            ("search_json", "query"),
+        ] {
+            let err = manifest
+                .tool(action)
+                .unwrap()
+                .command(&args(&[]))
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("needs --{param}")),
+                "{action}: {err}"
+            );
+        }
+        // A query that looks like a flag stays after `--`, so it is searched for, not parsed
+        let cmd = manifest
+            .tool("search_json")
+            .unwrap()
+            .command(&args(&[("query", "--limit=1")]))
+            .unwrap();
+        let argv: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(argv, ["search", "--json", "--", "--limit=1"]);
+    }
+
+    #[test]
     fn every_first_party_tool_builds_the_expected_command() {
         fn built(plugin: &str, action: &str, pairs: &[(&str, &str)]) -> Vec<String> {
             let text = std::fs::read_to_string(format!("plugins/{plugin}/plugin.toml")).unwrap();
@@ -347,6 +379,45 @@ mod tests {
                 &[("query", "q")],
                 &["things", "search", "--", "q"],
             ),
+            (
+                "things3",
+                "today_json",
+                &[],
+                &["things", "today", "--json", "--recursive"],
+            ),
+            (
+                "things3",
+                "inbox_json",
+                &[("limit", "20")],
+                &["things", "inbox", "--json", "--recursive", "--limit", "20"],
+            ),
+            (
+                "things3",
+                "search_json",
+                &[("query", "q")],
+                &["things", "search", "--json", "--", "q"],
+            ),
+            (
+                "things3",
+                "upcoming",
+                &[],
+                &["things", "upcoming", "--json", "--recursive"],
+            ),
+            ("things3", "logbook", &[], &["things", "logbook", "--json"]),
+            (
+                "things3",
+                "completed",
+                &[("modified_after", "2026-01-31")],
+                &[
+                    "things",
+                    "completed",
+                    "--json",
+                    "--modified-after",
+                    "2026-01-31",
+                ],
+            ),
+            ("things3", "all", &[], &["things", "all"]),
+            ("things3", "trash", &[], &["things", "trash"]),
             ("git", "push", &[], &["git", "push"]),
             (
                 "gh",
