@@ -10,3 +10,7 @@ target/
 !/docs/content/roadmap.md
 *.alfredworkflow
 examples/linux-client/passbox
+
+# The Mac app
+app/.build/
+*.app
