@@ -52,7 +52,7 @@ Where that is not possible, mint a token for the secrets the job reads. It opens
 export PASSBOX_TOKEN=$(passbox grant svc/key svc/other --for 86400)
 ```
 
-A namespace is refused: name what the job reads. See the [README](README.md#a-job-that-runs-unattended).
+A namespace is refused: name what the job reads. See the [README](README.md#unattended).
 
 ## What you cannot do
 

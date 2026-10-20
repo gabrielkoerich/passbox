@@ -31,6 +31,8 @@ Or build it from [crates.io](https://crates.io/crates/passbox), which needs Rust
 cargo install passbox
 ```
 
+On the Mac passbox needs Touch ID and macOS 13 or later. The Homebrew formula is for Apple silicon only, and the menu-bar app needs macOS 14.
+
 `init` binds the store to this Mac's Secure Enclave and asks for nothing else. There is no passphrase, so there is no file anyone can carry off and grind at.
 
 The cost: the store opens on this Mac only. Lose the Mac and the secrets are gone. Sync adds a way back, and it is off until you turn it on.
@@ -55,10 +57,10 @@ The release binary is statically linked against musl, so it runs on any distribu
 printf 'ghp_xxx' | passbox add github/token
 passbox ls
 passbox get github/token      # prints it, for a terminal
-passbox copy github/token     # to the clipboard, cleared after a few seconds
+passbox copy github/token     # to the clipboard, cleared after 20 seconds
 ```
 
-`get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. A deliberate capture passes `--reveal`. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after a few seconds. For a command use `exec`.
+`get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. A deliberate capture passes `--reveal`. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after 20 seconds, or after `--clear N` seconds up to 60. For a command use `exec`.
 
 `add` refuses a name that already exists. To change a value, `passbox rm` it and add it again. The old value stays in its versions, so `passbox restore` brings it back.
 
@@ -73,7 +75,7 @@ open passbox.alfredworkflow
 
 ### Mac app
 
-The [menu-bar app](app) opens a search panel on `⌘⇧Space`. `⏎` copies the password and `⌘⏎` the username, through `passbox copy`. It lists the names once and keeps them in memory, so later searches need no fingerprint. It builds with the Command Line Tools alone:
+The [menu-bar app](app) opens a search panel on `⌘⇧Space`. `⏎` copies the password and `⌘⏎` the username, through `passbox copy`. It lists the names once and keeps them in memory, so later searches need no fingerprint. It needs macOS 14 and builds with the Command Line Tools alone:
 
 ```bash
 app/build.sh dev ~/Applications/passbox.app
@@ -90,7 +92,7 @@ export SSH_AUTH_SOCK=~/.passbox/ssh-agent.sock   # in ~/.zshrc
 ssh-add -L                                        # lists it, no prompt
 ```
 
-Unencrypted Ed25519 and P-256 keys only. Remove a passphrase with `ssh-keygen -p -f KEY`, then delete the file once the key is in the store. The prompt says what is signed and with which key, such as "sign an SSH login as git with SSH key you@mac for ssh", and a key synced from another Mac is offered once `passbox ls` has run there. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
+Unencrypted Ed25519 and P-256 keys only. Remove a passphrase with `ssh-keygen -p -f KEY`, then delete the file once the key is in the store. The prompt says what is signed and with which key, such as "sign an SSH login as git with SSH key you@mac for ssh", and a key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
 
 ### Coming from pass
 
@@ -108,7 +110,7 @@ The value goes into one child process and never into the agent.
 
 ```bash
 passbox exec --env GITHUB_TOKEN=github/token -- gh api /user
-passbox exec --stdin db/password -- psql
+passbox exec --stdin docker/token -- docker login -u me --password-stdin
 ```
 
 Prefer `--stdin` where the tool accepts it. Any process running as you can read a child's environment with `ps eww`.
@@ -142,7 +144,7 @@ Any client that speaks MCP over stdio works, and the command is always `passbox 
 
 That file is `~/.claude.json` for Claude Code, `~/.codex/config.toml` for Codex in TOML form, and `~/.cursor/mcp.json` for Cursor. Check it took with `claude mcp list`.
 
-The server exposes two tools, and neither returns a secret.
+The server has two tools of its own, and neither returns a secret. Each installed plugin adds its tools beside them, see [Plugins](README.md#plugins).
 
 | Tool | Returns |
 |---|---|
@@ -221,12 +223,13 @@ Every decision is logged, encrypted, one record per line, with the agent, the se
 | Decision | Meaning |
 |---|---|
 | `released` | A prompt was approved and the value went out, to a caller or a plugin's stdin |
+| `signed` | A prompt was approved and an SSH key in the store signed |
 | `by token` | A grant token covered the read, no prompt |
 | `granted` | A grant was approved for this name |
 | `delegated` | A child token was minted from a live token, no prompt |
 | `project grant` | A `.passbox.toml` grant covered the read |
 | `approved` | A listing or a plugin run was approved |
-| `unknown` | The prompt was approved, and no secret has that name |
+| `unknown` | The prompt was approved, and no secret or SSH key has that name |
 | `denied` | The prompt was refused |
 | `prompt failed` | No prompt could be shown, such as with the lid closed, or it did not complete |
 
@@ -250,7 +253,7 @@ First-party plugins:
 | `mail` | Mail.app, nothing to install | `recent`, `search`, `attachments`, `send` |
 | `calendar` | the `icalBuddy` CLI | `today`, `agenda` |
 | `things3` | the `things` CLI | `add`, `inbox`, `today`, `search`, and for jobs that parse JSON `today_json`, `inbox_json`, `search_json`, `upcoming`, `logbook`, `completed`, plus `all` and `trash` |
-| `imap` | `python3`, an account entry in the store | `recent`, `search`, `read`, `attachments` |
+| `imap` | `/usr/bin/python3` from the Command Line Tools, an account entry in the store | `recent`, `search`, `read`, `attachments` |
 | `git` | git | `push` |
 | `gh` | the `gh` CLI | `pr`, `issue` |
 
@@ -287,7 +290,7 @@ tls: starttls
 fingerprint: 3a:1f:...:9c
 ```
 
-`tls` is `starttls` or `ssl`, and defaults to `ssl` on port 993. Plain IMAP is refused. Certificates are verified against the system roots. A server with a self-signed certificate, such as Bridge, is trusted through one pinned certificate instead: `fingerprint` is its SHA-256, compared before the password is sent, or `cafile` is the path to its exported PEM. Every tool takes an optional `--mailbox`, `INBOX` by default. `attachments` returns the message's attachments as one JSON array of `name`, `type`, `size` and `base64`, up to 10 MB a call, so nothing is written on the Mac and a remote caller gets the bytes itself. Each name keeps only its base name, so a caller that saves it under that name stays in its own directory.
+`tls` is `starttls` or `ssl`. Left out, it is `ssl` on port 993 and `starttls` on any other port, and a missing port is 993 for `ssl` and 143 for `starttls`. Plain IMAP is refused. Certificates are verified against the system roots. A server with a self-signed certificate, such as Bridge, is trusted through one pinned certificate instead: `fingerprint` is its SHA-256, compared before the password is sent, or `cafile` is the path to its exported PEM. Every tool takes an optional `--mailbox`, `INBOX` by default. `attachments` returns the message's attachments as one JSON array of `name`, `type`, `size` and `base64`, up to 10 MB a call, so nothing is written on the Mac and a remote caller gets the bytes itself. Past that limit an attachment is listed with `skipped` in place of `base64`. Each name keeps only its base name, so a caller that saves it under that name stays in its own directory.
 
 For Proton Mail, install and sign in to [Proton Mail Bridge](https://proton.me/mail/bridge). Bridge shows the IMAP host, port, user and a Bridge password for the account, which is not your Proton password. Read the certificate fingerprint from Bridge itself:
 
@@ -296,7 +299,7 @@ openssl s_client -starttls imap -connect 127.0.0.1:1143 </dev/null 2>/dev/null \
   | openssl x509 -noout -fingerprint -sha256
 ```
 
-Put those values in the `mail/imap` entry as above, the fingerprint as openssl prints it or as bare hex. The prompt for each run names `mail/imap`, and the audit log records it as `released`. Every run, from the CLI, MCP or a client on the tailnet, happens inside the broker on the Mac, and only the mail comes back. The broker runs only the copy bundled in the binary: if the installed `imap.py` or `plugin.toml` differs from it, the run is refused before the prompt until you run `passbox plugin update imap`.
+Put those values in the `mail/imap` entry as above, the fingerprint as openssl prints it or as bare hex. The prompt for each run names `mail/imap`, and the audit log records it as `released`. Every run, from the CLI, MCP or a client on the tailnet, happens inside the broker on the Mac, and only the mail comes back. A headless store with `PASSBOX_PASSPHRASE` has no broker, so there the CLI runs it the same way. The broker runs only the copy bundled in the binary: if the installed `imap.py` or `plugin.toml` differs from it, the run is refused before the prompt until you run `passbox plugin update imap`.
 
 `git` and `gh` run in the directory you call them from, not the plugin directory, so they act on the current repository. Both prompt on every call, so an agent cannot push or open a PR without your fingerprint.
 
@@ -306,7 +309,7 @@ Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin 
 
 A first-party plugin can name one store secret with `stdin = "<secret name>"`. Such a plugin runs only inside the broker and only as its bundled copy. Each run prompts naming the secret, audits it as `released`, writes it to the tool's stdin and closes it, and returns the tool's output with the secret scrubbed out. A request that asks only for approval is refused, so the value never goes back to a caller. A plugin you write yourself cannot read a secret: one with `stdin` is refused. Run it under `passbox exec` instead.
 
-Each plugin carries a `version`. `passbox plugin update <name|dir>` refreshes an installed plugin, and `plugin list` flags a first-party plugin whose bundled version is newer than the installed copy, which is what happens after a `brew upgrade`.
+Each plugin carries a `version`. `passbox plugin update <name|dir>` refreshes an installed plugin, and `plugin list` flags a first-party plugin whose bundled version differs from the installed copy, which is what happens after a `brew upgrade`.
 
 ## Backup and sync
 
@@ -317,7 +320,7 @@ passbox git init
 passbox git remote add origin git@github.com:you/passbox-store.git
 ```
 
-After that every write commits on its own, the way `pass` does: `add`, `rm`, `restore` and `import-pass`. Once the repo has a remote, every write also pushes, so no change lives on this Mac alone. A failed push warns and the write still succeeds. Nothing happens until you run `git init`.
+After that every write commits on its own, the way `pass` does: `add`, `rm`, `restore`, `import-pass` and `yubikey-add`. Once the repo has a remote, every write also pushes, so no change lives on this Mac alone. A failed push warns and the write still succeeds. Nothing happens until you run `git init`.
 
 A second Mac clones instead of running `git init`, so both share one history: `git clone <remote> ~/.passbox`, then `passbox machine add`. `passbox git pull` fetches the other Mac's writes.
 
@@ -448,7 +451,7 @@ ykman piv access change-management-key -a tdes \
   -n 010203040506070801020304050607080102030405060708
 ```
 
-passbox checks this before it asks the plugin for anything, so it says which algorithm is set rather than failing inside the plugin.
+When `ykman` is installed, passbox checks this before it asks the plugin for anything, so it says which algorithm is set rather than failing inside the plugin.
 
 **`Error while communicating with YubiKey: authentication error`, after the touch**
 
@@ -492,7 +495,7 @@ cp -R ~/Library/Mobile\ Documents/com~apple~CloudDocs/.passbox ~/.passbox
 passbox machine add
 ```
 
-`machine add` asks the recovery passphrase, then binds the new Mac's Enclave, so reads go back to asking for a fingerprint.
+`machine add` asks for a touch on the YubiKey, or for the recovery passphrase when there is no YubiKey wrap, then binds the new Mac's Enclave, so reads go back to asking for a fingerprint.
 
 Rejected: backing up the Enclave key itself. It cannot be exported, which is the property that makes a stolen copy of the store useless.
 
@@ -546,7 +549,7 @@ pkill -f "passbox broker"
 
 ### A supervisor that starts its own workers
 
-A daemon that starts workers holds one parent token and gives each worker a child for that worker's names only. A child mints with no prompt when every name is in the parent and it ends no later than the parent. Without `--for` it ends when the parent does. Anything wider prompts like any grant.
+A daemon that starts workers holds one parent token and gives each worker a child for that worker's names only. A child mints with no prompt when every name is in the parent and it ends no later than the parent. Without `--for` it ends when the parent does. One grant holds at most 64 live children. Anything wider prompts like any grant.
 
 ```bash
 parent=$(passbox grant w1/key w2/key --for 86400)        # one fingerprint a day
@@ -572,7 +575,13 @@ Verified from a Raspberry Pi on a LAN and a fly.io machine in another country, b
 
 The broker has to be **already running, in your login session**. One started by an incoming connection cannot raise a Touch ID prompt: whoever calls `evaluatePolicy` has to be somewhere a sensor is reachable. A LaunchAgent is how you get that.
 
-`~/Library/LaunchAgents/com.you.passbox.broker.plist`:
+A Homebrew install ships one. Start it as your user, not with sudo, since a sudo service has no login session:
+
+```bash
+brew services start passbox
+```
+
+For a build from source, write `~/Library/LaunchAgents/com.you.passbox.broker.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -597,6 +606,8 @@ The broker has to be **already running, in your login session**. One started by 
 ```
 
 Set `PATH` explicitly. A LaunchAgent gets a minimal one, `tailscale` is not on it, and the broker then starts with no tailnet listener and says nothing about why.
+
+Load it, then forward the tailnet port to the broker. The `serve` step applies to either kind of LaunchAgent:
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.you.passbox.broker.plist
@@ -623,6 +634,8 @@ tar -xzf passbox.tar.gz && sudo install passbox /usr/local/bin/
 echo "100.x.y.z" > ~/.passbox/host      # the Mac's tailnet address, or its MagicDNS name
 passbox get github/token
 ```
+
+The client appends port 8787 when the line has no port, and `host:port` names another. Use a name or an IPv4 address, since the colons of an IPv6 address read as a port. The release binary is x86_64. On ARM, such as a Raspberry Pi, build it with `cargo install passbox --no-default-features`.
 
 `PASSBOX_HOST` does the same for one run. A configured host wins over anything on the client's own disk, so a machine with no store still asks the Mac rather than falling back to a passphrase it does not have.
 
@@ -668,10 +681,18 @@ passbox restore github/token --index 0  # put the newest one back
   store/<random-id>.tomb    deletion marker
   store/.versions/<id>/     earlier versions, kept local
   wraps/recipient           the store public key, no secret in it
-  wraps/recovery.age        the store key under your passphrase, only once sync is on
+  wraps/recovery.age        the store key under your passphrase, once sync is on or when there is no Enclave
+  wraps/yubikey.age         the store key under the YubiKeys, once one is added
+  wraps/yubikey.recipients  the YubiKey recipients that wrap holds
   wraps/se-<host>.json      the store key under that Mac's Secure Enclave
   audit-<host>.log          one encrypted record per line
+  grants-<host>.age         project approvals, never synced
+  config.toml               where sync copies to, never synced
+  plugins/                  installed plugins
+  ssh-keys.pub              the public halves the SSH agent lists
   broker.sock               the approval socket
+  ssh-agent.sock            the SSH agent socket
+  host                      on a client, the Mac to ask
 ```
 
 The filename is a random id. Names live inside the ciphertext, so nothing on disk says what a secret is called. What still leaks: how many secrets exist, their sizes, and their modification times.
@@ -683,6 +704,7 @@ The filename is a random id. Names live inside the ciphertext, so nothing on dis
 | `PASSBOX_DIR` | Where the store lives, default `~/.passbox` |
 | `PASSBOX_REMOTE` | Overrides the destination for one run, ahead of the one `sync --enable` recorded |
 | `PASSBOX_AGENT` | Name shown in the prompt beside the secret |
+| `PASSBOX_HOST` | The Mac to ask, for one run, ahead of `~/.passbox/host` |
 | `PASSBOX_NO_AUTOSYNC` | Set to stop a write copying to the configured directory |
 | `PASSBOX_PASSPHRASE` | Supplies the passphrase for CI and headless use, and turns off the Enclave path |
 | `PASSBOX_TOKEN` | A grant token, used for reads it covers |
@@ -763,7 +785,7 @@ passbox was built next to [pass](https://www.passwordstore.org), and both can st
 | Platforms | anywhere GPG runs | macOS holds the store, Linux asks it |
 | Ecosystem | browser, mobile, dmenu, otp, import | Python, Rust and TypeScript clients, and an MCP server |
 | Losing the machine | keys are portable and backed up by design | the store is gone unless sync is on, then a passphrase or a YubiKey opens it |
-| Reading the source | 721 lines of shell | about 5,100 lines of Rust and Swift, plus a daemon |
+| Reading the source | 721 lines of shell | about 5,800 lines of Rust and Swift, plus a daemon |
 
 The first eight rows are why passbox exists. In the rest, `pass` is the better tool: it is older, it runs everywhere, and you can lose your only machine without losing your secrets.
 
@@ -775,7 +797,7 @@ The parts that came from elsewhere carry other people's review. age and scrypt c
 
 What is ours is the composition, and these are the checks on it:
 
-- A second implementation, Python's `cryptography`, opens what CryptoKit sealed. Two libraries agreeing is the evidence the construction is standard rather than something invented here. It also checks that a stranger's key, a flipped tag byte and a swapped ephemeral key are all refused, and that no ephemeral key repeats. Run it with `tests/ecies.py`.
+- A second implementation, Python's `cryptography`, opens what CryptoKit sealed. Two libraries agreeing is the evidence the construction is standard rather than something invented here. It also checks that a stranger's key, a flipped tag byte and a swapped ephemeral key are all refused, and that no ephemeral key repeats. Run it with `uv run --with cryptography tests/ecies.py <path-to-passbox-se>`.
 - The reference `age` CLI opens the secret files, so the store is standard age and stays readable with off the shelf tools if passbox goes away.
 - Tampered and truncated files are refused: secrets, the recovery wrap, audit records, and grants, which fail closed to no grants at all.
 - The base64 the helper is fed matches the RFC 4648 vectors.

@@ -4,7 +4,7 @@ description = "Not built and not committed to, written down so the reasoning sur
 weight = 8
 +++
 
-Little of this is built, and none of it is committed to. It is written down so the reasoning survives, and so a later session starts from the argument rather than from scratch. Where something here has since shipped, the section says so.
+Much of this has since shipped, and the rest is not committed to. It is written down so the reasoning survives, and so a later session starts from the argument rather than from scratch. Where something here has since shipped, the section says so.
 
 Two threads: where a plugin seam is worth opening, and asking another machine for something only that machine can do.
 
@@ -90,7 +90,7 @@ Two implementations exist and two more are planned:
 | macOS | Secure Enclave blob | Touch ID |
 | any | scrypt passphrase | typing it |
 | any, shipped v0.11.0 | YubiKey | a touch on the key |
-| planned, servers | asks another machine | Touch ID over there |
+| shipped, servers | asks a Mac over the tailnet | Touch ID over there |
 
 The YubiKey wrap turned out not to be Linux specific, which is how this table first listed it. It is a recovery and sync wrap on any platform, and it does not replace Touch ID for day to day reads.
 
@@ -104,7 +104,7 @@ Do not design the plugin interface before writing each path as concrete code. An
 
 Order: YubiKey concretely, then remote approval concretely, then extract whatever the three actually share.
 
-The YubiKey half shipped in v0.11.0 and the advice held. It needed things a two-case interface would not have exposed: several recipients on one wrap, a check of the PIV applet before provisioning a slot, and an offer to install the age plugin. Remote approval is still unwritten, so the extraction still waits.
+The YubiKey half shipped in v0.11.0 and the advice held. It needed things a two-case interface would not have exposed: several recipients on one wrap, a check of the PIV applet before provisioning a slot, and an offer to install the age plugin. Remote approval shipped as the tailnet client, written concretely, and the extraction still waits.
 
 ## When it is time, use executables
 
@@ -128,7 +128,7 @@ passbox already has the two hard parts. The broker is a long-lived process holdi
 
 **The protocol.** `SSH_AGENT_IDENTITIES_ANSWER` to list, `SSH_AGENT_SIGN_RESPONSE` to sign. It is a small binary protocol and the signing side is the only part that matters, because listing hands out public keys, which are public.
 
-**The key material.** A secret is an opaque string today, and signing needs a parsed key an implementation can compute with. Ed25519 is the case worth supporting; it is one algorithm, and everything modern uses it.
+**The key material.** A secret is an opaque string today, and signing needs a parsed key an implementation can compute with. Ed25519 was the case worth supporting, because everything modern uses it. P-256 came along for keys made on a Mac.
 
 The prompt is the reason to build it: `github.com wants to authenticate as your key`, once per session or once per signature.
 
@@ -140,7 +140,7 @@ The prompt is the reason to build it: `github.com wants to authenticate as your 
 
 Worth pairing with a Secure Enclave key directly: a P-256 key in the Enclave can sign, so an SSH key could be hardware-bound rather than a stored secret. That turns "passbox holds your key" into "your key cannot be copied", which is the stronger claim.
 
-Not started. It is a bigger piece than anything above, and the wrap and approver work should settle first.
+Shipped in v1.7.0 (#10). The broker serves `~/.passbox/ssh-agent.sock`, signs with Ed25519 and P-256 keys held in the store, and prompts per signature. The Secure Enclave key is still open.
 
 ## Not plugins
 
@@ -161,13 +161,15 @@ The shape is one **host** and many **clients**, not peers.
 
 A client asks the host. The human approves on the host, where the sensor is. The value comes back over the same channel, and the client never holds the key.
 
-`init` decides which it is. `canEvaluatePolicy` already tells us whether biometry is usable, so a machine that cannot reach a sensor becomes a client pointed at a host rather than binding to an Enclave it cannot use.
+`init` binds to the Enclave when it can and asks for a passphrase when it cannot. A machine becomes a client when `~/.passbox/host` or `PASSBOX_HOST` names a host.
 
 This also fixes a real bug found by installing on a lid closed MacBook: `init` bound to the Secure Enclave and reported "reads will ask for your fingerprint", on a machine whose sensor is sealed inside a shut lid, leaving a store that nothing could open and no recovery wrap to fall back to.
 
 ## Finding the host
 
-passbox should not resolve addresses. A client stores an ssh destination and lets ssh do the rest, because `ssh_config` already handles aliases, jump hosts, `ProxyCommand`, Bonjour names and Tailscale names.
+This section is the design that was argued for. The client that shipped stores one line, `machine` or `machine:port`, and connects over TCP to port 8787 through Tailscale, with no ssh in the path.
+
+The argument was that passbox should not resolve addresses. A client would store an ssh destination and let ssh do the rest, because `ssh_config` already handles aliases, jump hosts, `ProxyCommand`, Bonjour names and Tailscale names.
 
 | Addressing | Reaches the host |
 |---|---|
@@ -215,7 +217,7 @@ Headscale, the open source control server, is worth a look later. It replaces th
 
 A request arriving over SSH cannot raise the prompt itself. Measured on 2026-09-24: a process spawned by SSH gets `canEvaluatePolicy` false with `systemCancel`, and so does a launchd agent in the Aqua session when the lid is shut. Whoever calls `evaluatePolicy` has to be somewhere a sensor is reachable.
 
-So the broker becomes a LaunchAgent in the host's login session, and the SSH side only carries bytes to its socket. Spawning a broker on demand, which is what passbox does today, would put it inside the SSH session where it cannot ask anybody anything.
+So the broker runs as a LaunchAgent in the host's login session, through `brew services start passbox` or a plist of your own. A local command still spawns one on demand when none is running, and one spawned inside an SSH session cannot ask anybody anything.
 
 This is the one hard constraint the remote design adds.
 
@@ -229,6 +231,8 @@ Two narrower options exist, both confirmed present on the standalone macOS build
 - The broker binds directly to the tailnet address, so only tailnet peers and local processes can reach it.
 
 Rejected: `tailscale set --ssh`. It is keyless and gated by tailnet policy, and it still hands out a shell.
+
+Shipped: the first. The broker listens on `127.0.0.1:8787`, and `tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787` forwards to it. Binding the tailnet address failed with `ENOTCONN`, as the README explains under Another machine.
 
 Either option has one caveat. The broker's unix socket is 0600, so only this user can reach it. A TCP port on loopback has no such protection and any local user could connect. Binding to the tailnet address rather than loopback keeps that narrower.
 
@@ -245,7 +249,9 @@ User:     you@example.com
 
 Everywhere else in passbox the agent name is self declared and unverifiable, which is why per agent policy was deferred. A remote caller arriving over the tailnet can be identified for real, so the prompt can name a machine the host has actually authenticated, and policy per machine becomes enforceable rather than advisory.
 
-Local callers still declare their own name. A prompt that mixes the two should say which kind it is showing.
+Shipped in v1.8.0 (#37). The PROXY header gives the broker the node's address, `tailscale whois` names it, and the prompt reads `<agent> on <host>`. The agent part is still what the client sent. Policy per machine is not built.
+
+Local callers still declare their own name.
 
 ## SSH already carries an identity
 
@@ -298,3 +304,5 @@ Transport, in order of preference:
 It never offers a remote shell. The Mac declares named capabilities such as `things.today` and `things.add`, and each raises the same prompt naming the caller and the capability.
 
 A capability provider never needs the store key, so it is a subcommand extension rather than a backend plugin, and it inherits the broker's policy unchanged.
+
+This shipped as plugins: `mail`, `calendar`, `things3` and `imap` run on the Mac, and a tailnet client calls them like any tool, such as `things3.today` or `imap.search`. The prompt names the caller and the plugin's tool. One exception to the paragraph above: a first-party plugin with `stdin`, which is how `imap` gets its password, reads one secret inside the broker, as Plugin secrets above describes.
