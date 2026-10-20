@@ -71,6 +71,15 @@ curl -fsSLO https://github.com/gabrielkoerich/passbox/releases/latest/download/p
 open passbox.alfredworkflow
 ```
 
+### Mac app
+
+The [menu-bar app](app) opens a search panel on `⌘⇧Space`. `⏎` copies the password and `⌘⏎` the username, through `passbox copy`. It lists the names once and keeps them in memory, so later searches need no fingerprint. It builds with the Command Line Tools alone:
+
+```bash
+app/build.sh dev ~/Applications/passbox.app
+open ~/Applications/passbox.app
+```
+
 ### SSH keys
 
 The broker is also an SSH agent. Add a key as a secret, point `SSH_AUTH_SOCK` at the broker, and every signature asks for your fingerprint. The private key never leaves the broker.

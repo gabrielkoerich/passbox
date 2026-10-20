@@ -162,7 +162,7 @@ jobs:
       - name: Shellcheck the example scripts
         run: |
           command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -yq shellcheck; }
-          shellcheck examples/linux-client/*.sh integrations/alfred/*.sh
+          shellcheck examples/linux-client/*.sh integrations/alfred/*.sh app/*.sh
 
       # The Linux client needs a Mac and a tailnet to run, so CI checks that the image builds and starts
       # the client built above, which is what the next release ships. Its other layers stay cached
@@ -183,10 +183,24 @@ jobs:
           got=$(docker run --rm --entrypoint passbox passbox-client --version)
           [ "$got" = "$want" ] || { echo "::error::image has $got, built $want"; exit 1; }
 
+  # Launching the menu-bar app would ask for a listing, so CI checks its filter and that it bundles
+  app:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Search filter
+        run: swift run --package-path app SearchCheck
+      - name: Build the Mac app
+        run: |
+          app/build.sh 0.0.0 "$RUNNER_TEMP/passbox.app"
+          codesign --verify --strict "$RUNNER_TEMP/passbox.app"
+          [ "$(plutil -extract CFBundleShortVersionString raw "$RUNNER_TEMP/passbox.app/Contents/Info.plist")" = 0.0.0 ]
+
   # The version has to be known before the binaries build, or every release ships a
   # binary stamped with the previous number.
   version:
-    needs: [lint, gitleaks, clippy, test, examples]
+    needs: [lint, gitleaks, clippy, test, examples, app]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
@@ -291,7 +305,7 @@ jobs:
 
   # CI pays the build cost once so nobody installing has to. Public repos get free minutes.
   binaries:
-    needs: [lint, gitleaks, clippy, test, examples, version]
+    needs: [lint, gitleaks, clippy, test, examples, app, version]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
     strategy:
       matrix:
@@ -380,7 +394,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [lint, gitleaks, clippy, test, examples, version, binaries]
+    needs: [lint, gitleaks, clippy, test, examples, app, version, binaries]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
     runs-on: ubuntu-latest
     permissions:
