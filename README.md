@@ -207,13 +207,14 @@ If a project uses both, the `.toml` covers the same names the `.env` maps, so th
 passbox audit --tail 50
 ```
 
-Every decision is logged, encrypted, one record per line, with the agent, the secret and the caller's process chain.
+Every decision is logged, encrypted, one record per line, with the agent, the secret and the caller's process chain. A `granted`, `delegated` or `by token` record also carries `grant`, the id of the approval behind it, so every read through a token or its children traces back to one fingerprint.
 
 | Decision | Meaning |
 |---|---|
 | `released` | A prompt was approved and the value went out |
 | `by token` | A grant token covered the read, no prompt |
 | `granted` | A grant was approved for this name |
+| `delegated` | A child token was minted from a live token, no prompt |
 | `project grant` | A `.passbox.toml` grant covered the read |
 | `approved` | A listing or a plugin run was approved |
 | `unknown` | The prompt was approved, and no secret has that name |
@@ -494,6 +495,20 @@ Restarting the broker revokes every outstanding token:
 ```bash
 pkill -f "passbox broker"
 ```
+
+### A supervisor that starts its own workers
+
+A daemon that starts workers holds one parent token and gives each worker a child for that worker's names only. A child mints with no prompt when every name is in the parent and it ends no later than the parent. Without `--for` it ends when the parent does. Anything wider prompts like any grant.
+
+```bash
+parent=$(passbox grant w1/key w2/key --for 86400)        # one fingerprint a day
+child=$(printf '%s\n' "$parent" | passbox grant --token-stdin w1/key)
+printf '%s\n' "$child" | docker run -i worker passbox exec --token-stdin --env KEY=w1/key -- ./work
+```
+
+`--token-stdin` reads the token from the first line of stdin, so it is never in an environment or a file, where `docker inspect` and `ps eww` would read it. `exec` leaves the rest of stdin to its child. Each mint is audited as `delegated`, with the parent's grant id.
+
+Cost: a leaked child opens its worker's names until the parent lapses, and the supervisor's memory holds the parent, which opens every name.
 
 ### Mint once per process
 

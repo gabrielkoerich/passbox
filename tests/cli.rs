@@ -943,6 +943,106 @@ fn grant_on_a_client_goes_to_the_host_and_keeps_the_token_off_stderr() {
     assert_eq!(seen[0]["names"], serde_json::json!(["a/b", "c/d"]));
 }
 
+/// A client run with a configured host and the given stdin, for `--token-stdin`
+fn on_host_stdin(cli: &Cli, host: &str, stdin: &str, args: &[&str]) -> (bool, String, String) {
+    let mut cmd = cli.cmd(PASSPHRASE);
+    cmd.env("PASSBOX_HOST", host).env_remove("PASSBOX_TOKEN");
+    let mut child = cmd
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+#[test]
+fn a_token_on_stdin_asks_for_a_child_and_leaves_the_rest_to_the_exec_child() {
+    let cli = Cli::empty();
+    let (host, requests) = fake_host(|r| match r["op"].as_str() {
+        Some("grant") if r["token"] == "parent-tok" => Ok("child-tok\na/b".into()),
+        Some("get") if r["token"] == "child-tok" => Ok("v".into()),
+        _ => Err("a request without the token from stdin".into()),
+    });
+
+    let (ok, stdout, stderr) = on_host_stdin(
+        &cli,
+        &host,
+        "parent-tok\n",
+        &["grant", "--token-stdin", "a/b"],
+    );
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "child-tok\n");
+    assert!(
+        !stderr.contains("parent-tok") && !stderr.contains("child-tok"),
+        "a token leaked to stderr: {stderr}"
+    );
+    let seen = ops(&requests);
+    // No --for asks for the parent's expiry
+    assert_eq!(seen[0]["ttl"], 0);
+
+    let args = [
+        "exec",
+        "--token-stdin",
+        "--env",
+        "A=a/b",
+        "--",
+        "sh",
+        "-c",
+        "printf %s, \"$A\"; cat",
+    ];
+    let (ok, stdout, stderr) = on_host_stdin(&cli, &host, "child-tok\nrest", &args);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "v,rest");
+    assert!(
+        !stderr.contains("child-tok"),
+        "the token leaked to stderr: {stderr}"
+    );
+    let kinds: Vec<String> = ops(&requests)
+        .iter()
+        .map(|r| r["op"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["get"]);
+}
+
+#[test]
+fn a_token_on_stdin_needs_a_first_line_and_no_newline_after_it() {
+    let cli = Cli::empty();
+    let (host, requests) = fake_host(|r| match r["token"].as_str() {
+        Some("parent-tok") => Ok("child-tok\na/b".into()),
+        _ => Err("a request without the token from stdin".into()),
+    });
+    let grant = ["grant", "--token-stdin", "a/b"];
+    let exec = ["exec", "--token-stdin", "--env", "A=a/b", "--", "true"];
+
+    // EOF, an empty first line or a blank one is refused before the host is asked
+    for stdin in ["", "\n", "\nparent-tok\n", "  \n"] {
+        for args in [&grant[..], &exec[..]] {
+            let (ok, _, stderr) = on_host_stdin(&cli, &host, stdin, args);
+            assert!(!ok, "{stdin:?} {args:?}");
+            assert!(stderr.contains("--token-stdin read no token"), "{stderr}");
+        }
+    }
+    assert!(ops(&requests).is_empty());
+
+    let (ok, stdout, stderr) = on_host_stdin(&cli, &host, "parent-tok", &grant);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "child-tok\n");
+    assert_eq!(ops(&requests)[0]["token"], "parent-tok");
+}
+
 #[test]
 fn exec_with_many_secrets_asks_the_host_once() {
     let cli = Cli::empty();
