@@ -285,7 +285,7 @@ Two failure modes: building a feature because it is fun, and keeping a mechanism
 
 The motivating examples: Things and Mail run on the Mac, a Linux box cannot have them, and an agent there needs the data. Generalised, a machine asks another machine for something only that machine can provide.
 
-Mail is the sharper case. The alternative is giving the Linux box an IMAP credential, which hands it standing access to the whole mailbox. Asking the Mac for `mail.search` returns the messages that matched and nothing else, and the credential never leaves the Mac. The same argument covers Messages, Calendar, Photos and anything else holding an account rather than a file.
+Mail is the sharper case. The alternative is giving the Linux box an IMAP credential, which hands it standing access to the whole mailbox. Asking the Mac for `mail.search` returns the messages that matched and nothing else, and the credential never leaves the Mac. The `imap` plugin does this for any IMAP server, Proton Mail through Bridge included: the Bridge password stays in the Mac's store, and a client on the tailnet gets only what the tool printed. The same argument covers Messages, Calendar, Photos and anything else holding an account rather than a file.
 
 This is the broker with the word "secret" removed. The requester never receives the underlying access, only the result, which is what `run_with_secret` already does locally.
 

@@ -1,0 +1,33 @@
+name = "imap"
+description = "IMAP mail, such as Proton Mail through Bridge: read, search and save attachments"
+version = "1.0.0"
+requires = "/usr/bin/python3"
+
+# The account entry, written to the script's stdin by the broker: password first, then fields
+stdin = "mail/imap"
+
+# passbox swaps the `imap.py` after -c for the bundled script bytes, so nothing on disk runs
+
+[[tool]]
+name = "recent"
+description = "Most recent messages: id, date, sender, subject"
+params = ["count?", "mailbox?"]
+run = ["/usr/bin/python3", "-I", "-c", "imap.py", "recent", "{count}", "{mailbox}"]
+
+[[tool]]
+name = "search"
+description = "Search messages for text in headers or body, newest 50"
+params = ["query", "mailbox?"]
+run = ["/usr/bin/python3", "-I", "-c", "imap.py", "search", "{query}", "{mailbox}"]
+
+[[tool]]
+name = "read"
+description = "Headers, attachment names and the text body of one message, by id"
+params = ["id", "mailbox?"]
+run = ["/usr/bin/python3", "-I", "-c", "imap.py", "read", "{id}", "{mailbox}"]
+
+[[tool]]
+name = "attachments"
+description = "The attachments of one message, by id, as JSON with name, type, size and base64"
+params = ["id", "mailbox?"]
+run = ["/usr/bin/python3", "-I", "-c", "imap.py", "attachments", "{id}", "{mailbox}"]

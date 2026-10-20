@@ -112,6 +112,10 @@ jobs:
         working-directory: examples
         run: python3 mcp/passbox_mcp.py
 
+      # The parts that need no mail server: attachment names, header decoding, the pin
+      - name: IMAP plugin
+        run: python3 -I plugins/imap/selfcheck.py
+
       - name: TypeScript
         working-directory: examples
         run: npx --yes tsx typescript/selfcheck.ts

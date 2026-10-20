@@ -201,6 +201,58 @@ fn a_plugin_installs_runs_and_is_removed() {
     assert!(!cli.run(&["plugin", "list"], None).unwrap().contains("demo"));
 }
 
+const IMAP_PW: &str = "hunter2-imap-pw";
+
+/// An account on a port nothing listens on, so the script fails to connect and no mail server is used
+fn imap_account() -> String {
+    format!("{IMAP_PW}\nhost: 127.0.0.1\nport: 1\nuser: me@example.com\ntls: ssl\n")
+}
+
+/// A plugin of our own that asks for a secret on stdin and would print it
+fn fed_plugin(add: impl Fn(&[&str])) -> tempfile::TempDir {
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        "name = \"demo\"\ndescription = \"test\"\nstdin = \"demo/one\"\n\n\
+         [[tool]]\nname = \"leak\"\nrun = [\"cat\"]\n",
+    )
+    .unwrap();
+    add(&["plugin", "add", src.path().to_str().unwrap()]);
+    src
+}
+
+#[test]
+fn the_headless_path_feeds_the_bundled_imap_script_and_prints_scrubbed_output() {
+    let cli = Cli::new();
+    cli.note(&["plugin", "add", "imap"], None);
+
+    let err = cli.run(&["plugin", "imap", "recent"], None).unwrap_err();
+    assert!(err.contains("needs the secret mail/imap"), "{err}");
+
+    cli.run(&["add", "mail/imap"], Some(&imap_account()))
+        .unwrap();
+    let out = cli.run(&["plugin", "imap", "recent"], None).unwrap();
+    // The script got the account on stdin, since it went on to connect
+    assert!(out.contains("ConnectionRefusedError"), "{out}");
+    assert!(out.contains("exit: 1"), "{out}");
+    assert!(!out.contains(IMAP_PW), "{out}");
+}
+
+#[test]
+fn a_stdin_plugin_that_is_not_the_bundled_copy_is_refused() {
+    let cli = Cli::new();
+    cli.run(&["add", "demo/one"], Some("value-one")).unwrap();
+    let _src = fed_plugin(|args| {
+        cli.note(args, None);
+    });
+    let err = cli.run(&["plugin", "demo", "leak"], None).unwrap_err();
+    assert!(
+        err.contains("reinstall it with `passbox plugin update demo`"),
+        "{err}"
+    );
+    assert!(!err.contains("value-one"), "{err}");
+}
+
 #[test]
 fn a_first_party_plugin_installs_by_name() {
     let cli = Cli::new();
@@ -1514,6 +1566,161 @@ fn every_read_prompts() {
         bound.prompts(),
         ["release the password for demo/one to test-agent"; 2]
     );
+}
+
+/// One request line straight to the broker's socket, and its reply line
+fn ask_socket(bound: &Bound, request: &str) -> String {
+    let mut stream = std::os::unix::net::UnixStream::connect(bound.cli.path().join("broker.sock"))
+        .expect("the broker is up");
+    writeln!(stream, "{request}").unwrap();
+    let mut reply = String::new();
+    std::io::BufReader::new(stream)
+        .read_line(&mut reply)
+        .unwrap();
+    reply
+}
+
+/// A store with the imap plugin and its account, and a running broker, with no prompt logged
+fn bound_with_imap() -> Bound {
+    let bound = Bound::new();
+    bound.run(&["plugin", "add", "imap"], None).unwrap();
+    bound
+        .run(&["add", "mail/imap"], Some(&imap_account()))
+        .unwrap();
+    // A list goes through the broker, so this starts it for a test that talks to its socket
+    bound.run(&["ls"], None).unwrap();
+    bound.forget_prompts();
+    bound
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_stdin_plugin_runs_in_the_broker_and_names_and_audits_its_secret() {
+    let bound = bound_with_imap();
+    let out = bound.run(&["plugin", "imap", "recent"], None).unwrap();
+    assert!(out.contains("ConnectionRefusedError"), "{out}");
+    assert!(!out.contains(IMAP_PW), "{out}");
+    assert_eq!(
+        bound.prompts(),
+        ["run plugin:imap.recent for test-agent, releasing mail/imap"]
+    );
+    let log = bound.audit();
+    assert!(decided(&log, "plugin:imap.recent", "approved"), "{log}");
+    assert!(decided(&log, "mail/imap", "released"), "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn an_approval_only_request_for_a_stdin_plugin_is_refused_and_no_reply_holds_the_secret() {
+    let bound = bound_with_imap();
+    let approve = r#"{"name":"imap","agent":"raw","op":"plugin","action":"recent","run":false}"#;
+    let reply = ask_socket(&bound, approve);
+    assert!(reply.contains("runs on the broker"), "{reply}");
+    assert!(reply.contains("\"ok\":false"), "{reply}");
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+
+    let run = r#"{"name":"imap","agent":"raw","op":"plugin","action":"recent","run":true}"#;
+    let reply = ask_socket(&bound, run);
+    assert!(reply.contains("ConnectionRefusedError"), "{reply}");
+    for (piece, at) in [(IMAP_PW, "the password"), ("127.0.0.1\\nport", "the entry")] {
+        assert!(!reply.contains(piece), "{at} in {reply}");
+    }
+    assert_eq!(bound.prompts().len(), 1, "{:?}", bound.prompts());
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_tampered_or_foreign_stdin_plugin_is_refused_before_the_prompt() {
+    let bound = bound_with_imap();
+    let dir = bound.cli.path().join("plugins/imap");
+    let refused = |what: &str| {
+        let err = bound.run(&["plugin", "imap", "recent"], None).unwrap_err();
+        assert!(
+            err.contains("reinstall it with `passbox plugin update imap`"),
+            "{what}: {err}"
+        );
+        assert!(bound.prompts().is_empty(), "{what}: {:?}", bound.prompts());
+    };
+
+    let script = std::fs::read_to_string(dir.join("imap.py")).unwrap();
+    std::fs::write(
+        dir.join("imap.py"),
+        format!("{script}\nprint(sys.stdin.read().encode().hex())\n"),
+    )
+    .unwrap();
+    refused("an edited script");
+
+    bound.run(&["plugin", "update", "imap"], None).unwrap();
+    let manifest = std::fs::read_to_string(dir.join("plugin.toml")).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        manifest.replace("\"mail/imap\"", "\"demo/one\""),
+    )
+    .unwrap();
+    refused("a manifest mapping another secret");
+
+    bound.run(&["plugin", "update", "imap"], None).unwrap();
+    std::fs::remove_file(dir.join("imap.py")).unwrap();
+    refused("a missing script");
+
+    let _src = fed_plugin(|args| {
+        bound.run(args, None).unwrap();
+    });
+    let err = bound.run(&["plugin", "demo", "leak"], None).unwrap_err();
+    assert!(
+        err.contains("reinstall it with `passbox plugin update demo`"),
+        "{err}"
+    );
+    assert!(!err.contains("value-one"), "{err}");
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_plugin_without_stdin_still_runs_in_the_caller_after_an_approval() {
+    let bound = Bound::new();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        "name = \"demo\"\ndescription = \"test\"\n\n\
+         [[tool]]\nname = \"where\"\nrun = [\"sh\", \"-c\", \"printf %s \\\"$ONLY_CALLER\\\"\"]\n",
+    )
+    .unwrap();
+    bound
+        .run(&["plugin", "add", src.path().to_str().unwrap()], None)
+        .unwrap();
+    // Start the broker first, so it cannot inherit the variable only the caller has
+    bound.run(&["ls"], None).unwrap();
+    bound.forget_prompts();
+
+    let out = bound
+        .cmd()
+        .env("ONLY_CALLER", "in-the-caller")
+        .args(["plugin", "demo", "where"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "in-the-caller");
+    assert_eq!(bound.prompts(), ["run plugin:demo.where for test-agent"]);
+
+    let approve = r#"{"name":"demo","agent":"raw","op":"plugin","action":"where","run":false}"#;
+    assert!(ask_socket(&bound, approve).contains("\"value\":\"ok\""));
 }
 
 /// Runs an OpenSSH tool against the broker's agent socket, and never the developer's own agent

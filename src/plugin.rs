@@ -2,13 +2,15 @@
 
 A plugin is a directory under `~/.passbox/plugins/<name>/` holding a `plugin.toml`. Each tool
 names a command template. The broker prompts and audits a call; the caller runs the command, so
-it keeps the caller's GUI session and the broker never drives an app itself. */
+it keeps the caller's GUI session and the broker never drives an app itself. A plugin with `stdin`
+is the exception: it reads a secret, so it runs only inside the broker and only as its bundled copy. */
 
 use crate::store::Store;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 #[derive(Deserialize)]
 pub struct Manifest {
@@ -26,6 +28,9 @@ pub struct Manifest {
     /// "caller" runs tools in the invoking directory, the default runs them in the plugin dir
     #[serde(default)]
     pub cwd: Option<String>,
+    /// A secret written to the tool's stdin, which makes the plugin run only on the broker
+    #[serde(default)]
+    pub stdin: Option<String>,
     #[serde(default, rename = "tool")]
     pub tools: Vec<Tool>,
 }
@@ -83,6 +88,15 @@ impl Manifest {
     pub fn tool(&self, action: &str) -> Option<&Tool> {
         self.tools.iter().find(|t| t.name == action)
     }
+
+    /// The prompt text, which names the secret the run releases
+    pub fn approval(&self, action: &str, agent: &str) -> String {
+        let mut text = format!("run plugin:{}.{action} for {agent}", self.name);
+        if let Some(secret) = &self.stdin {
+            text.push_str(&format!(", releasing {secret}"));
+        }
+        text
+    }
 }
 
 impl Tool {
@@ -101,6 +115,15 @@ impl Tool {
     parameter or an unknown one is refused, so a typo fails here rather than running a command
     with an empty value spliced in. */
     pub fn command(&self, args: &HashMap<String, String>) -> Result<Command> {
+        self.command_with(args, &[])
+    }
+
+    /// As `command`, with a literal argument naming one of `scripts` swapped for that file's bytes
+    pub fn command_with(
+        &self,
+        args: &HashMap<String, String>,
+        scripts: &[(&str, &str)],
+    ) -> Result<Command> {
         for name in self.required() {
             if !args.contains_key(name) {
                 bail!("{} needs --{name}", self.name);
@@ -116,7 +139,10 @@ impl Tool {
         // Every plugin run, local, MCP or remote, starts here, so this one call covers them all
         crate::without_credentials(&mut command);
         for part in rest {
-            command.arg(self.bind(part, args)?);
+            match scripts.iter().find(|(file, _)| file == part) {
+                Some((_, code)) => command.arg(code),
+                None => command.arg(self.bind(part, args)?),
+            };
         }
         Ok(command)
     }
@@ -142,6 +168,92 @@ impl Tool {
         }
         Ok(part.to_string())
     }
+}
+
+/* Blank the secret, and its first line, from a run's output before it reaches an agent. Not
+every field, as `run_with_secret` does, since an account entry's user and host are what a mail
+tool prints */
+pub fn scrub(text: &str, secret: &str) -> String {
+    let mut out = text.to_string();
+    for piece in [secret, secret.lines().next().unwrap_or_default()] {
+        if piece.len() >= 4 {
+            out = out.replace(piece, "[redacted by passbox]");
+        }
+    }
+    out
+}
+
+/// stdout, then stderr and the exit code when the command failed
+pub fn render(output: &std::process::Output) -> String {
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let err = String::from_utf8_lossy(&output.stderr);
+    if !err.trim().is_empty() {
+        text.push_str("\nstderr:\n");
+        text.push_str(&err);
+    }
+    if !output.status.success() {
+        text.push_str(&format!("\nexit: {}", output.status.code().unwrap_or(1)));
+    }
+    text
+}
+
+/* The command for a plugin with `stdin`, built from the copy bundled in this binary once every
+bundled file matches the installed one byte for byte. The script runs from the bundled bytes, so
+a file swapped on disk after the check never runs */
+pub fn fed_command(
+    store: &Store,
+    name: &str,
+    action: &str,
+    params: &HashMap<String, String>,
+) -> Result<(Manifest, Command)> {
+    let refuse = || {
+        anyhow!(
+            "the {name} plugin reads a secret, so only its bundled copy runs, \
+             reinstall it with `passbox plugin update {name}`"
+        )
+    };
+    let files = crate::first_party(name).ok_or_else(refuse)?;
+    let dir = store.plugins_dir().join(name);
+    for (file, bytes) in files {
+        if std::fs::read(dir.join(file)).ok().as_deref() != Some(bytes.as_bytes()) {
+            return Err(refuse());
+        }
+    }
+    let (_, toml) = files
+        .iter()
+        .find(|(file, _)| *file == "plugin.toml")
+        .ok_or_else(refuse)?;
+    let manifest: Manifest = toml::from_str(toml).context("bundled manifest")?;
+    let tool = manifest
+        .tool(action)
+        .with_context(|| format!("{name} has no action {action}"))?;
+    manifest.ensure_available()?;
+    let mut command = tool.command_with(params, files)?;
+    command.current_dir(dir);
+    Ok((manifest, command))
+}
+
+pub fn missing(plugin: &str, secret: &str) -> anyhow::Error {
+    anyhow!("the {plugin} plugin needs the secret {secret}, add it with `passbox add {secret}`")
+}
+
+/// Run a tool with `secret` on its stdin, never its env or argv, and return the scrubbed output
+pub fn run_fed(mut command: Command, secret: &str) -> Result<String> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .context("could not run the plugin command")?;
+    // Dropping the handle closes stdin, and a child that exits before reading reports that itself
+    let _ = child
+        .stdin
+        .take()
+        .expect("piped")
+        .write_all(secret.as_bytes());
+    let output = child.wait_with_output()?;
+    Ok(scrub(&render(&output), secret))
 }
 
 /// A plugin name becomes a directory under the store, so it must not climb out of it
@@ -431,10 +543,119 @@ mod tests {
                 &[("title", "T")],
                 &["gh", "issue", "create", "--title", "T", "--body", ""],
             ),
+            (
+                "imap",
+                "recent",
+                &[("count", "5")],
+                &["/usr/bin/python3", "-I", "-c", "imap.py", "recent", "5", ""],
+            ),
+            (
+                "imap",
+                "search",
+                &[("query", "invoice"), ("mailbox", "Archive")],
+                &[
+                    "/usr/bin/python3",
+                    "-I",
+                    "-c",
+                    "imap.py",
+                    "search",
+                    "invoice",
+                    "Archive",
+                ],
+            ),
+            (
+                "imap",
+                "read",
+                &[("id", "42")],
+                &["/usr/bin/python3", "-I", "-c", "imap.py", "read", "42", ""],
+            ),
+            (
+                "imap",
+                "attachments",
+                &[("id", "42")],
+                &[
+                    "/usr/bin/python3",
+                    "-I",
+                    "-c",
+                    "imap.py",
+                    "attachments",
+                    "42",
+                    "",
+                ],
+            ),
         ];
         for (plugin, action, pairs, expected) in cases {
             assert_eq!(&built(plugin, action, pairs), expected, "{plugin} {action}");
         }
+    }
+
+    fn fed() -> Manifest {
+        toml::from_str(
+            "name = \"demo\"\ndescription = \"test\"\nstdin = \"mail/imap\"\n\
+             [[tool]]\nname = \"recent\"\nparams = [\"q\"]\n\
+             run = [\"sh\", \"-c\", \"run.sh\", \"run.sh\", \"{q}\"]\n",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_prompt_names_the_secret_the_run_releases() {
+        let mut manifest = fed();
+        assert_eq!(
+            manifest.approval("recent", "claude"),
+            "run plugin:demo.recent for claude, releasing mail/imap"
+        );
+        manifest.stdin = None;
+        assert_eq!(
+            manifest.approval("recent", "claude"),
+            "run plugin:demo.recent for claude"
+        );
+    }
+
+    #[test]
+    fn a_script_name_in_the_template_becomes_its_bytes_and_a_param_value_does_not() {
+        let manifest = fed();
+        let cmd = manifest
+            .tool("recent")
+            .unwrap()
+            .command_with(&args(&[("q", "run.sh")]), &[("run.sh", "echo {q}")])
+            .unwrap();
+        let rendered: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(rendered, ["-c", "echo {q}", "echo {q}", "run.sh"]);
+    }
+
+    #[test]
+    fn the_child_gets_the_secret_on_stdin_and_not_in_its_env() {
+        let manifest = fed();
+        let script = "read -r pw; echo \"got $pw\" >&2; env";
+        let cmd = manifest
+            .tool("recent")
+            .unwrap()
+            .command_with(&args(&[("q", "x")]), &[("run.sh", script)])
+            .unwrap();
+        let out = run_fed(cmd, "hunter22-pw\nhost: h").unwrap();
+        // The child read it, and passbox blanked it on the way out
+        assert!(out.contains("got [redacted by passbox]"), "{out}");
+        let env = out.split("stderr:").next().unwrap();
+        assert!(!env.contains("hunter22"), "{env}");
+        assert!(!env.contains("redacted"), "{env}");
+        assert!(!out.contains("hunter22"), "{out}");
+    }
+
+    #[test]
+    fn a_password_is_scrubbed_and_its_fields_are_left() {
+        let secret = "hunter22\nuser: me@example.com";
+        assert_eq!(
+            scrub("me@example.com said hunter22", secret),
+            "me@example.com said [redacted by passbox]"
+        );
+        assert_eq!(
+            scrub(&format!("entry: {secret}"), secret),
+            "entry: [redacted by passbox]"
+        );
     }
 
     #[test]
