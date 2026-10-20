@@ -126,11 +126,15 @@ Rejected: a batch read op in the broker. The grant already approves a list of na
 
 Rejected: removing them only from each child. It covers the commands an agent picks, and misses `ps eww` and every subprocess added later. Startup removal covers both, and the per-child removal stays as a second layer.
 
-`passbox get` prints to stdout for interactive use. It refuses when stdout is not a terminal, because a pipe, a file or an agent's capture is where a printed secret leaks. A human who means to capture it, such as a library reading it in process, passes `--reveal`. The test is the terminal, not the caller, so it fails closed, an unknown tool is refused by the same rule that refuses a known one.
+`passbox get` prints to stdout for interactive use. It refuses when stdout is not a terminal, because a pipe, a file or an agent's capture is where a printed secret leaks. The test is the terminal, not the caller, so it fails closed, an unknown tool is refused by the same rule that refuses a known one.
 
 Rejected: a blocklist of known agent names. It fails open, because any agent not on the list passes, and the list never catches up. The terminal test needs no list.
 
 Rejected: enforcing the refusal in the broker. `get` and `exec` both send the same read, and the caller's terminal is a client-side fact the broker does not see. A client that lies about which one it is defeats a broker check too, so the guard belongs in the client where the terminal is known.
+
+Rejected: an override flag, `--reveal` until 2.0.0. The refusal named it, so anything that hit the refusal, an agent included, learned the way past it in the same message, and the check stopped only the honest mistake. Removing it also removed the library's in-memory reads, which were built on it, so a program now runs under `exec` and reads its environment.
+
+Cost: this is no boundary. `passbox exec --env V=name -- printenv V` still prints the value, because `exec` hands it to a child and the child can print it. passbox no longer offers a command that prints a secret into a pipe, and a caller who means to can still build one.
 
 `passbox copy` puts the value on the clipboard for the clipboard case. The value goes broker to the Swift helper to the pasteboard, never through stdout. The helper marks the entry with the `org.nspasteboard` concealed and transient types, which clipboard managers that honour the convention skip, so the secret never enters paste history. The helper stays alive to clear the clipboard after `--clear` seconds, 20 by default and at most 60, and clears only if the change count is untouched, so a value copied in the meantime is left alone. The cap keeps a secret from sitting on the clipboard for hours because of a typo.
 
@@ -145,6 +149,28 @@ The plugin files are writable by any process of the user, so an agent could edit
 Rejected: an `[env]` table mapping variables to secrets. Any process of the same user reads a child's env with `ps eww`, so an agent could poll and catch it, and on a local run the values went from the broker to the caller as JSON, over the socket to any local caller and over the tailnet to a remote one. Rejected: the password as a tool parameter, which is argv, readable by `ps`, and which the agent would have to hold. Rejected: reading the verified files from disk again at run time, which leaves a window between the check and the open. Rejected: plugin config for host and user, since one entry with fields is already how `--field` works and the whole account is one approval.
 
 Cost: one secret per plugin, since stdin carries one value. A plugin you write yourself cannot read a secret, it has to run under `passbox exec`. The secret name is fixed in the bundled manifest, so a second account needs a new release. The script is in argv, which `ps` shows, but it is the public bundled code. Scrubbing covers the whole value and the password line, not every field, because a mail tool prints the user's own address.
+
+## Plugins read, they never act
+
+passbox gives what it was asked for, a secret or data, and never acts for the caller. Every first-party tool is a read and is marked `readonly = true`. A tool that sends, adds, writes or pushes lets the caller act as the owner, and an approval or a window on it hands over that power for as long as it lasts. The `git` and `gh` plugins gated nothing, since an agent runs git and gh directly, so they were removed with `things3.add`, `mail.send` and `mail.attachments`, which wrote files. Gated git goes through the SSH agent, which prompts for every signature, and gh and a mail client get their credential for one command from `passbox exec`.
+
+Rejected: keeping the acting tools behind a prompt on every call. A prompt names the tool and not what it does with its arguments, so approving `mail.send` approves any recipient and any body. Cost: 2.0.0 drops those tools, and a job that used them calls its own client under `passbox exec`.
+
+## Plugin windows
+
+A plugin call prompts by default. `[plugins.windows]` in `~/.passbox/config.toml` maps one exact `"<plugin>.<tool>"` to a duration, and after one approved call the broker skips the prompt for that tool from the same caller scope until the window ends. The policy belongs to the owner, who edits the file, and not to the caller, which only asks.
+
+- A key is one plugin and one tool. A plugin name, `*` or `things3.*` is refused at load, as is a plugin that is not installed or a tool it lacks, so a window never covers a tool added later.
+- Only a `readonly` tool can have a window, and a key naming any other is refused at load.
+- A window is capped at 24 hours, the grant ceiling, and lives in the broker's memory, so a restart ends it as it ends tokens.
+- The scope is the caller identity the broker can check: the `tailscale whois` name for a tailnet request, and one local scope for everything on the Mac, since a local agent name is self declared.
+- A fed plugin such as `imap` still runs from its checked bundled copy on every call. The window holds the secret in memory, as a token holds its values, and feeds it on stdin, so the key can lapse while the window runs. The call is audited `by window` and the secret `released`.
+
+The tamper guard: the config is plain text that any process of the user can edit. The broker hashes the parsed section with each named tool's `run` and `stdin`, so an edit to the section or to a windowed tool's manifest changes the hash. A window applies only while the current hash is the approved one. A changed section makes the next plugin call prompt once with a reason listing the new windows, and approving it records the new hash in `windows-<host>.json` and ends the windows opened under the old one. A refused prompt leaves the old hash and its windows. The record is plain JSON with a MAC under the store key, so the broker can read it before a prompt to word that prompt, and a process that writes its own record cannot sign it, so a forged record opens nothing. Rejected: encrypting the record to the store recipient as project grants are, which needs the key to read it, so the broker could not word the prompt before it, and which proves nothing about who wrote it, since the recipient is public.
+
+Rejected: grants naming plugin tools, as `passbox grant plugin:things3.logbook`. A grant is minted by the caller and travels as a bearer token, so whoever holds it sets the policy and anyone it leaks to inherits it. A window is set by the owner in a file on the Mac and covers one scope. Rejected: windows on secrets, which the broker section rejects as per-agent approval windows: a plugin window opens one read of an app, never a value. Rejected: refusing `config.toml` edits outright, which would leave no way to change a window without a new release.
+
+Cost: one approval opens that tool for that scope for the whole window. On the Mac the scope is every local caller, so any process of the user can call a windowed tool without a prompt until it ends, and only the audit log shows what ran during it. A windowed fed plugin keeps its secret in broker memory for the window, and a rotated password is not seen until the window ends. A windowed call still takes the broker lock, so it waits behind an open prompt.
 
 ## Sync
 

@@ -12,7 +12,7 @@ passbox exec --env GITHUB_TOKEN=github/token -- gh api /user
 
 The value goes broker to child. It is not in your transcript, your logs, or any tool result you send onward. Use `--stdin` where the command accepts a secret that way, since anything running as the user can read a child's environment with `ps eww`.
 
-`passbox get` exists for a human at a terminal. It writes the secret to stdout, so it refuses when stdout is not a terminal, which is where an agent runs. Do not reach for `--reveal` to get past that, use `exec` or `run_with_secret`. `--reveal` is for a human capturing a value on purpose, such as a library that needs it in process.
+`passbox get` exists for a human at a terminal. It writes the secret to stdout, so it refuses when stdout is not a terminal, which is where an agent runs. No flag gets past that. Use `exec` or `run_with_secret`.
 
 ## Through MCP
 

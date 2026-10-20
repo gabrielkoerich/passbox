@@ -52,7 +52,7 @@ fn walk(root: &Path, at: &Path, out: &mut Vec<String>) -> Result<()> {
 pub use crate::store::select;
 
 /* The whole body is kept, not just the first line. pass entries commonly carry `key: value` lines
-under the password, and the Python client's `get_fields` reads them, so trimming to line one would lose data. */
+under the password, and `get --field` reads them, so trimming to line one would lose data. */
 fn show(entry: &str) -> Result<String> {
     let out = std::process::Command::new("pass")
         .arg("show")

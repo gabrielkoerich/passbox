@@ -1,4 +1,4 @@
-"""Read secrets from passbox, and hand one to a child process without holding it.
+"""Hand a secret from passbox to a child process without holding it.
 
 Nothing here is passbox-specific beyond the command names. It shells out to the CLI,
 so there is no library to install and no key material in this process.
@@ -73,31 +73,11 @@ class Passbox:
     def _name(self, path: str) -> str:
         return f"{self.namespace}/{path}" if self.namespace else path
 
-    def get(self, path: str) -> str:
-        """The whole value. For a multi-line entry this includes the fields."""
-        # A library reads the value in process on purpose, which is what --reveal is for
-        return self._run(["passbox", "get", "--reveal", self._name(path)])
-
-    def get_fields(self, path: str) -> dict[str, str]:
-        """First line as "password", then any "key: value" lines below it.
-
-        This is the layout `pass` uses, which passbox keeps on import.
-        """
-        lines = self.get(path).strip().splitlines()
-        if not lines:
-            return {}
-        fields = {"password": lines[0]}
-        for line in lines[1:]:
-            key, sep, value = line.partition(":")
-            if sep and key.strip() and value.strip():
-                fields[key.strip().lower()] = value.strip()
-        return fields
-
     def run_with(self, env_var: str, path: str, command: list[str]) -> subprocess.CompletedProcess[str]:
         """Run a command with the secret in its environment, never in this process.
 
-        Prefer this over get(). The value goes from the broker into the child, so a
-        crash dump or a traceback here cannot contain it.
+        The value goes from the broker into the child, so a crash dump or a traceback
+        here cannot contain it.
         """
         return subprocess.run(
             ["passbox", "exec", "--env", f"{env_var}={self._name(path)}", "--", *command],
@@ -131,12 +111,6 @@ class Passbox:
             env["PASSBOX_TOKEN"] = token
         return env
 
-    def _run(self, cmd: list[str]) -> str:
-        done = subprocess.run(
-            cmd, capture_output=True, text=True, check=True, timeout=READ_TIMEOUT, env=self._env()
-        )
-        return done.stdout
-
 
 def _self_check() -> None:
     """Round-trip against a throwaway store, so it needs no hardware and no prompt."""
@@ -163,12 +137,6 @@ def _self_check() -> None:
         box = Passbox(namespace="demo", agent="self-check", grant=["api"])
 
         assert box.is_available()
-        assert box.get("api").splitlines()[0] == "s3cret"
-        assert box.get_fields("api") == {
-            "password": "s3cret",
-            "username": "bot",
-            "host": "example.com",
-        }
         done = box.run_with("API_KEY", "api", ["sh", "-c", "test -n \"$API_KEY\" && echo ok"])
         assert done.stdout.strip() == "ok", done.stderr
         print("all checks passed")

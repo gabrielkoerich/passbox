@@ -60,7 +60,7 @@ passbox get github/token      # prints it, for a terminal
 passbox copy github/token     # to the clipboard, cleared after 20 seconds
 ```
 
-`get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. A deliberate capture passes `--reveal`. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after 20 seconds, or after `--clear N` seconds up to 60. For a command use `exec`.
+`get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. No flag overrides that. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after 20 seconds, or after `--clear N` seconds up to 60. For a command use `exec`.
 
 `add` refuses a name that already exists. To change a value, `passbox rm` it and add it again. The old value stays in its versions, so `passbox restore` brings it back.
 
@@ -229,13 +229,14 @@ Every decision is logged, encrypted, one record per line, with the agent, the se
 | `delegated` | A child token was minted from a live token, no prompt |
 | `project grant` | A `.passbox.toml` grant covered the read |
 | `approved` | A listing or a plugin run was approved |
+| `by window` | A plugin call ran inside an approval window from `config.toml`, no prompt |
 | `unknown` | The prompt was approved, and no secret or SSH key has that name |
 | `denied` | The prompt was refused |
 | `prompt failed` | No prompt could be shown, such as with the lid closed, or it did not complete |
 
 ## Plugins
 
-A plugin adds gated actions on a local app, such as Mail or Things 3. Each action is a tool, so an agent runs it behind the same Touch ID prompt and audit log as a secret read.
+A plugin adds gated reads of a local app, such as Mail or Things 3. Each read is a tool, so an agent runs it behind the same Touch ID prompt and audit log as a secret read. A plugin returns data and never acts for the caller: there is no tool that sends, adds, writes or pushes.
 
 ```bash
 passbox plugin add mail                         # first-party, bundled in the binary
@@ -244,18 +245,16 @@ passbox plugin mail recent --count 5            # run a tool, approved and audit
 passbox plugin remove mail
 ```
 
-The same tools appear over MCP as `mail.recent`, `mail.send` and so on, so an agent calls them through the server. Every call prompts. The broker approves and audits, the caller runs the command, so it keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
+The same tools appear over MCP as `mail.recent`, `mail.search` and so on, so an agent calls them through the server. Every call prompts, unless a [window](#approval-windows) you set covers it. The broker approves and audits, the caller runs the command, so it keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
 
 First-party plugins:
 
 | Plugin | Needs | Tools |
 |---|---|---|
-| `mail` | Mail.app, nothing to install | `recent`, `search`, `attachments`, `send` |
+| `mail` | Mail.app, nothing to install | `recent`, `search` |
 | `calendar` | the `icalBuddy` CLI | `today`, `agenda` |
-| `things3` | the `things` CLI | `add`, `inbox`, `today`, `search`, and for jobs that parse JSON `today_json`, `inbox_json`, `search_json`, `upcoming`, `logbook`, `completed`, plus `all` and `trash` |
+| `things3` | the `things` CLI | `inbox`, `today`, `search`, and for jobs that parse JSON `today_json`, `inbox_json`, `search_json`, `upcoming`, `logbook`, `completed`, plus `all` and `trash` |
 | `imap` | `/usr/bin/python3` from the Command Line Tools, an account entry in the store | `recent`, `search`, `read`, `attachments` |
-| `git` | git | `push` |
-| `gh` | the `gh` CLI | `pr`, `issue` |
 
 `mail` drives Mail through `osascript`, which ships with macOS. The first read raises the macOS automation prompt for Mail once.
 
@@ -301,15 +300,37 @@ openssl s_client -starttls imap -connect 127.0.0.1:1143 </dev/null 2>/dev/null \
 
 Put those values in the `mail/imap` entry as above, the fingerprint as openssl prints it or as bare hex. The prompt for each run names `mail/imap`, and the audit log records it as `released`. Every run, from the CLI, MCP or a client on the tailnet, happens inside the broker on the Mac, and only the mail comes back. A headless store with `PASSBOX_PASSPHRASE` has no broker, so there the CLI runs it the same way. The broker runs only the copy bundled in the binary: if the installed `imap.py` or `plugin.toml` differs from it, the run is refused before the prompt until you run `passbox plugin update imap`.
 
-`git` and `gh` run in the directory you call them from, not the plugin directory, so they act on the current repository. Both prompt on every call, so an agent cannot push or open a PR without your fingerprint.
+There is no plugin for sending mail, adding a todo, git or gh. A job that sends mail uses its own client and gets the SMTP password from `passbox exec`, for example `passbox exec --env SMTP_PASSWORD=mail/smtp -- ./send-report`. An agent runs git and gh itself, so a plugin for them gated nothing. Gate git through the [SSH agent](#ssh-keys), which prompts for every signature, and give gh its token for one command with `passbox exec --env GH_TOKEN=github/token -- gh pr create`.
 
 A tool whose command is missing is refused before it prompts, with the install line above.
 
-Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument.
+Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument. Mark a tool that only reads with `readonly = true`, so a window can cover it. Every first-party tool is marked.
 
 A first-party plugin can name one store secret with `stdin = "<secret name>"`. Such a plugin runs only inside the broker and only as its bundled copy. Each run prompts naming the secret, audits it as `released`, writes it to the tool's stdin and closes it, and returns the tool's output with the secret scrubbed out. A request that asks only for approval is refused, so the value never goes back to a caller. A plugin you write yourself cannot read a secret: one with `stdin` is refused. Run it under `passbox exec` instead.
 
 Each plugin carries a `version`. `passbox plugin update <name|dir>` refreshes an installed plugin, and `plugin list` flags a first-party plugin whose bundled version differs from the installed copy, which is what happens after a `brew upgrade`.
+
+### Approval windows
+
+Every plugin call prompts. A job that reads Things 3 every few minutes would need a finger each time, so `~/.passbox/config.toml` can open a window for a named tool:
+
+```toml
+[plugins.windows]
+"things3.logbook" = "24h"
+"things3.upcoming" = "24h"
+"imap.search" = "1h"
+```
+
+After one approved call, later calls of that tool skip the prompt until the window ends, and each is audited as `by window`. A window is a duration in `s`, `m` or `h`, capped at 24 hours like a grant.
+
+- A key names one plugin and one tool, in quotes. `things3`, `*` and `things3.*` are refused, and so is a plugin that is not installed or a tool it does not have.
+- Only a tool marked `readonly = true` can have a window. A key naming any other tool is refused.
+- A window covers the caller that opened it. A tailnet client is named by `tailscale whois`, so one host's window does not cover another host. Every caller on the Mac is one scope, and it does not cover a tailnet client.
+- The file is plain text that any process of yours can edit. The broker keeps the hash of the section you approved, and of each named tool's command. An edit takes effect only after one prompt that lists the new windows, such as `allow plugin windows things3.logbook 24h, imap.search 1h for claude, then run plugin:things3.logbook for claude`. Approving it ends the windows opened under the old section, and a refused prompt keeps the old section.
+- Windows live in the broker's memory, so a restart ends them. The approved hash survives it.
+- A plugin with `stdin`, such as `imap`, still runs inside the broker on every call in the window, from its checked bundled copy, and each call audits the secret as `released`. The window holds the secret in the broker's memory, as a token does, and the output never holds it.
+
+A bad section is refused with the reason on the next plugin call, before any prompt. See [docs/content/design.md](docs/content/design.md#plugin-windows) for what a window costs.
 
 ## Backup and sync
 
@@ -370,7 +391,7 @@ directory = ".passbox"   # icloud: one folder in iCloud Drive, .passbox when lef
 # remote = "git@github.com:you/s.git"   git, or "b2:passbox" for rclone
 ```
 
-To move the copy, edit one line. The file stays on this Mac and is never synced, since a USB path on one Mac means nothing on another. The older one-line `~/.passbox/remote` is deprecated. It is still read when there is no config, with a warning, and stops being read in v2. `passbox sync --enable` moves it to the config, with the same destination.
+The same file holds the [plugin windows](#approval-windows) in `[plugins.windows]`, which `--enable` keeps when it rewrites `[sync]`. To move the copy, edit one line. The file stays on this Mac and is never synced, since a USB path on one Mac means nothing on another. The older one-line `~/.passbox/remote` is deprecated. It is still read when there is no config, with a warning, and stops being read in v2. `passbox sync --enable` moves it to the config, with the same destination.
 
 **A destination that makes no sense is refused.** passbox checks the config on every read and stops with the reason, instead of copying somewhere new:
 
@@ -649,7 +670,7 @@ The client appends port 8787 when the line has no port, and `host:port` names an
 fly launch --no-deploy --name passbox-poc
 fly secrets set TS_AUTHKEY=tskey-auth-... PASSBOX_HOST=100.x.y.z
 fly deploy --ha=false
-fly ssh console -C "passbox get --reveal github/token"
+fly ssh console --pty -C "passbox get github/token"
 ```
 
 Give the container a real tun device. `tailscaled --tun=userspace-networking` reaches the tailnet only through a SOCKS proxy, so an ordinary `connect()` to a 100.x address times out with no hint why. The entrypoint uses `/dev/net/tun` when the platform provides one.
@@ -687,7 +708,8 @@ passbox restore github/token --index 0  # put the newest one back
   wraps/se-<host>.json      the store key under that Mac's Secure Enclave
   audit-<host>.log          one encrypted record per line
   grants-<host>.age         project approvals, never synced
-  config.toml               where sync copies to, never synced
+  config.toml               where sync copies to and the plugin windows, never synced
+  windows-<host>.json       the hash of the approved plugin windows, never synced
   plugins/                  installed plugins
   ssh-keys.pub              the public halves the SSH agent lists
   broker.sock               the approval socket
@@ -739,27 +761,15 @@ Reading one field hands a caller the password without the note beside it.
 
 ### Using it from a program
 
-In Rust, add the crate without its default features. They build the CLI's Secure Enclave helper, which the library does not use:
+Launch the program under `passbox exec` and read the environment. It needs no library and no dependency:
 
 ```bash
-cargo add passbox --no-default-features
+passbox exec --env API_KEY=acme/api --env DB=acme/db -- ./deploy
 ```
 
-```rust
-use passbox::Passbox;
+One prompt covers every `--env`. The whole entry lands in the variable, so a program that wants a field splits the `key: value` lines itself. [`examples/rust`](examples/rust) runs itself this way.
 
-// One approval covers both secrets for 24 hours
-let mut pb = Passbox::new(Some("acme"), Some("my-job"), &["api", "db"]);
-
-// Preferred: the value goes from the broker into the child
-let out = pb.run_with("API_KEY", "api", &["./deploy"])?;
-
-// When a library needs the value in-process
-let db = pb.fields("db")?;
-let password = &db["password"];
-```
-
-The library runs the `passbox` binary on `PATH`, so it works on a Mac and on a Linux machine that asks one. [`examples/rust`](examples/rust) is a small project that depends on it.
+There is no in-process read. `passbox get` refuses a pipe, and the `passbox` crate is the CLI alone since 2.0.0, so `cargo install passbox` is still how it installs outside Homebrew.
 
 [`examples/`](examples) also holds [Python](examples/python) and [TypeScript](examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
 

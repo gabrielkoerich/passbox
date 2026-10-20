@@ -43,10 +43,14 @@ pub fn config_path(store: &Store) -> PathBuf {
     store.dir.join("config.toml")
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq)]
+#[derive(serde::Deserialize, serde::Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct Config {
-    sync: Engine,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sync: Option<Engine>,
+    // Checked by the broker against the plugin manifests, see `plugin::windows`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plugins: Option<toml::Table>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq, Clone)]
@@ -140,7 +144,9 @@ pub fn configured(store: &Store) -> Result<Option<Destination>> {
     if let Ok(text) = fs::read_to_string(&path) {
         let invalid = || format!("{} is not valid", path.display());
         let config: Config = toml::from_str(&text).with_context(invalid)?;
-        return config.sync.resolve().map(Some).with_context(invalid);
+        if let Some(engine) = config.sync {
+            return engine.resolve().map(Some).with_context(invalid);
+        }
     }
     let old = legacy(store)?;
     if old.is_some() {
@@ -197,7 +203,15 @@ pub fn migrate(store: &Store) -> Result<Option<Destination>> {
 /// Written by `--enable`, and it replaces the old `remote` file
 pub fn choose(store: &Store, engine: Engine) -> Result<Destination> {
     let destination = engine.resolve()?;
-    let text = toml::to_string(&Config { sync: engine })?;
+    // The plugin windows in the same file are the owner's, so choosing a destination keeps them
+    let plugins = fs::read_to_string(config_path(store))
+        .ok()
+        .and_then(|text| toml::from_str::<Config>(&text).ok())
+        .and_then(|c| c.plugins);
+    let text = toml::to_string(&Config {
+        sync: Some(engine),
+        plugins,
+    })?;
     crate::store::write_private(&config_path(store), text.as_bytes())?;
     let _ = fs::remove_file(remote_path(store));
     Ok(destination)
@@ -233,6 +247,7 @@ fn skip(relative: &Path) -> bool {
         // A copy cut off before its rename, never a real file
         || text.ends_with(".partial")
         || (text.starts_with("grants-") && text.ends_with(".age"))
+        || (text.starts_with("windows-") && text.ends_with(".json"))
 }
 
 fn walk(root: &Path, base: &Path, out: &mut BTreeMap<PathBuf, SystemTime>) -> Result<()> {
@@ -457,10 +472,18 @@ mod tests {
         let engine = Engine::Directory {
             path: "/Volumes/stick/passbox".into(),
         };
+        fs::write(
+            config_path(&one),
+            "[plugins.windows]\n\"things3.logbook\" = \"1h\"\n",
+        )
+        .unwrap();
+        // Windows alone name no destination, so the old file still answers
+        assert_eq!(configured(&one).unwrap().unwrap().target, "/old/place");
         choose(&one, engine).unwrap();
         assert!(!remote_path(&one).exists(), "the old file is replaced");
         let text = fs::read_to_string(config_path(&one)).unwrap();
         assert!(text.contains("engine = \"directory\""), "{text}");
+        assert!(text.contains("\"things3.logbook\" = \"1h\""), "{text}");
         assert_eq!(
             configured(&one).unwrap().unwrap().target,
             "/Volumes/stick/passbox"
@@ -503,7 +526,7 @@ mod tests {
 
     #[test]
     fn the_engine_names_the_kind_and_icloud_names_one_folder() {
-        let parse = |text: &str| toml::from_str::<Config>(text).map(|c| c.sync.resolve());
+        let parse = |text: &str| toml::from_str::<Config>(text).map(|c| c.sync.unwrap().resolve());
         let icloud = parse("[sync]\nengine = \"icloud\"\n").unwrap().unwrap();
         assert!(
             icloud.target.ends_with("com~apple~CloudDocs/.passbox"),
@@ -524,7 +547,7 @@ mod tests {
         let refused = |text: &str| {
             toml::from_str::<Config>(text)
                 .map_err(anyhow::Error::from)
-                .and_then(|c| c.sync.resolve())
+                .and_then(|c| c.sync.context("no sync")?.resolve())
                 .is_err()
         };
         assert!(refused(

@@ -182,9 +182,6 @@ enum Command {
         /// One field of a multi-line entry, such as `username`. `password` is the first line
         #[arg(long)]
         field: Option<String>,
-        /// Print to a pipe or file anyway. Without it `get` refuses unless stdout is a terminal
-        #[arg(long)]
-        reveal: bool,
     },
     /// Copy a secret to the clipboard, which clears after a few seconds and skips clipboard history
     Copy {
@@ -326,11 +323,7 @@ fn run() -> Result<()> {
             multiline,
             fields,
         } => add(&store, &name, multiline, &fields).inspect(|()| written(&store, "add a secret")),
-        Command::Get {
-            name,
-            field,
-            reveal,
-        } => get(&store, &name, field.as_deref(), reveal),
+        Command::Get { name, field } => get(&store, &name, field.as_deref()),
         Command::Copy { name, field, clear } => copy(&store, &name, field.as_deref(), clear),
         Command::Grant {
             names,
@@ -386,7 +379,7 @@ fn ensure_store_gitignore(store: &Store) -> Result<()> {
     if !path.exists() {
         std::fs::write(
             &path,
-            "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\n",
+            "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\nwindows-*.json\n",
         )?;
     }
     Ok(())
@@ -1107,21 +1100,19 @@ fn read_field(store: &Store, name: &str, field: Option<&str>) -> Result<String> 
 }
 
 // get writes the value to stdout, which lands in an agent's context, so it refuses unless
-// stdout is a terminal. A deliberate pipe or capture passes --reveal, and copy and exec stay clean
-fn get(store: &Store, name: &str, field: Option<&str>, reveal: bool) -> Result<()> {
+// stdout is a terminal, with no flag to override it. copy and exec stay clean
+fn get(store: &Store, name: &str, field: Option<&str>) -> Result<()> {
     let mut out = std::io::stdout();
-    if !reveal && !out.is_terminal() {
+    if !out.is_terminal() {
         bail!(
             "passbox get writes a secret to stdout and this is not a terminal\n\
-             use `passbox copy {name}`, `passbox exec --stdin {name} -- CMD`, the run_with_secret \
-             MCP tool, or `--reveal` to capture it anyway"
+             use `passbox copy {name}`, `passbox exec --stdin {name} -- CMD`, or the \
+             run_with_secret MCP tool"
         );
     }
     let value = read_field(store, name, field)?;
     out.write_all(value.as_bytes())?;
-    if out.is_terminal() {
-        out.write_all(b"\n")?;
-    }
+    out.write_all(b"\n")?;
     Ok(())
 }
 
@@ -1286,14 +1277,6 @@ fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
                 "search.applescript",
                 include_str!("../plugins/mail/search.applescript"),
             ),
-            (
-                "attachments.applescript",
-                include_str!("../plugins/mail/attachments.applescript"),
-            ),
-            (
-                "send.applescript",
-                include_str!("../plugins/mail/send.applescript"),
-            ),
         ]),
         "calendar" => Some(&[
             (
@@ -1310,8 +1293,6 @@ fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
             ("plugin.toml", include_str!("../plugins/imap/plugin.toml")),
             ("imap.py", include_str!("../plugins/imap/imap.py")),
         ]),
-        "git" => Some(&[("plugin.toml", include_str!("../plugins/git/plugin.toml"))]),
-        "gh" => Some(&[("plugin.toml", include_str!("../plugins/gh/plugin.toml"))]),
         _ => None,
     }
 }

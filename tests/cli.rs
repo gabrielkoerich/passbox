@@ -76,6 +76,20 @@ impl Cli {
         if ok { Ok(stdout) } else { Err(stderr) }
     }
 
+    /// A value, read the way a program reads one, since `get` refuses a pipe
+    fn read(&self, name: &str) -> Result<String, String> {
+        self.read_as(PASSPHRASE, name)
+    }
+
+    fn read_as(&self, passphrase: &str, name: &str) -> Result<String, String> {
+        let env = format!("V={name}");
+        self.run_as(
+            passphrase,
+            &[&["exec", "--env", &env], &PRINT_V[..]].concat(),
+            None,
+        )
+    }
+
     /// The confirmation a command prints, which goes to stderr to keep stdout pipeable
     fn note(&self, args: &[&str], stdin: Option<&str>) -> String {
         let (ok, _, stderr) = self.exec(PASSPHRASE, args, stdin);
@@ -115,6 +129,9 @@ impl Cli {
     }
 }
 
+/// `exec` hands the value to a child that prints it, which is how a test sees what was stored
+const PRINT_V: [&str; 4] = ["--", "sh", "-c", "printf %s \"$V\""];
+
 #[test]
 fn add_get_and_list() {
     let cli = Cli::new();
@@ -122,10 +139,7 @@ fn add_get_and_list() {
     cli.run(&["add", "banking/login"], Some("swordfish"))
         .unwrap();
 
-    assert_eq!(
-        cli.run(&["get", "--reveal", "github/token"], None).unwrap(),
-        "ghp_abc"
-    );
+    assert_eq!(cli.read("github/token").unwrap(), "ghp_abc");
     assert_eq!(
         cli.run(&["ls"], None).unwrap(),
         "banking/login\ngithub/token\n"
@@ -133,15 +147,41 @@ fn add_get_and_list() {
 }
 
 #[test]
-fn get_refuses_a_capture_without_reveal() {
+fn get_refuses_a_capture() {
     let cli = Cli::new();
     cli.run(&["add", "a/b"], Some("v")).unwrap();
     // stdout is a pipe in the harness, the same shape as an agent capturing the value
     let err = cli.run(&["get", "a/b"], None).unwrap_err();
     assert!(err.contains("not a terminal"), "{err}");
     assert!(err.contains("passbox copy"), "{err}");
-    // --reveal is the deliberate capture path
-    assert_eq!(cli.run(&["get", "--reveal", "a/b"], None).unwrap(), "v");
+    assert!(!err.contains("--reveal"), "{err}");
+    // The override is gone, so it is an unknown argument
+    let err = cli.run(&["get", "--reveal", "a/b"], None).unwrap_err();
+    assert!(err.contains("unexpected argument '--reveal'"), "{err}");
+}
+
+/// The terminal path, reached through the pseudo-terminal `script` opens
+#[test]
+fn get_prints_at_a_terminal() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("at-a-terminal")).unwrap();
+    let bin = env!("CARGO_BIN_EXE_passbox");
+    let mut script = Command::new("script");
+    script.envs(
+        cli.cmd(PASSPHRASE)
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_owned(), v?.to_owned()))),
+    );
+    // BSD script takes the command as arguments, util-linux takes one string
+    if cfg!(target_os = "macos") {
+        script.args(["-q", "/dev/null", bin, "get", "a/b"]);
+    } else {
+        script.args(["-qec", &format!("'{bin}' get a/b"), "/dev/null"]);
+    }
+
+    let out = script.stdin(Stdio::null()).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("at-a-terminal"), "{stdout}");
 }
 
 #[test]
@@ -159,7 +199,7 @@ fn copy_puts_the_value_on_the_clipboard() {
 fn there_are_no_modes() {
     let cli = Cli::new();
     cli.run(&["add", "a/b"], Some("v")).unwrap();
-    assert_eq!(cli.run(&["get", "--reveal", "a/b"], None).unwrap(), "v");
+    assert_eq!(cli.read("a/b").unwrap(), "v");
     assert!(
         cli.run(&["add", "a/b", "--mode", "never"], Some("v"))
             .is_err()
@@ -258,7 +298,7 @@ fn a_first_party_plugin_installs_by_name() {
     let cli = Cli::new();
     cli.note(&["plugin", "add", "things3"], None);
     let list = cli.run(&["plugin", "list"], None).unwrap();
-    assert!(list.contains("things3 add"), "{list}");
+    assert!(list.contains("things3 logbook"), "{list}");
     assert!(list.contains("things3 search"), "{list}");
     // a second install is refused rather than silently overwriting
     assert!(
@@ -350,10 +390,10 @@ fn a_stale_first_party_plugin_is_flagged_for_update() {
     let toml = cli.path().join("plugins/things3/plugin.toml");
     let older = std::fs::read_to_string(&toml)
         .unwrap()
-        .replace("version = \"1.1.0\"", "version = \"0.1.0\"");
+        .replace("version = \"2.0.0\"", "version = \"0.1.0\"");
     std::fs::write(&toml, older).unwrap();
     let list = cli.run(&["plugin", "list"], None).unwrap();
-    assert!(list.contains("update available: 0.1.0 -> 1.1.0"), "{list}");
+    assert!(list.contains("update available: 0.1.0 -> 2.0.0"), "{list}");
 }
 
 #[test]
@@ -398,7 +438,7 @@ fn a_headless_read_is_audited() {
     let cli = Cli::new();
     cli.run(&["add", "a/one"], Some("v1")).unwrap();
     cli.run(&["add", "a/two"], Some("v2")).unwrap();
-    cli.run(&["get", "--reveal", "a/one"], None).unwrap();
+    cli.read("a/one").unwrap();
     cli.run(
         &["exec", "--env", "X=a/one", "--env", "Y=a/two", "--", "true"],
         None,
@@ -421,7 +461,7 @@ fn nothing_on_disk_reveals_a_name() {
     std::fs::write(cli.path().join("names"), "github/token\n").unwrap();
     cli.run(&["add", "github/token"], Some("ghp_abc")).unwrap();
     cli.run(&["ls"], None).unwrap();
-    cli.run(&["get", "--reveal", "github/token"], None).unwrap();
+    cli.read("github/token").unwrap();
 
     let mut dirs = vec![cli.path().to_path_buf()];
     while let Some(dir) = dirs.pop() {
@@ -454,10 +494,7 @@ fn add_refuses_an_existing_name() {
     cli.run(&["add", "github/token"], Some("good")).unwrap();
     let err = cli.run(&["add", "github/token"], Some("bad")).unwrap_err();
     assert!(err.contains("already exists"), "{err}");
-    assert_eq!(
-        cli.run(&["get", "--reveal", "github/token"], None).unwrap(),
-        "good"
-    );
+    assert_eq!(cli.read("github/token").unwrap(), "good");
 }
 
 #[test]
@@ -466,17 +503,11 @@ fn a_replaced_value_is_recoverable() {
     cli.run(&["add", "github/token"], Some("good")).unwrap();
     cli.run(&["rm", "github/token"], None).unwrap();
     cli.run(&["add", "github/token"], Some("bad")).unwrap();
-    assert_eq!(
-        cli.run(&["get", "--reveal", "github/token"], None).unwrap(),
-        "bad"
-    );
+    assert_eq!(cli.read("github/token").unwrap(), "bad");
 
     cli.run(&["restore", "github/token", "--index", "0"], None)
         .unwrap();
-    assert_eq!(
-        cli.run(&["get", "--reveal", "github/token"], None).unwrap(),
-        "good"
-    );
+    assert_eq!(cli.read("github/token").unwrap(), "good");
 }
 
 #[test]
@@ -487,18 +518,11 @@ fn a_deleted_secret_is_still_recoverable() {
     cli.run(&["rm", "banking/login"], None).unwrap();
 
     assert_eq!(cli.run(&["ls"], None).unwrap(), "");
-    assert!(
-        cli.run(&["get", "--reveal", "banking/login"], None)
-            .is_err()
-    );
+    assert!(cli.read("banking/login").is_err());
 
     cli.run(&["restore", "banking/login", "--index", "0"], None)
         .unwrap();
-    assert_eq!(
-        cli.run(&["get", "--reveal", "banking/login"], None)
-            .unwrap(),
-        "swordfish"
-    );
+    assert_eq!(cli.read("banking/login").unwrap(), "swordfish");
 }
 
 #[test]
@@ -506,9 +530,7 @@ fn a_wrong_passphrase_is_refused() {
     let cli = Cli::new();
     cli.run(&["add", "github/token"], Some("ghp_abc")).unwrap();
 
-    let err = cli
-        .run_as("wrong", &["get", "--reveal", "github/token"], None)
-        .unwrap_err();
+    let err = cli.read_as("wrong", "github/token").unwrap_err();
     assert!(err.contains("passphrase"), "{err}");
     assert!(!err.contains("ghp_abc"));
 }
@@ -569,10 +591,7 @@ fn a_secret_deleted_on_another_machine_can_still_be_restored() {
 
     let two = Cli::empty();
     two.sync(remote.path());
-    assert_eq!(
-        two.run(&["get", "--reveal", "github/token"], None).unwrap(),
-        "ghp_abc"
-    );
+    assert_eq!(two.read("github/token").unwrap(), "ghp_abc");
 
     two.run(&["rm", "github/token"], None).unwrap();
     two.sync(remote.path());
@@ -581,10 +600,7 @@ fn a_secret_deleted_on_another_machine_can_still_be_restored() {
 
     one.run(&["restore", "github/token", "--index", "0"], None)
         .unwrap();
-    assert_eq!(
-        one.run(&["get", "--reveal", "github/token"], None).unwrap(),
-        "ghp_abc"
-    );
+    assert_eq!(one.read("github/token").unwrap(), "ghp_abc");
 }
 
 /// Sync is off until asked for, so a fresh store holds nothing an offline attacker could grind
@@ -661,7 +677,7 @@ fn a_write_pushes_when_the_repo_has_a_remote() {
     assert_eq!(local, pushed, "the write should reach the remote");
 }
 
-/* pass entries carry `key: value` lines under the password, and bean's get_fields reads them, so
+/* pass entries carry `key: value` lines under the password, and `get --field` reads them, so
 the import has to keep the whole body rather than the first line. */
 #[test]
 fn importing_from_pass_keeps_the_whole_entry() {
@@ -707,9 +723,7 @@ fn importing_from_pass_keeps_the_whole_entry() {
         "bean/fred-api-key\nbean/hl-mainnet-pk\n"
     );
 
-    let body = cli
-        .run(&["get", "--reveal", "bean/hl-mainnet-pk"], None)
-        .unwrap();
+    let body = cli.read("bean/hl-mainnet-pk").unwrap();
     assert_eq!(body, "topsecret\nlogin: gb\nurl: https://example.com");
 }
 
@@ -750,7 +764,7 @@ fn importing_twice_skips_what_is_already_there() {
 #[test]
 fn a_missing_secret_fails_loudly() {
     let cli = Cli::new();
-    let err = cli.run(&["get", "--reveal", "nope"], None).unwrap_err();
+    let err = cli.read("nope").unwrap_err();
     assert!(err.contains("no secret named nope"), "{err}");
 }
 
@@ -805,7 +819,7 @@ fn enable_moves_the_old_remote_file_into_the_config() {
             ("before/move", "value-before"),
             ("after/move", "value-after"),
         ] {
-            assert_eq!(store.run(&["get", "--reveal", name], None).unwrap(), value);
+            assert_eq!(store.read(name).unwrap(), value);
         }
     }
 }
@@ -1411,6 +1425,11 @@ impl Bound {
         }
     }
 
+    fn read(&self, name: &str) -> Result<String, String> {
+        let env = format!("V={name}");
+        self.run(&[&["exec", "--env", &env], &PRINT_V[..]].concat(), None)
+    }
+
     fn prompts(&self) -> Vec<String> {
         std::fs::read_to_string(self.log.path().join("prompts"))
             .unwrap_or_default()
@@ -1486,14 +1505,15 @@ fn a_prompt_left_open_holds_up_no_token_read_and_raises_no_second_prompt() {
 
     std::thread::scope(|scope| {
         let held = bound.hold();
-        let first = scope.spawn(|| bound.run(&["get", "--reveal", "demo/two"], None));
+        let first = scope.spawn(|| bound.read("demo/two"));
         bound.wait_for_prompts(1);
-        let second = scope.spawn(|| bound.run(&["get", "--reveal", "demo/two"], None));
+        let second = scope.spawn(|| bound.read("demo/two"));
 
         let mut read = bound
             .cmd()
             .env("PASSBOX_TOKEN", token)
-            .args(["get", "--reveal", "demo/one"])
+            .args(["exec", "--env", "V=demo/one"])
+            .args(PRINT_V)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1721,6 +1741,199 @@ fn a_plugin_without_stdin_still_runs_in_the_caller_after_an_approval() {
 
     let approve = r#"{"name":"demo","agent":"raw","op":"plugin","action":"where","run":false}"#;
     assert!(ask_socket(&bound, approve).contains("\"value\":\"ok\""));
+}
+
+/// A plugin of our own with two reads and one action, installed with the broker up and no prompt logged
+fn bound_with_reads() -> (Bound, tempfile::TempDir) {
+    let bound = Bound::new();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        "name = \"demo\"\ndescription = \"test\"\n\n\
+         [[tool]]\nname = \"a\"\nreadonly = true\nrun = [\"printf\", \"read a\"]\n\n\
+         [[tool]]\nname = \"b\"\nreadonly = true\nrun = [\"printf\", \"read b\"]\n\n\
+         [[tool]]\nname = \"act\"\nrun = [\"printf\", \"acted\"]\n",
+    )
+    .unwrap();
+    bound
+        .run(&["plugin", "add", src.path().to_str().unwrap()], None)
+        .unwrap();
+    bound.run(&["ls"], None).unwrap();
+    bound.forget_prompts();
+    (bound, src)
+}
+
+fn set_windows(bound: &Bound, section: &str) {
+    std::fs::write(
+        bound.cli.path().join("config.toml"),
+        format!("[plugins.windows]\n{section}\n"),
+    )
+    .unwrap();
+}
+
+fn count(log: &str, secret: &str, decision: &str) -> usize {
+    log.lines()
+        .filter(|l| {
+            l.contains(&format!("\"secret\":\"{secret}\""))
+                && l.contains(&format!("\"decision\":\"{decision}\""))
+        })
+        .count()
+}
+
+const RUN_A: &str = "run plugin:demo.a for test-agent";
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn with_no_window_every_plugin_call_prompts() {
+    let (bound, _src) = bound_with_reads();
+    for _ in 0..3 {
+        assert_eq!(bound.run(&["plugin", "demo", "a"], None).unwrap(), "read a");
+    }
+    assert_eq!(bound.prompts(), [RUN_A; 3]);
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_window_skips_the_prompt_until_it_ends_and_is_audited() {
+    let (bound, _src) = bound_with_reads();
+    set_windows(&bound, "\"demo.a\" = \"3s\"");
+    for _ in 0..3 {
+        assert_eq!(bound.run(&["plugin", "demo", "a"], None).unwrap(), "read a");
+    }
+    assert_eq!(
+        bound.prompts(),
+        [format!(
+            "allow plugin windows demo.a 3s for test-agent, then {RUN_A}"
+        )]
+    );
+    // A tool the section does not name still prompts
+    bound.run(&["plugin", "demo", "b"], None).unwrap();
+    assert_eq!(bound.prompts().len(), 2, "{:?}", bound.prompts());
+
+    std::thread::sleep(Duration::from_millis(3_200));
+    bound.forget_prompts();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert_eq!(bound.prompts(), [RUN_A], "an ended window prompts");
+
+    let log = bound.audit();
+    assert_eq!(count(&log, "plugin:demo.a", "by window"), 2, "{log}");
+    assert_eq!(count(&log, "plugin:demo.a", "approved"), 2, "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_window_on_a_tool_that_is_not_readonly_or_a_bad_key_is_refused_before_any_prompt() {
+    let (bound, _src) = bound_with_reads();
+    for (section, why) in [
+        ("\"demo.act\" = \"1h\"", "not marked readonly"),
+        ("demo = \"1h\"", "one plugin and one tool"),
+        ("\"*\" = \"1h\"", "one plugin and one tool"),
+        ("\"demo.*\" = \"1h\"", "one plugin and one tool"),
+        ("\"other.a\" = \"1h\"", "not installed"),
+    ] {
+        set_windows(&bound, section);
+        let err = bound.run(&["plugin", "demo", "a"], None).unwrap_err();
+        assert!(err.contains(why), "{section}: {err}");
+        assert!(err.contains("config.toml is not valid"), "{section}: {err}");
+    }
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn an_edited_section_waits_for_its_prompt_and_a_refusal_keeps_the_old_one() {
+    let (bound, _src) = bound_with_reads();
+    let first = "\"demo.a\" = \"1h\"";
+    set_windows(&bound, first);
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert_eq!(bound.prompts().len(), 1, "{:?}", bound.prompts());
+
+    // The edit lists both windows, and until it is approved the open window does not apply
+    bound.forget_prompts();
+    set_windows(&bound, &format!("{first}\n\"demo.b\" = \"1h\""));
+    bound.deny("1");
+    assert!(bound.run(&["plugin", "demo", "a"], None).is_err());
+    assert_eq!(
+        bound.prompts(),
+        [format!(
+            "allow plugin windows demo.a 1h, demo.b 1h for test-agent, then {RUN_A}"
+        )]
+    );
+
+    // Refused, so the old section still applies and its window is still open
+    bound.forget_prompts();
+    set_windows(&bound, first);
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+
+    // Approved, so the edit applies
+    set_windows(&bound, &format!("{first}\n\"demo.b\" = \"1h\""));
+    bound.run(&["plugin", "demo", "b"], None).unwrap();
+    bound.run(&["plugin", "demo", "b"], None).unwrap();
+    assert_eq!(bound.prompts().len(), 1, "{:?}", bound.prompts());
+    assert!(bound.prompts()[0].starts_with("allow plugin windows demo.a 1h, demo.b 1h"));
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn the_approved_section_survives_a_broker_restart_and_its_windows_do_not() {
+    let (bound, _src) = bound_with_reads();
+    set_windows(&bound, "\"demo.a\" = \"1h\"");
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert_eq!(bound.prompts().len(), 1, "{:?}", bound.prompts());
+
+    // A request that finds no socket starts a new broker, with nothing of the old one in memory
+    std::fs::remove_file(bound.cli.path().join("broker.sock")).unwrap();
+    bound.forget_prompts();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert_eq!(bound.prompts(), [RUN_A], "asked again for the section");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_fed_plugin_in_a_window_still_feeds_its_secret_and_returns_none() {
+    let bound = bound_with_imap();
+    set_windows(&bound, "\"imap.recent\" = \"1h\"");
+    for _ in 0..2 {
+        let out = bound.run(&["plugin", "imap", "recent"], None).unwrap();
+        // The script got the account on stdin, since it went on to connect
+        assert!(out.contains("ConnectionRefusedError"), "{out}");
+        assert!(!out.contains(IMAP_PW), "{out}");
+    }
+    assert_eq!(bound.prompts().len(), 1, "{:?}", bound.prompts());
+
+    let log = bound.audit();
+    assert_eq!(count(&log, "plugin:imap.recent", "by window"), 1, "{log}");
+    assert_eq!(count(&log, "mail/imap", "released"), 2, "{log}");
+
+    // The bundled copy is still checked on every call in the window
+    let script = bound.cli.path().join("plugins/imap/imap.py");
+    let code = std::fs::read_to_string(&script).unwrap();
+    std::fs::write(&script, format!("{code}\nprint(sys.stdin.read())\n")).unwrap();
+    let err = bound.run(&["plugin", "imap", "recent"], None).unwrap_err();
+    assert!(err.contains("reinstall it with"), "{err}");
+    assert!(!err.contains(IMAP_PW), "{err}");
 }
 
 /// Runs an OpenSSH tool against the broker's agent socket, and never the developer's own agent

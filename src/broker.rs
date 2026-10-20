@@ -24,7 +24,7 @@ const KEY_TTL_SECS: u64 = 300;
 /* A ceiling on how long one approval can carry. Without it a caller names its own expiry and
 a token becomes a password that never lapses, which is the thing this exists to avoid. */
 #[cfg(feature = "host")]
-const MAX_GRANT_SECS: u64 = 86_400;
+pub(crate) const MAX_GRANT_SECS: u64 = 86_400;
 // A child mints with no prompt, so a holder could otherwise fill the broker's memory with them
 #[cfg(feature = "host")]
 const MAX_CHILDREN: usize = 64;
@@ -244,6 +244,38 @@ struct Broker {
     key_at: u64,
     #[cfg(feature = "host")]
     grants: Vec<Grant>,
+    // In memory only, like tokens, so a restart ends every window
+    windows: HashMap<(String, String), Window>,
+    /// The `[plugins.windows]` hash this run verified, set by an approval or a checked record
+    approved: Option<String>,
+}
+
+/// One tool opened for one caller scope, with a fed plugin's secret held as a token holds its values
+#[cfg(feature = "host")]
+struct Window {
+    opened: u64,
+    secret: Option<String>,
+}
+
+/* A window covers a later call of the same tool from the same scope while the approved section
+still lists it. The length is read from the section on each call, so a shortened window ends
+sooner. Split out so scope and expiry can be tested without a prompt */
+#[cfg(feature = "host")]
+fn window_open<'a>(
+    windows: &'a HashMap<(String, String), Window>,
+    policy: &crate::plugin::Windows,
+    approved: Option<&str>,
+    scope: &str,
+    tool: &str,
+    now: u64,
+) -> Option<&'a Window> {
+    if approved != Some(policy.hash.as_str()) {
+        return None;
+    }
+    let secs = policy.tools.get(tool)?;
+    windows
+        .get(&(scope.to_string(), tool.to_string()))
+        .filter(|w| now < w.opened.saturating_add(*secs))
 }
 
 #[cfg(feature = "host")]
@@ -256,6 +288,8 @@ impl Broker {
             tokens,
             #[cfg(feature = "host")]
             grants: Vec::new(),
+            windows: HashMap::new(),
+            approved: None,
         }
     }
 
@@ -353,31 +387,111 @@ impl Broker {
         request: &Request,
         caller: &str,
         cwd: Option<&std::path::Path>,
+        local: bool,
     ) -> Result<String> {
         match request.op {
             Op::Get => self.handle_get(request, caller, cwd),
             Op::List => self.handle_list(request, caller),
             Op::Grant => self.handle_grant(request, caller),
-            Op::Plugin => self.handle_plugin(request, caller),
+            Op::Plugin => {
+                // A tailnet caller is the host whois named, every caller on this Mac is one scope
+                let scope = if local { "local" } else { caller };
+                self.handle_plugin(request, caller, scope)
+            }
         }
     }
 
-    /* A plugin action always prompts. Approval and audit are the whole job here, the caller runs
-    the command, because it holds the GUI session the broker does not. */
+    /* The prompt for one plugin call, or the window that covers it. A changed `[plugins.windows]`
+    section is listed in this one prompt, and approving it records the new hash. Returns the value of
+    a fed plugin's secret, read from the store after a prompt or held by the window */
+    fn plugin_approval(
+        &mut self,
+        request: &Request,
+        caller: &str,
+        scope: &str,
+        reason: String,
+        secret: Option<&str>,
+    ) -> Result<Option<String>> {
+        let tool = format!("{}.{}", request.name, request.action);
+        let slot = format!("plugin:{tool}");
+        let policy = crate::plugin::windows(&self.store)?;
+        if let Some(window) = window_open(
+            &self.windows,
+            &policy,
+            self.approved.as_deref(),
+            scope,
+            &tool,
+            store::now(),
+        ) {
+            let held = window.secret.clone();
+            self.audit_by(&request.agent, &slot, "by window", caller)?;
+            return Ok(held);
+        }
+
+        let stored = crate::plugin::approved(&self.store);
+        let changed =
+            !policy.tools.is_empty() && stored.as_ref().map(|a| &a.hash) != Some(&policy.hash);
+        let reason = if changed {
+            format!(
+                "allow plugin windows {} for {}, then {reason}",
+                policy.shown(),
+                request.agent
+            )
+        } else {
+            reason
+        };
+        let mut asked = vec![slot.as_str()];
+        asked.extend(secret);
+        self.ask(&reason)
+            .map_err(|e| self.refused(&request.agent, &asked, e, caller))?;
+        let key = self.key.clone().expect("just unlocked");
+        // Windows opened under the old section do not carry over to the new one
+        if changed {
+            crate::plugin::approve(&self.store, &key, &policy.hash)?;
+            self.windows.clear();
+        }
+        // A record this broker did not sign is ignored, so a forged one opens nothing
+        let trusted = changed || stored.is_some_and(|a| a.hash == policy.hash && a.verify(&key));
+        self.approved = trusted.then(|| policy.hash.clone());
+        self.audit_by(&request.agent, &slot, "approved", caller)?;
+
+        let value = match secret {
+            Some(name) => match self.store.find(name, &key)? {
+                Some((_, entry)) => Some(entry.value.clone()),
+                None => return Err(crate::plugin::missing(&request.name, name)),
+            },
+            None => None,
+        };
+        if trusted && policy.tools.contains_key(&tool) {
+            self.windows.insert(
+                (scope.to_string(), tool),
+                Window {
+                    opened: store::now(),
+                    secret: value.clone(),
+                },
+            );
+        }
+        Ok(value)
+    }
+
+    /* A plugin action prompts unless a window from config.toml covers it. Approval and audit are
+    the whole job here, the caller runs the command, because it holds the GUI session the broker
+    does not. */
     #[cfg(feature = "host")]
-    fn handle_plugin(&mut self, request: &Request, caller: &str) -> Result<String> {
+    fn handle_plugin(&mut self, request: &Request, caller: &str, scope: &str) -> Result<String> {
         let manifest = crate::plugin::load(&self.store, &request.name)?;
         if manifest.stdin.is_some() {
-            return self.handle_fed_plugin(request, caller);
+            return self.handle_fed_plugin(request, caller, scope);
         }
 
         let tool = manifest
             .tool(&request.action)
             .ok_or_else(|| anyhow!("{} has no action {}", request.name, request.action))?;
-        let slot_name = format!("plugin:{}.{}", request.name, request.action);
-        self.ask(&format!("run {slot_name} for {}", request.agent))
-            .map_err(|e| self.refused(&request.agent, &[&slot_name], e, caller))?;
-        self.audit_by(&request.agent, &slot_name, "approved", caller)?;
+        let reason = format!(
+            "run plugin:{}.{} for {}",
+            request.name, request.action, request.agent
+        );
+        self.plugin_approval(request, caller, scope, reason, None)?;
         if !request.run {
             return Ok("ok".to_string());
         }
@@ -396,7 +510,12 @@ impl Broker {
     /* A plugin with `stdin` runs here and nowhere else, so its secret goes from the store to the
     child's stdin and no reply ever holds it. Every refusal comes before the prompt */
     #[cfg(feature = "host")]
-    fn handle_fed_plugin(&mut self, request: &Request, caller: &str) -> Result<String> {
+    fn handle_fed_plugin(
+        &mut self,
+        request: &Request,
+        caller: &str,
+        scope: &str,
+    ) -> Result<String> {
         if !request.run {
             bail!(
                 "{} runs on the broker so its secret never leaves it, send a run request",
@@ -411,17 +530,13 @@ impl Broker {
             .stdin
             .as_deref()
             .ok_or_else(|| anyhow!("{} reads no secret in its bundled copy", request.name))?;
-        let slot_name = format!("plugin:{}.{}", request.name, request.action);
-        self.ask(&manifest.approval(&request.action, &request.agent))
-            .map_err(|e| self.refused(&request.agent, &[&slot_name, secret], e, caller))?;
-        self.audit_by(&request.agent, &slot_name, "approved", caller)?;
-        let key = self.key.clone().expect("just unlocked");
-        let Some((_, entry)) = self.store.find(secret, &key)? else {
-            return Err(crate::plugin::missing(&request.name, secret));
-        };
-        self.audit(&key, &request.agent, secret, "released", caller)?;
+        let reason = manifest.approval(&request.action, &request.agent);
+        let value = self
+            .plugin_approval(request, caller, scope, reason, Some(secret))?
+            .ok_or_else(|| anyhow!("no secret for {}, approve it again", request.name))?;
+        self.audit_by(&request.agent, secret, "released", caller)?;
         // The output crosses the socket or the tailnet, so it is scrubbed on the way out
-        crate::plugin::run_fed(command, &entry.value)
+        crate::plugin::run_fed(command, &value)
     }
 
     /// Names are inside the ciphertext, so listing needs the key and therefore a prompt.
@@ -768,7 +883,7 @@ fn reply<S: std::io::Read + Write>(
                     .broker
                     .lock()
                     .expect("broker")
-                    .handle(&request, caller, cwd),
+                    .handle(&request, caller, cwd, local),
             };
             match answer {
                 Ok(value) => Response {
@@ -1016,6 +1131,8 @@ impl Broker {
             .lock()
             .expect("tokens")
             .retain(|_, g| now < g.expires);
+        self.windows
+            .retain(|_, w| now < w.opened.saturating_add(MAX_GRANT_SECS));
         if self.key.take().is_some() {
             eprintln!("{} idle {idle}s, dropped the key", clock());
         }
@@ -1643,6 +1760,93 @@ mod tests {
                 .unwrap()
                 .is_ok()
         );
+    }
+
+    fn policy(tool: &str, secs: u64) -> crate::plugin::Windows {
+        crate::plugin::Windows {
+            tools: [(tool.to_string(), secs)].into(),
+            hash: "approved".into(),
+        }
+    }
+
+    fn opened(scope: &str, tool: &str, at: u64) -> HashMap<(String, String), Window> {
+        HashMap::from([(
+            (scope.to_string(), tool.to_string()),
+            Window {
+                opened: at,
+                secret: None,
+            },
+        )])
+    }
+
+    #[test]
+    fn a_window_covers_its_tool_until_it_ends() {
+        let windows = opened("local", "things3.logbook", 1_000);
+        let full = policy("things3.logbook", 60);
+        let open = |policy: &crate::plugin::Windows, tool: &str, now| {
+            window_open(&windows, policy, Some("approved"), "local", tool, now).is_some()
+        };
+        assert!(open(&full, "things3.logbook", 1_000));
+        assert!(open(&full, "things3.logbook", 1_059));
+        assert!(!open(&full, "things3.logbook", 1_060), "an ended window");
+        assert!(!open(&full, "things3.today", 1_001), "another tool");
+
+        // A section shortened after the window opened ends it sooner
+        assert!(!open(
+            &policy("things3.logbook", 10),
+            "things3.logbook",
+            1_020
+        ));
+    }
+
+    #[test]
+    fn a_window_covers_only_the_scope_that_opened_it() {
+        let a = "server (someone@example.com, 100.64.0.7)";
+        let b = "laptop (someone@example.com, 100.64.0.8)";
+        let policy = policy("imap.search", 3_600);
+        let open = |windows: &HashMap<(String, String), Window>, scope: &str| {
+            window_open(
+                windows,
+                &policy,
+                Some("approved"),
+                scope,
+                "imap.search",
+                1_001,
+            )
+            .is_some()
+        };
+
+        let by_host = opened(a, "imap.search", 1_000);
+        assert!(open(&by_host, a));
+        assert!(!open(&by_host, b), "another tailnet host");
+        assert!(!open(&by_host, "local"), "a local call");
+
+        let by_local = opened("local", "imap.search", 1_000);
+        assert!(open(&by_local, "local"));
+        assert!(!open(&by_local, a), "a tailnet host");
+    }
+
+    #[test]
+    fn no_window_applies_from_a_section_that_was_not_approved() {
+        let windows = opened("local", "imap.search", 1_000);
+        let policy = policy("imap.search", 3_600);
+        for approved in [None, Some("an older section")] {
+            let found = window_open(&windows, &policy, approved, "local", "imap.search", 1_001);
+            assert!(found.is_none(), "{approved:?}");
+        }
+        let emptied = crate::plugin::Windows {
+            tools: Default::default(),
+            hash: "approved".into(),
+        };
+        let found = window_open(
+            &windows,
+            &emptied,
+            Some("approved"),
+            "local",
+            "imap.search",
+            1_001,
+        );
+        assert!(found.is_none());
     }
 
     #[test]

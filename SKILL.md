@@ -39,7 +39,7 @@ passbox copy github/token                   # to the clipboard, cleared after a 
 passbox ls                                  # tree of names, needs a prompt
 ```
 
-`get` writes to stdout, so it refuses a pipe, a file or an agent, where the value would leak. A deliberate capture passes `--reveal`. Use `copy` for the clipboard and `exec` for a command.
+`get` writes to stdout, so it refuses a pipe, a file or an agent, where the value would leak, and no flag overrides that. Use `copy` for the clipboard and `exec` for a command.
 
 **Prefer injection over reading.** The value goes broker to child and never through the caller, so a traceback or a crash dump cannot carry it.
 
@@ -116,6 +116,22 @@ Symptom: repeated prompts for the same secret in a loop or per request. Check th
 ### A failed grant must never stop the job
 
 Minting is an optimisation. If it fails, fall back to prompting or to whatever the job did before; never let it abort the start.
+
+## Plugin calls in a scheduled job
+
+Every plugin call prompts, and a token does not cover one. A job that calls a read tool on a schedule needs the owner to open a window for that tool in `~/.passbox/config.toml`. You cannot open one yourself: the broker asks the owner to approve every edit to the section.
+
+```toml
+[plugins.windows]
+"things3.logbook" = "24h"
+"imap.search" = "1h"
+```
+
+- Ask the owner for the exact tools the job calls, one key each. A plugin name or a pattern is refused.
+- Only a tool marked `readonly = true` can have a window. Every first-party tool is a read, and no plugin sends, adds or writes.
+- The first call after the window opens or the section changes prompts once. Later calls from the same scope skip the prompt until the window ends, at most 24 hours, and are audited as `by window`.
+- A window covers the scope that opened it: one tailnet host, or every caller on the Mac. A broker restart ends it.
+- To send mail, call your own client under `passbox exec`, such as `passbox exec --env SMTP_PASSWORD=mail/smtp -- ./send-report`.
 
 ## Fields in one entry
 
