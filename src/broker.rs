@@ -475,6 +475,10 @@ would have to guess it, and a second knob is a second thing to get wrong. A clie
 too, so it is not gated behind the host feature. */
 pub const TAILNET_PORT: u16 = 8787;
 
+/// The PROXY header is how the broker learns which host connected, so the listener requires it
+#[cfg(feature = "host")]
+const SERVE: &str = "tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787";
+
 #[cfg(feature = "host")]
 const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "fish", "dash", "ksh"];
 
@@ -579,6 +583,11 @@ fn reply<S: std::io::Read + Write>(
                     "passbox".to_string()
                 };
             }
+
+            // The client names the agent, the control plane names the host, and a remote prompt shows both
+            if !local {
+                request.agent = format!("{} on {caller}", request.agent);
+            }
             // A token read needs no key and no prompt, so it never waits behind one
             let by_token = (request.op == Op::Get && !request.token.is_empty())
                 .then(|| token_value(&shared.tokens, &request.token, &request.name))
@@ -621,12 +630,9 @@ fn reply<S: std::io::Read + Write>(
     Ok(())
 }
 
-/* Another machine asks here. The listener is bound to this host's tailnet address rather than
-loopback or every interface: loopback has none of the unix socket's 0600 protection, so any
-local user could reach it, and every interface would put a secrets daemon on the LAN.
-
-`tailscale whois` names the peer, and unlike the agent string a caller sends, the control plane
-authenticated it. That is the first caller identity in passbox that is not self declared. */
+/* Another machine asks here, through `tailscale serve` on loopback. The PROXY header carries the
+node's address and `tailscale whois` names it. Unlike the agent string a caller sends, the
+control plane authenticated that name, so it is the one caller identity that is not self declared */
 #[cfg(feature = "host")]
 fn serve_tailnet(listener: std::net::TcpListener, shared: std::sync::Arc<Shared>) {
     for stream in listener.incoming() {
@@ -635,11 +641,25 @@ fn serve_tailnet(listener: std::net::TcpListener, shared: std::sync::Arc<Shared>
         let shared = std::sync::Arc::clone(&shared);
         IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
-            let caller = stream
-                .peer_addr()
-                .ok()
-                .and_then(|a| crate::tailnet::whois(a.ip()))
-                .unwrap_or_else(|| "an unidentified tailnet peer".to_string());
+            let Some(peer) = crate::tailnet::proxied_peer(&mut stream) else {
+                eprintln!("tailnet request refused: no PROXY header, see `tailscale serve` below");
+                let refusal = Response {
+                    ok: false,
+                    value: None,
+                    error: Some(format!(
+                        "the broker cannot tell which host asked, run on the Mac:\n  {SERVE}"
+                    )),
+                };
+                let _ = writeln!(
+                    stream,
+                    "{}",
+                    serde_json::to_string(&refusal).unwrap_or_default()
+                );
+                IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+                return;
+            };
+            let caller = crate::tailnet::whois(peer)
+                .unwrap_or_else(|| format!("an unknown tailnet host ({peer})"));
             eprintln!("tailnet request from {caller}");
             if let Err(e) = reply(&shared, &mut stream, &caller, None, false) {
                 eprintln!("tailnet request failed: {e:#}");
@@ -707,10 +727,7 @@ pub fn serve(store: Store) -> Result<()> {
     if crate::tailnet::address().is_some() {
         match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, TAILNET_PORT)) {
             Ok(tcp) => {
-                eprintln!(
-                    "listening on 127.0.0.1:{TAILNET_PORT}; expose it with\n  \
-                     tailscale serve --bg --tcp {TAILNET_PORT} tcp://127.0.0.1:{TAILNET_PORT}"
-                );
+                eprintln!("listening on 127.0.0.1:{TAILNET_PORT}; expose it with\n  {SERVE}");
                 let shared = std::sync::Arc::clone(&shared);
                 std::thread::spawn(move || serve_tailnet(tcp, shared));
             }

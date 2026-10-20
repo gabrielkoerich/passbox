@@ -537,7 +537,7 @@ Set `PATH` explicitly. A LaunchAgent gets a minimal one, `tailscale` is not on i
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.you.passbox.broker.plist
-tailscale serve --bg --tcp 8787 tcp://127.0.0.1:8787
+tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787
 ```
 
 ### Why `serve` rather than binding the tailnet address
@@ -545,6 +545,10 @@ tailscale serve --bg --tcp 8787 tcp://127.0.0.1:8787
 The broker binds `127.0.0.1:8787` and Tailscale forwards to it. Binding the 100.x address directly looks right and does not work: macOS runs Tailscale as a network extension, the socket accepts the connection, and the first read fails with `ENOTCONN`. Measured 2026-09-27, and reproduced with a plain Python server, so it is the platform rather than passbox.
 
 Cost: loopback has none of the unix socket's `0600` protection, so any local user can reach that port. It is the only inbound path macOS actually delivers.
+
+`--proxy-protocol 1` makes Tailscale open each connection with the node's tailnet address, since through `serve` the broker only ever sees `127.0.0.1`. The broker resolves that address with `tailscale whois`, so the prompt and the audit log name the host, as in `claude on legion (100.90.49.41)`. The name comes from the control plane, not from the client. The broker refuses a connection without the header, because a client could otherwise send its own and claim any host. Set `PASSBOX_AGENT` on the client to name the job as well, such as an orch job id.
+
+Cost: a local user who connects to the loopback port directly can write a header that names another tailnet host. It does not get past the prompt, but the prompt can then name the wrong host.
 
 ### On the client
 
@@ -576,7 +580,7 @@ Give the container a real tun device. `tailscaled --tun=userspace-networking` re
 
 ### What this does not give you
 
-**The caller is not identified.** The broker runs `tailscale whois` on the peer, which the control plane authenticates, but traffic arriving through `serve` has a loopback peer address, so it resolves to nothing and the prompt says `an unidentified tailnet peer`. `PASSBOX_AGENT` is still whatever the caller claims.
+**The job is not identified.** The host comes from the control plane, but `PASSBOX_AGENT` is still whatever the caller claims.
 
 **The Mac must be awake, unlocked, and its lid open.** Nothing can answer a prompt otherwise. A closed lid fails, and the error says so: Touch ID is unavailable, open the lid or use the recovery passphrase.
 
