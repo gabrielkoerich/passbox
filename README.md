@@ -220,7 +220,7 @@ Every decision is logged, encrypted, one record per line, with the agent, the se
 
 | Decision | Meaning |
 |---|---|
-| `released` | A prompt was approved and the value went out |
+| `released` | A prompt was approved and the value went out, to a caller or a plugin's stdin |
 | `by token` | A grant token covered the read, no prompt |
 | `granted` | A grant was approved for this name |
 | `delegated` | A child token was minted from a live token, no prompt |
@@ -250,6 +250,7 @@ First-party plugins:
 | `mail` | Mail.app, nothing to install | `recent`, `search`, `attachments`, `send` |
 | `calendar` | the `icalBuddy` CLI | `today`, `agenda` |
 | `things3` | the `things` CLI | `add`, `inbox`, `today`, `search`, and for jobs that parse JSON `today_json`, `inbox_json`, `search_json`, `upcoming`, `logbook`, `completed`, plus `all` and `trash` |
+| `imap` | `python3`, an account entry in the store | `recent`, `search`, `read`, `attachments` |
 | `git` | git | `push` |
 | `gh` | the `gh` CLI | `pr`, `issue` |
 
@@ -264,11 +265,46 @@ brew install ossianhempel/tap/things3-cli        # things3
 
 `calendar` uses icalBuddy rather than raw AppleScript, because AppleScript reports a recurring event's series start instead of the occurrence date.
 
+`imap` reads any IMAP server, such as Proton Mail through Bridge. It is one Python 3 script that uses only the standard library. Its account is one store entry, `mail/imap`. The broker writes it to the script's stdin, so the password is never a parameter, an argument, an environment variable or a file, and it never leaves the broker:
+
+```bash
+passbox add mail/imap --field host --field port --field user --field tls --field fingerprint
+passbox plugin add imap
+passbox plugin imap recent --count 5               # id | date | from | subject
+passbox plugin imap search --query invoice
+passbox plugin imap read --id 4021
+passbox plugin imap attachments --id 4021 > attachments.json
+```
+
+The entry's first line is the password, then fields:
+
+```text
+bridge-password-here
+host: 127.0.0.1
+port: 1143
+user: me@example.com
+tls: starttls
+fingerprint: 3a:1f:...:9c
+```
+
+`tls` is `starttls` or `ssl`, and defaults to `ssl` on port 993. Plain IMAP is refused. Certificates are verified against the system roots. A server with a self-signed certificate, such as Bridge, is trusted through one pinned certificate instead: `fingerprint` is its SHA-256, compared before the password is sent, or `cafile` is the path to its exported PEM. Every tool takes an optional `--mailbox`, `INBOX` by default. `attachments` returns the message's attachments as one JSON array of `name`, `type`, `size` and `base64`, up to 10 MB a call, so nothing is written on the Mac and a remote caller gets the bytes itself. Each name keeps only its base name, so a caller that saves it under that name stays in its own directory.
+
+For Proton Mail, install and sign in to [Proton Mail Bridge](https://proton.me/mail/bridge). Bridge shows the IMAP host, port, user and a Bridge password for the account, which is not your Proton password. Read the certificate fingerprint from Bridge itself:
+
+```bash
+openssl s_client -starttls imap -connect 127.0.0.1:1143 </dev/null 2>/dev/null \
+  | openssl x509 -noout -fingerprint -sha256
+```
+
+Put those values in the `mail/imap` entry as above, the fingerprint as openssl prints it or as bare hex. The prompt for each run names `mail/imap`, and the audit log records it as `released`. Every run, from the CLI, MCP or a client on the tailnet, happens inside the broker on the Mac, and only the mail comes back. The broker runs only the copy bundled in the binary: if the installed `imap.py` or `plugin.toml` differs from it, the run is refused before the prompt until you run `passbox plugin update imap`.
+
 `git` and `gh` run in the directory you call them from, not the plugin directory, so they act on the current repository. Both prompt on every call, so an agent cannot push or open a PR without your fingerprint.
 
 A tool whose command is missing is refused before it prompts, with the install line above.
 
 Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument.
+
+A first-party plugin can name one store secret with `stdin = "<secret name>"`. Such a plugin runs only inside the broker and only as its bundled copy. Each run prompts naming the secret, audits it as `released`, writes it to the tool's stdin and closes it, and returns the tool's output with the secret scrubbed out. A request that asks only for approval is refused, so the value never goes back to a caller. A plugin you write yourself cannot read a secret: one with `stdin` is refused. Run it under `passbox exec` instead.
 
 Each plugin carries a `version`. `passbox plugin update <name|dir>` refreshes an installed plugin, and `plugin list` flags a first-party plugin whose bundled version is newer than the installed copy, which is what happens after a `brew upgrade`.
 

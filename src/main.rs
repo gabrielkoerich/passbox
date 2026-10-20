@@ -1306,6 +1306,10 @@ fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
             "plugin.toml",
             include_str!("../plugins/things3/plugin.toml"),
         )]),
+        "imap" => Some(&[
+            ("plugin.toml", include_str!("../plugins/imap/plugin.toml")),
+            ("imap.py", include_str!("../plugins/imap/imap.py")),
+        ]),
         "git" => Some(&[("plugin.toml", include_str!("../plugins/git/plugin.toml"))]),
         "gh" => Some(&[("plugin.toml", include_str!("../plugins/gh/plugin.toml"))]),
         _ => None,
@@ -1336,11 +1340,13 @@ fn plugin_run(store: &Store, name: &str, rest: &[String]) -> Result<()> {
 
     if store.host().is_some() {
         let pairs: Vec<(String, String)> = params.into_iter().collect();
-        let output = broker::plugin_run_remote(store, name, action, &pairs, &agent())?;
-        print!("{output}");
-        if !output.ends_with('\n') {
-            println!();
-        }
+        print_output(&broker::plugin_run_remote(
+            store,
+            name,
+            action,
+            &pairs,
+            &agent(),
+        )?);
         return Ok(());
     }
 
@@ -1355,6 +1361,13 @@ fn plugin_run(store: &Store, name: &str, rest: &[String]) -> Result<()> {
     }
 }
 
+fn print_output(output: &str) {
+    print!("{output}");
+    if !output.ends_with('\n') {
+        println!();
+    }
+}
+
 // The broker approves and audits, then the command runs here, keeping this process's GUI session
 #[cfg(feature = "host")]
 fn plugin_run_local(
@@ -1364,6 +1377,9 @@ fn plugin_run_local(
     params: std::collections::HashMap<String, String>,
 ) -> Result<()> {
     let manifest = plugin::load(store, name)?;
+    if manifest.stdin.is_some() {
+        return plugin_run_fed(store, name, action, params);
+    }
     let tool = manifest
         .tool(action)
         .with_context(|| format!("{name} has no action {action}"))?;
@@ -1382,6 +1398,42 @@ fn plugin_run_local(
         .status()
         .with_context(|| format!("could not run {name} {action}"))?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/* A plugin with `stdin` runs in the broker, which keeps its secret. With no broker this process
+holds the key anyway, so it feeds the child itself and prints the same scrubbed output */
+#[cfg(feature = "host")]
+fn plugin_run_fed(
+    store: &Store,
+    name: &str,
+    action: &str,
+    params: std::collections::HashMap<String, String>,
+) -> Result<()> {
+    if !headless() && store.has_se_wrap() {
+        let pairs: Vec<(String, String)> = params.into_iter().collect();
+        print_output(&broker::plugin_run_remote(
+            store,
+            name,
+            action,
+            &pairs,
+            &agent(),
+        )?);
+        return Ok(());
+    }
+
+    let (manifest, command) = plugin::fed_command(store, name, action, &params)?;
+    let secret = manifest
+        .stdin
+        .as_deref()
+        .with_context(|| format!("{name} reads no secret in its bundled copy"))?;
+    let key = unlock(store, &manifest.approval(action, &agent()))?;
+    let Some((_, entry)) = store.find(secret, &key)? else {
+        return Err(plugin::missing(name, secret));
+    };
+    let caller = broker::ancestry(std::process::id() as libc::pid_t);
+    broker::append_audit(store, &agent(), secret, "released", &caller)?;
+    print_output(&plugin::run_fed(command, &entry.value)?);
+    Ok(())
 }
 
 fn parse_params(rest: &[String]) -> Result<std::collections::HashMap<String, String>> {

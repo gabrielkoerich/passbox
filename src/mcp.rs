@@ -182,17 +182,13 @@ fn list_secrets(store: &Store, agent: &str) -> Result<String> {
 
 /* A plugin tool call is approved and audited by the broker, then run here so it keeps this
 process's GUI session. Its output is the result, so there is nothing to scrub: a plugin injects
-no secret. */
+no secret. A plugin with `stdin` runs in the broker instead, which scrubs its output */
 #[cfg(feature = "host")]
 fn plugin_call(store: &Store, agent: &str, name: &str, args: &Value) -> Result<String> {
     let (plugin, action) = name
         .split_once('.')
         .ok_or_else(|| anyhow!("no tool named {name}"))?;
     let manifest = crate::plugin::load(store, plugin)?;
-    let tool = manifest
-        .tool(action)
-        .ok_or_else(|| anyhow!("no tool named {name}"))?;
-    manifest.ensure_available()?;
     let mut bound = std::collections::HashMap::new();
     if let Some(object) = args.as_object() {
         for (key, value) in object {
@@ -203,6 +199,15 @@ fn plugin_call(store: &Store, agent: &str, name: &str, args: &Value) -> Result<S
             bound.insert(key.clone(), text);
         }
     }
+    if manifest.stdin.is_some() {
+        let pairs: Vec<(String, String)> = bound.into_iter().collect();
+        return crate::broker::plugin_run_remote(store, plugin, action, &pairs, agent);
+    }
+
+    let tool = manifest
+        .tool(action)
+        .ok_or_else(|| anyhow!("no tool named {name}"))?;
+    manifest.ensure_available()?;
     let mut command = tool.command(&bound)?;
     if !manifest.runs_in_caller_dir() {
         command.current_dir(store.plugins_dir().join(plugin));

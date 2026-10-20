@@ -367,6 +367,10 @@ impl Broker {
     #[cfg(feature = "host")]
     fn handle_plugin(&mut self, request: &Request, caller: &str) -> Result<String> {
         let manifest = crate::plugin::load(&self.store, &request.name)?;
+        if manifest.stdin.is_some() {
+            return self.handle_fed_plugin(request, caller);
+        }
+
         let tool = manifest
             .tool(&request.action)
             .ok_or_else(|| anyhow!("{} has no action {}", request.name, request.action))?;
@@ -387,6 +391,37 @@ impl Broker {
         let mut command = tool.command(&bound)?;
         command.current_dir(self.store.plugins_dir().join(&request.name));
         run_plugin_command(command)
+    }
+
+    /* A plugin with `stdin` runs here and nowhere else, so its secret goes from the store to the
+    child's stdin and no reply ever holds it. Every refusal comes before the prompt */
+    #[cfg(feature = "host")]
+    fn handle_fed_plugin(&mut self, request: &Request, caller: &str) -> Result<String> {
+        if !request.run {
+            bail!(
+                "{} runs on the broker so its secret never leaves it, send a run request",
+                request.name
+            );
+        }
+
+        let bound: HashMap<String, String> = request.params.iter().cloned().collect();
+        let (manifest, command) =
+            crate::plugin::fed_command(&self.store, &request.name, &request.action, &bound)?;
+        let secret = manifest
+            .stdin
+            .as_deref()
+            .ok_or_else(|| anyhow!("{} reads no secret in its bundled copy", request.name))?;
+        let slot_name = format!("plugin:{}.{}", request.name, request.action);
+        self.ask(&manifest.approval(&request.action, &request.agent))
+            .map_err(|e| self.refused(&request.agent, &[&slot_name, secret], e, caller))?;
+        self.audit_by(&request.agent, &slot_name, "approved", caller)?;
+        let key = self.key.clone().expect("just unlocked");
+        let Some((_, entry)) = self.store.find(secret, &key)? else {
+            return Err(crate::plugin::missing(&request.name, secret));
+        };
+        self.audit(&key, &request.agent, secret, "released", caller)?;
+        // The output crosses the socket or the tailnet, so it is scrubbed on the way out
+        crate::plugin::run_fed(command, &entry.value)
     }
 
     /// Names are inside the ciphertext, so listing needs the key and therefore a prompt.
@@ -1219,7 +1254,8 @@ pub fn plugin_approve(store: &Store, name: &str, action: &str, agent: &str) -> R
     .map(|_| ())
 }
 
-/// Ask the host to run a plugin tool and return its output, for a client with no local app
+/// Ask the broker to run a plugin tool and return its output, for a client with no local app or a
+/// plugin with `stdin`, whose secret stays in the broker
 pub fn plugin_run_remote(
     store: &Store,
     name: &str,
@@ -1328,16 +1364,7 @@ fn run_plugin_command(mut command: std::process::Command) -> Result<String> {
     let out = command
         .output()
         .context("could not run the plugin command")?;
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let err = String::from_utf8_lossy(&out.stderr);
-    if !err.trim().is_empty() {
-        text.push_str("\nstderr:\n");
-        text.push_str(&err);
-    }
-    if !out.status.success() {
-        text.push_str(&format!("\nexit: {}", out.status.code().unwrap_or(1)));
-    }
-    Ok(text)
+    Ok(crate::plugin::render(&out))
 }
 
 #[cfg(all(test, feature = "host"))]
