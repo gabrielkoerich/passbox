@@ -23,7 +23,7 @@ pub fn address() -> Option<std::net::IpAddr> {
         .ok()
 }
 
-/* The host behind a tailnet address, named by the control plane, as `legion (100.90.49.41)`.
+/* The host behind a tailnet address, named by the control plane, as `server (someone@example.com, 100.64.0.7)`.
 
 `tailscale whois` prints `Machine:` and `User:` as headers with the values on indented lines
 beneath, so the name is the first `Name:` under each header rather than the header's own text. */
@@ -35,12 +35,20 @@ pub fn whois(peer: std::net::IpAddr) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let name = parse(&String::from_utf8_lossy(&out.stdout))?;
-    Some(format!("{name} ({peer})"))
+    let (name, owner) = parse(&String::from_utf8_lossy(&out.stdout))?;
+    Some(label(&name, owner.as_deref(), peer))
 }
 
-/// Split out so the shape can be tested without a tailnet
-fn parse(text: &str) -> Option<String> {
+// The owner stays in, so a node shared in from another tailnet does not pass for one of ours
+fn label(name: &str, owner: Option<&str>, peer: std::net::IpAddr) -> String {
+    match owner {
+        Some(owner) => format!("{name} ({owner}, {peer})"),
+        None => format!("{name} ({peer})"),
+    }
+}
+
+/// The machine's short name and its owner, split out so the shape can be tested without a tailnet
+fn parse(text: &str) -> Option<(String, Option<String>)> {
     let mut machine = None;
     let mut user = None;
     let mut section = "";
@@ -61,10 +69,14 @@ fn parse(text: &str) -> Option<String> {
     }
 
     // The MagicDNS suffix is the same for every node, so the first label is what tells hosts apart
-    machine
+    let machine = machine
         .map(|m| m.split('.').next().unwrap_or(&m).to_string())
-        .filter(|m| !m.is_empty())
-        .or(user)
+        .filter(|m| !m.is_empty());
+    match (machine, user) {
+        (Some(m), user) => Some((m, user)),
+        (None, Some(u)) => Some((u, None)),
+        (None, None) => None,
+    }
 }
 
 /* `tailscale serve` forwards to loopback, so the socket's peer is always 127.0.0.1. With
@@ -99,31 +111,71 @@ mod tests {
     use super::*;
 
     /// The real shape of `tailscale whois`, which nests the name under a header
-    const SAMPLE: &str = "Machine:\n  Name:          homeassistant.tail342cb6.ts.net\n  ID:            n81YALHkUi11CNTRL\n  Addresses:     [100.100.18.1/32]\nUser:\n  Name:     someone@example.com\n";
+    const SAMPLE: &str = "Machine:\n  Name:          server.example.ts.net\n  ID:            nExampleCNTRL\n  Addresses:     [100.64.0.7/32]\nUser:\n  Name:     someone@example.com\n";
 
     #[test]
-    fn a_peer_is_named_by_its_machine() {
-        assert_eq!(parse(SAMPLE).as_deref(), Some("homeassistant"));
+    fn a_peer_is_named_by_its_machine_and_owner() {
+        let (name, owner) = parse(SAMPLE).expect("a name");
+        let peer = "100.64.0.7".parse().unwrap();
+        assert_eq!(
+            label(&name, owner.as_deref(), peer),
+            "server (someone@example.com, 100.64.0.7)"
+        );
+        assert_eq!(label("server", None, peer), "server (100.64.0.7)");
+    }
+
+    #[test]
+    fn a_node_with_no_machine_name_is_named_by_its_owner() {
+        let text = "User:\n  Name:     someone@example.com\n";
+        assert_eq!(parse(text), Some(("someone@example.com".into(), None)));
     }
 
     #[test]
     fn the_proxy_header_names_the_source() {
         let mut stream: &[u8] =
-            b"PROXY TCP4 100.90.49.41 127.0.0.1 51234 8787\r\n{\"op\":\"list\"}\n";
+            b"PROXY TCP4 100.64.0.7 127.0.0.1 51234 8787\r\n{\"op\":\"list\"}\n";
         assert_eq!(
             proxied_peer(&mut stream),
-            Some("100.90.49.41".parse().unwrap())
+            Some("100.64.0.7".parse().unwrap())
         );
         // The request after the header is left for the reader
         assert_eq!(stream, b"{\"op\":\"list\"}\n");
+
+        let mut stream: &[u8] = b"PROXY TCP6 fd7a:115c:a1e0::7 ::1 51234 8787\r\n";
+        assert_eq!(
+            proxied_peer(&mut stream),
+            Some("fd7a:115c:a1e0::7".parse().unwrap())
+        );
     }
 
     #[test]
-    fn a_request_without_the_header_is_refused() {
-        let mut stream: &[u8] = b"{\"op\":\"list\"}\n";
-        assert!(proxied_peer(&mut stream).is_none());
+    fn a_request_without_a_valid_header_is_refused() {
+        let refused: [&[u8]; 7] = [
+            b"{\"op\":\"list\"}\n",
+            b"PROXY TCP4 100.64.0.7 127.0.0.1 1 2\n",
+            b"PROXY TCP4 100.64.0.7 127.0.0.1",
+            b"PROXY UDP4 100.64.0.7 127.0.0.1 1 2\r\n",
+            b"proxy TCP4 100.64.0.7 127.0.0.1 1 2\r\n",
+            b"PROXY TCP4 server 127.0.0.1 1 2\r\n",
+            b"",
+        ];
+        for bytes in refused {
+            let mut stream = bytes;
+            assert!(
+                proxied_peer(&mut stream).is_none(),
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
         assert!(proxy_source("PROXY UNKNOWN\r\n").is_none());
-        assert!(proxy_source("PROXY TCP4 legion 127.0.0.1 1 2\r\n").is_none());
+    }
+
+    #[test]
+    fn a_header_too_long_for_v1_is_refused_without_reading_past_it() {
+        let long = format!("PROXY TCP4 {}\r\nrest", "1".repeat(200));
+        let mut stream = long.as_bytes();
+        assert!(proxied_peer(&mut stream).is_none());
+        assert_eq!(stream.len(), long.len() - 107);
     }
 
     #[test]
