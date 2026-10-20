@@ -29,23 +29,23 @@ use zeroize::Zeroize;
 and decoding keys all pass plaintext through buffers owned by age, serde_json and std, which free
 them without wiping, so wiping at the one place every free goes through catches all of them.
 The default `realloc` frees through `dealloc`, so a buffer that grows is wiped too. */
-struct WipeOnFree;
+struct WipeOnFree<A>(A);
 
-unsafe impl GlobalAlloc for WipeOnFree {
+unsafe impl<A: GlobalAlloc> GlobalAlloc for WipeOnFree<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { System.alloc(layout) }
+        unsafe { self.0.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe {
             std::slice::from_raw_parts_mut(ptr, layout.size()).zeroize();
-            System.dealloc(ptr, layout)
+            self.0.dealloc(ptr, layout)
         }
     }
 }
 
 #[global_allocator]
-static ALLOCATOR: WipeOnFree = WipeOnFree;
+static ALLOCATOR: WipeOnFree<System> = WipeOnFree(System);
 use secrecy::SecretString;
 use std::io::{IsTerminal, Read, Write};
 use store::{Secret, Store};
@@ -1726,27 +1726,44 @@ mod tests {
         assert_eq!(fields(&entry)["password"], "pw");
     }
 
-    /* A freed block must come back zeroed, or a secret the broker decrypted would linger in
-    memory a debugger or core dump could reach. Uses an odd size to miss the small-bin reuse
-    other test allocations churn through. */
+    use super::WipeOnFree;
+    use std::alloc::{GlobalAlloc, Layout, System};
+
+    /// Stands in for the system allocator and records whether a block was zero when it got it back
+    struct Spy(std::sync::atomic::AtomicBool);
+
+    unsafe impl GlobalAlloc for Spy {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            let zero = unsafe { std::slice::from_raw_parts(ptr, layout.size()) }
+                .iter()
+                .all(|&b| b == 0);
+            self.0.store(zero, std::sync::atomic::Ordering::SeqCst);
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    /* A freed block must reach the system allocator zeroed, or a secret the broker decrypted would
+    linger in memory a debugger or core dump could reach. The spy sees the block at the moment it
+    is handed back, so the check does not depend on the allocator reusing the block */
     #[test]
     fn freed_memory_is_wiped() {
-        use std::alloc::{Layout, alloc, dealloc};
-        let layout = Layout::from_size_align(4099, 1).unwrap();
-        unsafe {
-            let p = alloc(layout);
-            std::slice::from_raw_parts_mut(p, 4099).fill(0xAB);
-            dealloc(p, layout);
-            // The same request usually returns the same block, now that dealloc has wiped it
-            let q = alloc(layout);
-            let seen = std::slice::from_raw_parts(q, 4099);
-            // glibc writes up to four free-list pointers at the start of a freed block, so skip them
-            let meta = 4 * size_of::<usize>();
+        let wiper = WipeOnFree(Spy(std::sync::atomic::AtomicBool::new(false)));
+        for size in [1, 31, 4099, 1 << 20] {
+            let layout = Layout::from_size_align(size, 1).unwrap();
+            unsafe {
+                let p = wiper.alloc(layout);
+                std::slice::from_raw_parts_mut(p, size).fill(0xAB);
+                wiper.0.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                wiper.dealloc(p, layout);
+            }
             assert!(
-                seen[meta..].iter().all(|&b| b == 0),
-                "freed bytes were not wiped"
+                wiper.0.0.load(std::sync::atomic::Ordering::SeqCst),
+                "a freed block of {size} bytes was not wiped"
             );
-            dealloc(q, layout);
         }
     }
 
