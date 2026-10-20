@@ -258,7 +258,7 @@ fn a_first_party_plugin_installs_by_name() {
     let cli = Cli::new();
     cli.note(&["plugin", "add", "things3"], None);
     let list = cli.run(&["plugin", "list"], None).unwrap();
-    assert!(list.contains("things3 add"), "{list}");
+    assert!(list.contains("things3 logbook"), "{list}");
     assert!(list.contains("things3 search"), "{list}");
     // a second install is refused rather than silently overwriting
     assert!(
@@ -350,10 +350,10 @@ fn a_stale_first_party_plugin_is_flagged_for_update() {
     let toml = cli.path().join("plugins/things3/plugin.toml");
     let older = std::fs::read_to_string(&toml)
         .unwrap()
-        .replace("version = \"1.1.0\"", "version = \"0.1.0\"");
+        .replace("version = \"2.0.0\"", "version = \"0.1.0\"");
     std::fs::write(&toml, older).unwrap();
     let list = cli.run(&["plugin", "list"], None).unwrap();
-    assert!(list.contains("update available: 0.1.0 -> 1.1.0"), "{list}");
+    assert!(list.contains("update available: 0.1.0 -> 2.0.0"), "{list}");
 }
 
 #[test]
@@ -1721,6 +1721,199 @@ fn a_plugin_without_stdin_still_runs_in_the_caller_after_an_approval() {
 
     let approve = r#"{"name":"demo","agent":"raw","op":"plugin","action":"where","run":false}"#;
     assert!(ask_socket(&bound, approve).contains("\"value\":\"ok\""));
+}
+
+/// A plugin of our own with two reads and one action, installed with the broker up and no prompt logged
+fn bound_with_reads() -> (Bound, tempfile::TempDir) {
+    let bound = Bound::new();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("plugin.toml"),
+        "name = \"demo\"\ndescription = \"test\"\n\n\
+         [[tool]]\nname = \"a\"\nreadonly = true\nrun = [\"printf\", \"read a\"]\n\n\
+         [[tool]]\nname = \"b\"\nreadonly = true\nrun = [\"printf\", \"read b\"]\n\n\
+         [[tool]]\nname = \"act\"\nrun = [\"printf\", \"acted\"]\n",
+    )
+    .unwrap();
+    bound
+        .run(&["plugin", "add", src.path().to_str().unwrap()], None)
+        .unwrap();
+    bound.run(&["ls"], None).unwrap();
+    bound.forget_prompts();
+    (bound, src)
+}
+
+fn set_windows(bound: &Bound, section: &str) {
+    std::fs::write(
+        bound.cli.path().join("config.toml"),
+        format!("[plugins.windows]\n{section}\n"),
+    )
+    .unwrap();
+}
+
+fn count(log: &str, secret: &str, decision: &str) -> usize {
+    log.lines()
+        .filter(|l| {
+            l.contains(&format!("\"secret\":\"{secret}\""))
+                && l.contains(&format!("\"decision\":\"{decision}\""))
+        })
+        .count()
+}
+
+const RUN_A: &str = "run plugin:demo.a for test-agent";
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn with_no_window_every_plugin_call_prompts() {
+    let (bound, _src) = bound_with_reads();
+    for _ in 0..3 {
+        assert_eq!(bound.run(&["plugin", "demo", "a"], None).unwrap(), "read a");
+    }
+    assert_eq!(bound.prompts(), [RUN_A; 3]);
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_window_skips_the_prompt_until_it_ends_and_is_audited() {
+    let (bound, _src) = bound_with_reads();
+    set_windows(&bound, "\"demo.a\" = \"3s\"");
+    for _ in 0..3 {
+        assert_eq!(bound.run(&["plugin", "demo", "a"], None).unwrap(), "read a");
+    }
+    assert_eq!(
+        bound.prompts(),
+        [format!(
+            "allow plugin windows demo.a 3s for test-agent, then {RUN_A}"
+        )]
+    );
+    // A tool the section does not name still prompts
+    bound.run(&["plugin", "demo", "b"], None).unwrap();
+    assert_eq!(bound.prompts().len(), 2, "{:?}", bound.prompts());
+
+    std::thread::sleep(Duration::from_millis(3_200));
+    bound.forget_prompts();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert_eq!(bound.prompts(), [RUN_A], "an ended window prompts");
+
+    let log = bound.audit();
+    assert_eq!(count(&log, "plugin:demo.a", "by window"), 2, "{log}");
+    assert_eq!(count(&log, "plugin:demo.a", "approved"), 2, "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_window_on_a_tool_that_is_not_readonly_or_a_bad_key_is_refused_before_any_prompt() {
+    let (bound, _src) = bound_with_reads();
+    for (section, why) in [
+        ("\"demo.act\" = \"1h\"", "not marked readonly"),
+        ("demo = \"1h\"", "one plugin and one tool"),
+        ("\"*\" = \"1h\"", "one plugin and one tool"),
+        ("\"demo.*\" = \"1h\"", "one plugin and one tool"),
+        ("\"other.a\" = \"1h\"", "not installed"),
+    ] {
+        set_windows(&bound, section);
+        let err = bound.run(&["plugin", "demo", "a"], None).unwrap_err();
+        assert!(err.contains(why), "{section}: {err}");
+        assert!(err.contains("config.toml is not valid"), "{section}: {err}");
+    }
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn an_edited_section_waits_for_its_prompt_and_a_refusal_keeps_the_old_one() {
+    let (bound, _src) = bound_with_reads();
+    let first = "\"demo.a\" = \"1h\"";
+    set_windows(&bound, first);
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert_eq!(bound.prompts().len(), 1, "{:?}", bound.prompts());
+
+    // The edit lists both windows, and until it is approved the open window does not apply
+    bound.forget_prompts();
+    set_windows(&bound, &format!("{first}\n\"demo.b\" = \"1h\""));
+    bound.deny("1");
+    assert!(bound.run(&["plugin", "demo", "a"], None).is_err());
+    assert_eq!(
+        bound.prompts(),
+        [format!(
+            "allow plugin windows demo.a 1h, demo.b 1h for test-agent, then {RUN_A}"
+        )]
+    );
+
+    // Refused, so the old section still applies and its window is still open
+    bound.forget_prompts();
+    set_windows(&bound, first);
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+
+    // Approved, so the edit applies
+    set_windows(&bound, &format!("{first}\n\"demo.b\" = \"1h\""));
+    bound.run(&["plugin", "demo", "b"], None).unwrap();
+    bound.run(&["plugin", "demo", "b"], None).unwrap();
+    assert_eq!(bound.prompts().len(), 1, "{:?}", bound.prompts());
+    assert!(bound.prompts()[0].starts_with("allow plugin windows demo.a 1h, demo.b 1h"));
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn the_approved_section_survives_a_broker_restart_and_its_windows_do_not() {
+    let (bound, _src) = bound_with_reads();
+    set_windows(&bound, "\"demo.a\" = \"1h\"");
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert_eq!(bound.prompts().len(), 1, "{:?}", bound.prompts());
+
+    // A request that finds no socket starts a new broker, with nothing of the old one in memory
+    std::fs::remove_file(bound.cli.path().join("broker.sock")).unwrap();
+    bound.forget_prompts();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    bound.run(&["plugin", "demo", "a"], None).unwrap();
+    assert_eq!(bound.prompts(), [RUN_A], "asked again for the section");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_fed_plugin_in_a_window_still_feeds_its_secret_and_returns_none() {
+    let bound = bound_with_imap();
+    set_windows(&bound, "\"imap.recent\" = \"1h\"");
+    for _ in 0..2 {
+        let out = bound.run(&["plugin", "imap", "recent"], None).unwrap();
+        // The script got the account on stdin, since it went on to connect
+        assert!(out.contains("ConnectionRefusedError"), "{out}");
+        assert!(!out.contains(IMAP_PW), "{out}");
+    }
+    assert_eq!(bound.prompts().len(), 1, "{:?}", bound.prompts());
+
+    let log = bound.audit();
+    assert_eq!(count(&log, "plugin:imap.recent", "by window"), 1, "{log}");
+    assert_eq!(count(&log, "mail/imap", "released"), 2, "{log}");
+
+    // The bundled copy is still checked on every call in the window
+    let script = bound.cli.path().join("plugins/imap/imap.py");
+    let code = std::fs::read_to_string(&script).unwrap();
+    std::fs::write(&script, format!("{code}\nprint(sys.stdin.read())\n")).unwrap();
+    let err = bound.run(&["plugin", "imap", "recent"], None).unwrap_err();
+    assert!(err.contains("reinstall it with"), "{err}");
+    assert!(!err.contains(IMAP_PW), "{err}");
 }
 
 /// Runs an OpenSSH tool against the broker's agent socket, and never the developer's own agent

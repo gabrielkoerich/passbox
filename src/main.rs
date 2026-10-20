@@ -386,7 +386,7 @@ fn ensure_store_gitignore(store: &Store) -> Result<()> {
     if !path.exists() {
         std::fs::write(
             &path,
-            "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\n",
+            "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\nwindows-*.json\n",
         )?;
     }
     Ok(())
@@ -1286,14 +1286,6 @@ fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
                 "search.applescript",
                 include_str!("../plugins/mail/search.applescript"),
             ),
-            (
-                "attachments.applescript",
-                include_str!("../plugins/mail/attachments.applescript"),
-            ),
-            (
-                "send.applescript",
-                include_str!("../plugins/mail/send.applescript"),
-            ),
         ]),
         "calendar" => Some(&[
             (
@@ -1310,8 +1302,6 @@ fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
             ("plugin.toml", include_str!("../plugins/imap/plugin.toml")),
             ("imap.py", include_str!("../plugins/imap/imap.py")),
         ]),
-        "git" => Some(&[("plugin.toml", include_str!("../plugins/git/plugin.toml"))]),
-        "gh" => Some(&[("plugin.toml", include_str!("../plugins/gh/plugin.toml"))]),
         _ => None,
     }
 }

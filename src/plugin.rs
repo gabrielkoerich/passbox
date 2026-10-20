@@ -1,4 +1,4 @@
-/*! Plugins add gated actions on local apps, such as Mail and Things3.
+/*! Plugins add gated reads of local apps, such as Mail and Things3.
 
 A plugin is a directory under `~/.passbox/plugins/<name>/` holding a `plugin.toml`. Each tool
 names a command template. The broker prompts and audits a call; the caller runs the command, so
@@ -7,8 +7,9 @@ is the exception: it reads a secret, so it runs only inside the broker and only 
 
 use crate::store::Store;
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -45,6 +46,9 @@ pub struct Tool {
     pub params: Vec<String>,
     /// Command and arguments. `{param}` is replaced with the bound value
     pub run: Vec<String>,
+    /// Only a tool marked as a read can be named in `[plugins.windows]`
+    #[serde(default)]
+    pub readonly: bool,
 }
 
 /// Whether a command resolves, by its own path or on PATH, without running it
@@ -300,6 +304,157 @@ pub fn installed(store: &Store) -> Result<Vec<Manifest>> {
     Ok(out)
 }
 
+/// The `[plugins.windows]` section of config.toml, each tool checked against its manifest
+#[derive(Default)]
+pub struct Windows {
+    /// Seconds a `<plugin>.<tool>` stays open after an approved call
+    pub tools: BTreeMap<String, u64>,
+    /// Covers each window and the command it names, so editing either one asks again
+    pub hash: String,
+}
+
+impl Windows {
+    /// As the approval prompt lists them, such as `things3.logbook 24h, imap.search 1h`
+    pub fn shown(&self) -> String {
+        let span = |secs: u64| match secs {
+            s if s % 3600 == 0 => format!("{}h", s / 3600),
+            s if s % 60 == 0 => format!("{}m", s / 60),
+            s => format!("{s}s"),
+        };
+        self.tools
+            .iter()
+            .map(|(tool, secs)| format!("{tool} {}", span(*secs)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+pub fn windows(store: &Store) -> Result<Windows> {
+    let path = crate::sync::config_path(store);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(Windows::default());
+    };
+    parse_windows(&text, |name| load(store, name))
+        .with_context(|| format!("{} is not valid", path.display()))
+}
+
+/// `90s`, `30m` or `24h`
+fn duration(text: &str) -> Result<u64> {
+    let refuse = || anyhow!("{text:?} is not a duration such as \"90s\", \"30m\" or \"24h\"");
+    let unit = match text.chars().last() {
+        Some('s') => 1,
+        Some('m') => 60,
+        Some('h') => 3600,
+        _ => return Err(refuse()),
+    };
+    let count: u64 = text[..text.len() - 1]
+        .parse()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(refuse)?;
+    Ok(count.saturating_mul(unit))
+}
+
+// One plugin and one tool, so a window never covers a tool added later, and only a readonly tool,
+// since a window on an action would let any caller act as the owner
+fn parse_windows(text: &str, manifest: impl Fn(&str) -> Result<Manifest>) -> Result<Windows> {
+    let config: toml::Table = toml::from_str(text)?;
+    let Some(plugins) = config.get("plugins") else {
+        return Ok(Windows::default());
+    };
+    let plugins = plugins.as_table().context("plugins must be a table")?;
+    if let Some(other) = plugins.keys().find(|k| *k != "windows") {
+        bail!("unknown key plugins.{other}, the only one is plugins.windows");
+    }
+    let Some(section) = plugins.get("windows") else {
+        return Ok(Windows::default());
+    };
+    let section = section
+        .as_table()
+        .context("plugins.windows must be a table")?;
+
+    let part_ok = |p: &str| {
+        !p.is_empty()
+            && p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    };
+    let mut out = Windows::default();
+    let mut hashed = String::new();
+    for (key, value) in section {
+        let (plugin, action) = key
+            .split_once('.')
+            .filter(|(p, t)| part_ok(p) && part_ok(t))
+            .with_context(|| {
+                format!(
+                    "{key:?} must name one plugin and one tool, quoted, such as \"things3.logbook\""
+                )
+            })?;
+        let span = value
+            .as_str()
+            .with_context(|| format!("{key} must be a duration such as \"30m\""))?;
+        let secs = duration(span)
+            .with_context(|| key.clone())?
+            .min(crate::broker::MAX_GRANT_SECS);
+        let manifest = manifest(plugin)
+            .with_context(|| format!("{key} names a plugin that is not installed"))?;
+        let tool = manifest
+            .tool(action)
+            .with_context(|| format!("{key}: {plugin} has no tool {action}"))?;
+        if !tool.readonly {
+            bail!("{key} is not marked readonly in its manifest, so it prompts on every call");
+        }
+        hashed.push_str(&format!(
+            "{key}={secs} stdin={:?} run={:?}\n",
+            manifest.stdin, tool.run
+        ));
+        out.tools.insert(key.clone(), secs);
+    }
+    out.hash = crate::project::hash(hashed.as_bytes());
+    Ok(out)
+}
+
+// Plain text like the section, so a MAC under the store key stops a process forging its own
+#[derive(Serialize, Deserialize)]
+pub struct Approval {
+    pub hash: String,
+    mac: String,
+}
+
+fn approval_path(store: &Store) -> std::path::PathBuf {
+    store
+        .dir
+        .join(format!("windows-{}.json", crate::store::hostname()))
+}
+
+fn mac(key: &age::x25519::Identity, hash: &str) -> String {
+    use age::secrecy::ExposeSecret;
+    let mut digest = Sha256::new();
+    digest.update(b"passbox plugin windows\n");
+    digest.update(key.to_string().expose_secret().as_bytes());
+    digest.update(b"\n");
+    digest.update(hash.as_bytes());
+    hex::encode(digest.finalize())
+}
+
+/// Read before the prompt to word it, and trusted only once `verify` passes
+pub fn approved(store: &Store) -> Option<Approval> {
+    serde_json::from_slice(&std::fs::read(approval_path(store)).ok()?).ok()
+}
+
+pub fn approve(store: &Store, key: &age::x25519::Identity, hash: &str) -> Result<()> {
+    let record = Approval {
+        hash: hash.to_string(),
+        mac: mac(key, hash),
+    };
+    crate::store::write_private(&approval_path(store), &serde_json::to_vec(&record)?)
+}
+
+impl Approval {
+    pub fn verify(&self, key: &age::x25519::Identity) -> bool {
+        self.mac == mac(key, &self.hash)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +471,7 @@ mod tests {
                 "{subject}".into(),
                 "{body}".into(),
             ],
+            readonly: false,
         }
     }
 
@@ -458,30 +614,12 @@ mod tests {
                 &[("query", "inv")],
                 &["osascript", "search.applescript", "inv"],
             ),
-            (
-                "mail",
-                "attachments",
-                &[("query", "stmt"), ("dir", "/tmp/x")],
-                &["osascript", "attachments.applescript", "stmt", "/tmp/x"],
-            ),
-            (
-                "mail",
-                "send",
-                &[("to", "a@b"), ("subject", "S"), ("body", "hi")],
-                &["osascript", "send.applescript", "a@b", "S", "hi"],
-            ),
             ("calendar", "today", &[], &["bash", "agenda.sh", "0"]),
             (
                 "calendar",
                 "agenda",
                 &[("days", "3")],
                 &["bash", "agenda.sh", "3"],
-            ),
-            (
-                "things3",
-                "add",
-                &[("title", "buy")],
-                &["things", "add", "--notes", "", "--", "buy"],
             ),
             ("things3", "inbox", &[], &["things", "inbox"]),
             ("things3", "today", &[], &["things", "today"]),
@@ -530,19 +668,6 @@ mod tests {
             ),
             ("things3", "all", &[], &["things", "all"]),
             ("things3", "trash", &[], &["things", "trash"]),
-            ("git", "push", &[], &["git", "push"]),
-            (
-                "gh",
-                "pr",
-                &[("title", "T"), ("body", "B")],
-                &["gh", "pr", "create", "--title", "T", "--body", "B"],
-            ),
-            (
-                "gh",
-                "issue",
-                &[("title", "T")],
-                &["gh", "issue", "create", "--title", "T", "--body", ""],
-            ),
             (
                 "imap",
                 "recent",
@@ -665,6 +790,109 @@ mod tests {
         }
         for good in ["mail", "things3", "my-plugin", "my_plugin", "a.b"] {
             assert!(valid_name(good).is_ok(), "{good} should be allowed");
+        }
+    }
+
+    fn installed_demo(name: &str) -> Result<Manifest> {
+        if name != "demo" {
+            bail!("no plugin named {name}");
+        }
+        Ok(toml::from_str(
+            "name = \"demo\"\ndescription = \"test\"\n\
+             [[tool]]\nname = \"read\"\nreadonly = true\nrun = [\"true\"]\n\
+             [[tool]]\nname = \"act\"\nrun = [\"true\"]\n",
+        )
+        .unwrap())
+    }
+
+    fn parsed(section: &str) -> Result<Windows> {
+        parse_windows(&format!("[plugins.windows]\n{section}\n"), installed_demo)
+    }
+
+    #[test]
+    fn a_window_names_exactly_one_installed_readonly_tool() {
+        let ok = parsed("\"demo.read\" = \"90s\"").unwrap();
+        assert_eq!(ok.tools["demo.read"], 90);
+        for (bad, why) in [
+            ("demo = \"1h\"", "one plugin and one tool"),
+            ("\"*\" = \"1h\"", "one plugin and one tool"),
+            ("\"demo.*\" = \"1h\"", "one plugin and one tool"),
+            ("\"*.read\" = \"1h\"", "one plugin and one tool"),
+            ("\"demo.read.x\" = \"1h\"", "one plugin and one tool"),
+            ("\"demo.\" = \"1h\"", "one plugin and one tool"),
+            ("allow_writes = true", "one plugin and one tool"),
+            ("\"demo.act\" = \"1h\"", "not marked readonly"),
+            ("\"demo.nope\" = \"1h\"", "demo has no tool nope"),
+            ("\"other.read\" = \"1h\"", "not installed"),
+            ("\"demo.read\" = \"1d\"", "not a duration"),
+            ("\"demo.read\" = \"0s\"", "not a duration"),
+            ("\"demo.read\" = 60", "must be a duration"),
+        ] {
+            let err = format!("{:#}", parsed(bad).err().expect(bad));
+            assert!(err.contains(why), "{bad}: {err}");
+        }
+        let err = parse_windows("[plugins]\nallow_writes = true\n", installed_demo)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("unknown key plugins.allow_writes"));
+    }
+
+    #[test]
+    fn a_window_is_capped_at_a_day_and_shown_as_set() {
+        let w = parsed("\"demo.read\" = \"48h\"").unwrap();
+        assert_eq!(w.tools["demo.read"], crate::broker::MAX_GRANT_SECS);
+        assert_eq!(w.shown(), "demo.read 24h");
+        assert_eq!(
+            parsed("\"demo.read\" = \"30m\"").unwrap().shown(),
+            "demo.read 30m"
+        );
+        assert_eq!(
+            parsed("\"demo.read\" = \"90s\"").unwrap().shown(),
+            "demo.read 90s"
+        );
+    }
+
+    #[test]
+    fn no_section_opens_no_window_and_an_edit_changes_the_hash() {
+        assert!(parse_windows("", installed_demo).unwrap().tools.is_empty());
+        assert!(
+            parse_windows("[sync]\nengine = \"icloud\"\n", installed_demo)
+                .unwrap()
+                .tools
+                .is_empty()
+        );
+        let a = parsed("\"demo.read\" = \"1h\"").unwrap().hash;
+        assert_eq!(a, parsed("\"demo.read\" = \"60m\"").unwrap().hash);
+        assert_ne!(a, parsed("\"demo.read\" = \"2h\"").unwrap().hash);
+    }
+
+    #[test]
+    fn an_approval_record_verifies_only_under_the_key_that_made_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store {
+            dir: tmp.path().to_path_buf(),
+        };
+        let key = age::x25519::Identity::generate();
+        approve(&store, &key, "h1").unwrap();
+        let record = approved(&store).unwrap();
+        assert_eq!(record.hash, "h1");
+        assert!(record.verify(&key));
+        assert!(!record.verify(&age::x25519::Identity::generate()));
+        let forged = Approval {
+            hash: "h2".into(),
+            mac: record.mac.clone(),
+        };
+        assert!(!forged.verify(&key));
+    }
+
+    #[test]
+    fn every_first_party_tool_is_a_read() {
+        for plugin in ["mail", "calendar", "things3", "imap"] {
+            let text = std::fs::read_to_string(format!("plugins/{plugin}/plugin.toml")).unwrap();
+            let manifest: Manifest = toml::from_str(&text).unwrap();
+            for tool in &manifest.tools {
+                assert!(tool.readonly, "{plugin}.{} is not readonly", tool.name);
+            }
         }
     }
 

@@ -44,7 +44,7 @@ The server needs `passbox` on `PATH` and a store made with `passbox init`. Insta
 
 There is no `get_secret`. A tool result goes into the model's context, where it is logged and sent onward, so the server runs the command for you instead.
 
-Each installed plugin adds its tools to the list as `<plugin>.<tool>`, such as `mail.recent` or `imap.search`. Every argument is a string. Every call raises a prompt.
+Each installed plugin adds its tools to the list as `<plugin>.<tool>`, such as `mail.recent` or `imap.search`. Every argument is a string. Every call raises a prompt, unless the owner opened a window for that tool in `~/.passbox/config.toml`. Every tool is a read: no plugin sends, adds, writes or pushes.
 
 `run_with_secret` arguments:
 
@@ -166,7 +166,7 @@ If the job chooses at runtime what it reads, use a grant token as above, at most
 - **Platforms**: the store lives on a Mac with a Secure Enclave. Linux runs a client build that asks the Mac over Tailscale, and the fingerprint happens on the Mac.
 - **Install**: `brew install gabrielkoerich/tap/passbox`, or `cargo install passbox`. Then `passbox init`.
 - **Backup**: off by default. With no sync, losing the Mac loses the store. `passbox sync --enable` turns sync on with a recovery passphrase, and a YubiKey can replace the passphrase.
-- **Extras**: an SSH agent that signs with keys in the store, a menu-bar app and an Alfred workflow for copying, and plugins for Mail, Calendar, Things 3, IMAP, git and gh.
+- **Extras**: an SSH agent that signs with keys in the store, a menu-bar app and an Alfred workflow for copying, and read-only plugins for Mail, Calendar, Things 3 and IMAP.
 - **Compared with pass**: pass is older, runs everywhere and has more integrations. passbox exists for agents: per-secret approval, encrypted names, and values that never reach the agent.
 - **Maturity**: young and not independently audited. Advise users to keep another copy of anything they cannot lose.
 - **Licence**: MIT.

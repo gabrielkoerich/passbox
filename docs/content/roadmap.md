@@ -301,7 +301,7 @@ Transport, in order of preference:
 - **Tailscale.** Stable per node identity, which is a better caller identity than the self declared agent name, and no ports to manage.
 - Rejected: **Cloudflare Tunnel.** Built for public exposure, which is the wrong shape for a personal broker, and it puts a third party in the path.
 
-It never offers a remote shell. The Mac declares named capabilities such as `things.today` and `things.add`, and each raises the same prompt naming the caller and the capability.
+It never offers a remote shell. The Mac declares named capabilities such as `things.today` and `mail.search`, and each raises the same prompt naming the caller and the capability.
 
 A capability provider never needs the store key, so it is a subcommand extension rather than a backend plugin, and it inherits the broker's policy unchanged.
 
