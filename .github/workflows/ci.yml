@@ -137,7 +137,26 @@ jobs:
           error="denied" ./filter.sh | grep -q '"passbox ls failed"'
           # The same package the release attaches
           ./build.sh 0.0.0 "$RUNNER_TEMP/passbox.alfredworkflow"
-          unzip -Z1 "$RUNNER_TEMP/passbox.alfredworkflow" | sort | tr '\n' ' ' | grep -qx 'copy.sh filter.sh info.plist list.sh '
+          unzip -Z1 "$RUNNER_TEMP/passbox.alfredworkflow" | sort | tr '\n' ' ' | grep -qx 'copy.sh filter.sh icon.png info.plist list.sh '
+          # Alfred shows a broken icon without an error, so check every chunk and the 512 square
+          python3 - "$RUNNER_TEMP/passbox.alfredworkflow" <<'PY'
+          import struct, sys, zipfile, zlib
+          png = zipfile.ZipFile(sys.argv[1]).read("icon.png")
+          assert png[:8] == b"\x89PNG\r\n\x1a\n", "icon.png is not a PNG"
+          at, chunks, idat = 8, [], b""
+          while at < len(png):
+              (size,) = struct.unpack(">I", png[at : at + 4])
+              kind, body = png[at + 4 : at + 8], png[at + 8 : at + 8 + size]
+              (crc,) = struct.unpack(">I", png[at + 8 + size : at + 12 + size])
+              assert zlib.crc32(kind + body) == crc, f"bad CRC in {kind}"
+              chunks.append((kind, body))
+              idat += body if kind == b"IDAT" else b""
+              at += 12 + size
+          assert chunks[0][0] == b"IHDR" and chunks[-1][0] == b"IEND", [k for k, _ in chunks]
+          size = struct.unpack(">II", chunks[0][1][:8])
+          assert size == (512, 512), f"icon.png is {size}, want 512x512"
+          zlib.decompress(idat)
+          PY
 
       # GitHub's runner image has shellcheck, act's does not
       - name: Shellcheck the example scripts
