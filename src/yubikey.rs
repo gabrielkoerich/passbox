@@ -175,18 +175,99 @@ pub fn offer_to_stop_scdaemon() -> Result<()> {
     Ok(())
 }
 
-/// Recipients already provisioned on whatever token is plugged in
-pub fn recipients() -> Result<Vec<String>> {
+/// A recipient on a plugged token, with the `Serial: ..., Slot: ...` line that tells tokens apart
+#[derive(Debug, PartialEq)]
+pub struct Plugged {
+    pub recipient: String,
+    pub serial: Option<String>,
+}
+
+/// Recipients already provisioned on every token plugged in
+pub fn recipients() -> Result<Vec<Plugged>> {
     let out = std::process::Command::new(PLUGIN)
         .arg("--list")
         .output()
         .context("could not run age-plugin-yubikey")?;
+    // A plugin error must not read as a blank token, or it sends the user into setup
+    if !out.status.success() {
+        bail!(
+            "age-plugin-yubikey --list failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(parse_list(&String::from_utf8_lossy(&out.stdout)))
+}
 
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.split_whitespace().find(|w| w.starts_with("age1yubikey1")))
-        .map(str::to_string)
-        .collect())
+fn parse_list(out: &str) -> Vec<Plugged> {
+    let mut found: Vec<Plugged> = Vec::new();
+    let mut serial = None;
+    for line in out.lines() {
+        if let Some(at) = line.find("Serial:") {
+            serial = Some(line[at..].trim().to_string());
+        }
+        let Some(recipient) = line
+            .split_whitespace()
+            .find(|w| w.starts_with("age1yubikey1"))
+        else {
+            continue;
+        };
+        if !found.iter().any(|p| p.recipient == recipient) {
+            found.push(Plugged {
+                recipient: recipient.to_string(),
+                serial: serial.clone(),
+            });
+        }
+    }
+    found
+}
+
+/// Plugged recipients the store does not hold yet
+pub fn not_added(plugged: Vec<Plugged>, stored: &[String]) -> Vec<Plugged> {
+    plugged
+        .into_iter()
+        .filter(|p| !stored.contains(&p.recipient))
+        .collect()
+}
+
+/// The one new token, or the pick from several, which needs a terminal to ask on
+pub fn choose(
+    mut found: Vec<Plugged>,
+    seen: usize,
+    terminal: bool,
+    answer: impl FnOnce() -> Result<String>,
+) -> Result<String> {
+    if found.len() <= 1 {
+        let token = found.pop().with_context(|| {
+            if seen == 0 {
+                "no YubiKey recipient found, is the token plugged in?".to_string()
+            } else {
+                format!(
+                    "the {seen} plugged token(s) already open this store, \
+                     plug in only the new one to set it up"
+                )
+            }
+        })?;
+        eprintln!("using {}", token.recipient);
+        return Ok(token.recipient);
+    }
+
+    if !terminal {
+        bail!("several new tokens are plugged in, pass the recipient to `passbox yubikey-add`");
+    }
+    eprintln!("Several tokens are plugged in and new to this store:");
+    for (i, token) in found.iter().enumerate() {
+        let serial = token.serial.as_deref().unwrap_or("serial unknown");
+        eprintln!("  {}) {serial}  {}", i + 1, token.recipient);
+    }
+    eprint!("Which? [1-{}] ", found.len());
+    let answer = answer()?;
+    let pick = answer
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|n| (1..=found.len()).contains(n))
+        .with_context(|| format!("expected 1 to {}, got {}", found.len(), answer.trim()))?;
+    Ok(found.swap_remove(pick - 1).recipient)
 }
 
 /// Provisioning a PIV slot changes the token, so it runs only when the user says so
@@ -252,6 +333,100 @@ mod tests {
             "age1yubikey1q0vlphw7w6z47hqzfl8x950zv7hy66aed5amgcvyx8cu4rqcfh7fswwqa7n";
         let parsed = Recipient::from_str(REAL).expect("a valid yubikey recipient");
         assert_eq!(parsed.plugin(), PLUGIN_NAME);
+    }
+
+    /* The `--list` shape, two tokens of the same model told apart only by serial */
+    const LIST: &str = "#       Serial: 111, Slot: 1\n#         Name: age identity 1\n#      Created: Mon, 1 Jan 2024\n#   PIN policy: Once\n# Touch policy: Always\nage1yubikey1aaa\n\n#       Serial: 222, Slot: 1\n#         Name: age identity 2\nage1yubikey1bbb\n";
+
+    #[test]
+    fn list_pairs_each_recipient_with_its_serial() {
+        let found = parse_list(LIST);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].recipient, "age1yubikey1aaa");
+        assert_eq!(found[0].serial.as_deref(), Some("Serial: 111, Slot: 1"));
+        assert_eq!(found[1].serial.as_deref(), Some("Serial: 222, Slot: 1"));
+        assert!(parse_list("").is_empty());
+    }
+
+    #[test]
+    fn stored_recipients_are_filtered_out() {
+        let stored = |s: &[&str]| s.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+
+        let none = not_added(
+            parse_list(LIST),
+            &stored(&["age1yubikey1aaa", "age1yubikey1bbb"]),
+        );
+        assert!(none.is_empty());
+
+        let one = not_added(parse_list(LIST), &stored(&["age1yubikey1aaa"]));
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].recipient, "age1yubikey1bbb");
+
+        let many = not_added(parse_list(LIST), &stored(&[]));
+        assert_eq!(many.len(), 2);
+    }
+
+    #[test]
+    fn list_skips_garbage_and_repeats() {
+        assert!(parse_list("error: no smart card\n\x00\u{fffd}age1yubi\n").is_empty());
+        let twice = parse_list("age1yubikey1aaa\n#  Serial: 1, Slot: 1\nage1yubikey1aaa\n");
+        assert_eq!(
+            twice,
+            vec![Plugged {
+                recipient: "age1yubikey1aaa".into(),
+                serial: None
+            }]
+        );
+    }
+
+    fn plugged(names: &[&str]) -> Vec<Plugged> {
+        names
+            .iter()
+            .map(|r| Plugged {
+                recipient: r.to_string(),
+                serial: None,
+            })
+            .collect()
+    }
+
+    fn never() -> Result<String> {
+        panic!("one candidate or none must not ask")
+    }
+
+    #[test]
+    fn choose_takes_the_one_new_token_without_asking() {
+        let got = choose(plugged(&["age1yubikey1bbb"]), 2, false, never).unwrap();
+        assert_eq!(got, "age1yubikey1bbb");
+    }
+
+    #[test]
+    fn choose_with_nothing_names_why() {
+        let none = choose(Vec::new(), 0, true, never).unwrap_err().to_string();
+        assert!(none.contains("is the token plugged in"), "{none}");
+
+        let stored = choose(Vec::new(), 2, true, never).unwrap_err().to_string();
+        assert!(
+            stored.contains("2 plugged token(s) already open"),
+            "{stored}"
+        );
+    }
+
+    #[test]
+    fn choose_among_several_asks_only_on_a_terminal() {
+        let two = || plugged(&["age1yubikey1aaa", "age1yubikey1bbb"]);
+        let headless = choose(two(), 2, false, never).unwrap_err().to_string();
+        assert!(headless.contains("pass the recipient"), "{headless}");
+
+        let got = choose(two(), 2, true, || Ok("2\n".into())).unwrap();
+        assert_eq!(got, "age1yubikey1bbb");
+
+        for bad in ["0\n", "3\n", "b\n", ""] {
+            let err = choose(two(), 2, true, || Ok(bad.into())).unwrap_err();
+            assert!(
+                err.to_string().contains("expected 1 to 2"),
+                "{bad:?}: {err}"
+            );
+        }
     }
 
     #[test]
