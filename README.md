@@ -306,14 +306,13 @@ There is no plugin for sending mail, adding a todo, git or gh. A job that sends 
 
 A tool whose command is missing is refused before it prompts, with the install line above.
 
-Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument. Mark a tool that only reads with `readonly = true`, so a window can cover it. Every first-party tool is marked.
+Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument. A plugin tool only reads: passbox gives data and never acts for the caller, so do not install a plugin whose tools send, add, write or push.
 
 A tool can also declare `limits`, checked on every path before any prompt. A value that breaks one is refused with the parameter and the limit named, and an omitted optional is not checked.
 
 ```toml
 [[tool]]
 name = "read"
-readonly = true
 params = ["id", "mailbox?"]
 limits = { id = { digits = true }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "read", "{id}", "{mailbox}"]
@@ -348,7 +347,7 @@ The prompt shows the call's arguments, such as `run plugin:imap.search query="in
 The cost: a job that repeats one call, such as `things3.logbook` or `imap.recent --count 20`, prompts once per window, and a job whose query changes prompts on every call. An omitted optional and an empty one are the same call. The broker holds at most 256 windows per scope and drops the oldest first.
 
 - A key names one plugin and one tool, in quotes. `things3`, `*` and `things3.*` are refused, and so is a plugin that is not installed or a tool it does not have.
-- Only a tool marked `readonly = true` can have a window. A key naming any other tool is refused.
+- A window names one installed tool. You choose which tools get one, since every tool should only read.
 - For a plugin without `stdin`, such as `mail` or `things3`, the broker approves and your local caller runs the command, so the binding holds only for callers that go through passbox. Any process of yours can run the app's own CLI without passbox. It is enforced where the broker runs the command: a plugin with `stdin` such as `imap`, and every call from a tailnet client.
 - A window covers the caller that opened it. A tailnet client is named by `tailscale whois`, so one host's window does not cover another host. Every caller on the Mac is one scope, and it does not cover a tailnet client.
 - The file is plain text that any process of yours can edit. The broker keeps the hash of the section you approved, and of each named tool's command. An edit takes effect only after one prompt that lists the new windows, such as `allow plugin windows things3.logbook 24h, imap.search 1h for claude, then run plugin:things3.logbook for claude`. Approving it ends the windows opened under the old section, and a refused prompt keeps the old section.
@@ -416,7 +415,7 @@ directory = ".passbox"   # icloud: one folder in iCloud Drive, .passbox when lef
 # remote = "git@github.com:you/s.git"   git, or "b2:passbox" for rclone
 ```
 
-The same file holds the [plugin windows](#approval-windows) in `[plugins.windows]`, which `--enable` keeps when it rewrites `[sync]`. To move the copy, edit one line. The file stays on this Mac and is never synced, since a USB path on one Mac means nothing on another. The older one-line `~/.passbox/remote` is deprecated. It is still read when there is no config, with a warning, and stops being read in v2. `passbox sync --enable` moves it to the config, with the same destination.
+The same file holds the [plugin windows](#approval-windows) in `[plugins.windows]`, which `--enable` keeps when it rewrites `[sync]`. To move the copy, edit one line. The file stays on this Mac and is never synced, since a USB path on one Mac means nothing on another. The older one-line `~/.passbox/remote` is deprecated. It is still read when there is no config, with a warning, and stops being read in v3. `passbox sync --enable` moves it to the config, with the same destination.
 
 **A destination that makes no sense is refused.** passbox checks the config on every read and stops with the reason, instead of copying somewhere new:
 
@@ -725,7 +724,7 @@ passbox restore github/token --index 0  # put the newest one back
 ~/.passbox/
   store/<random-id>.age     one self describing secret per file
   store/<random-id>.tomb    deletion marker
-  store/.versions/<id>/     earlier versions, kept local
+  store/.versions/<id>/     earlier versions, never synced
   wraps/recipient           the store public key, no secret in it
   wraps/recovery.age        the store key under your passphrase, once sync is on or when there is no Enclave
   wraps/yubikey.age         the store key under the YubiKeys, once one is added
@@ -735,11 +734,11 @@ passbox restore github/token --index 0  # put the newest one back
   grants-<host>.age         project approvals, never synced
   config.toml               where sync copies to and the plugin windows, never synced
   windows-<host>.json       the hash of the approved plugin windows, never synced
-  plugins/                  installed plugins
-  ssh-keys.pub              the public halves the SSH agent lists
-  broker.sock               the approval socket
-  ssh-agent.sock            the SSH agent socket
-  host                      on a client, the Mac to ask
+  plugins/                  installed plugins, never synced
+  ssh-keys.pub              the public halves the SSH agent lists, never synced
+  broker.sock               the approval socket, never synced
+  ssh-agent.sock            the SSH agent socket, never synced
+  host                      on a client, the Mac to ask, never synced
 ```
 
 The filename is a random id. Names live inside the ciphertext, so nothing on disk says what a secret is called. What still leaks: how many secrets exist, their sizes, and their modification times.

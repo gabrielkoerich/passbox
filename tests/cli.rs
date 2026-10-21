@@ -390,10 +390,10 @@ fn a_stale_first_party_plugin_is_flagged_for_update() {
     let toml = cli.path().join("plugins/things3/plugin.toml");
     let older = std::fs::read_to_string(&toml)
         .unwrap()
-        .replace("version = \"2.1.0\"", "version = \"0.1.0\"");
+        .replace("version = \"2.1.1\"", "version = \"0.1.0\"");
     std::fs::write(&toml, older).unwrap();
     let list = cli.run(&["plugin", "list"], None).unwrap();
-    assert!(list.contains("update available: 0.1.0 -> 2.1.0"), "{list}");
+    assert!(list.contains("update available: 0.1.0 -> 2.1.1"), "{list}");
 }
 
 #[test]
@@ -1750,13 +1750,13 @@ fn bound_with_reads() -> (Bound, tempfile::TempDir) {
     std::fs::write(
         src.path().join("plugin.toml"),
         "name = \"demo\"\ndescription = \"test\"\n\n\
-         [[tool]]\nname = \"a\"\nreadonly = true\nrun = [\"printf\", \"read a\"]\n\n\
-         [[tool]]\nname = \"b\"\nreadonly = true\nrun = [\"printf\", \"read b\"]\n\n\
+         [[tool]]\nname = \"a\"\nrun = [\"printf\", \"read a\"]\n\n\
+         [[tool]]\nname = \"b\"\nrun = [\"printf\", \"read b\"]\n\n\
          [[tool]]\nname = \"act\"\nrun = [\"printf\", \"acted\"]\n\n\
-         [[tool]]\nname = \"search\"\nreadonly = true\nparams = [\"query\", \"mailbox?\"]\n\
+         [[tool]]\nname = \"search\"\nparams = [\"query\", \"mailbox?\"]\n\
          limits = { query = { max_len = 10 } }\n\
          run = [\"printf\", \"%s|%s\", \"{query}\", \"{mailbox}\"]\n\n\
-         [[tool]]\nname = \"read\"\nreadonly = true\nparams = [\"id\"]\n\
+         [[tool]]\nname = \"read\"\nparams = [\"id\"]\n\
          run = [\"printf\", \"%s\", \"{id}\"]\n",
     )
     .unwrap();
@@ -2052,10 +2052,9 @@ fn a_window_skips_the_prompt_until_it_ends_and_is_audited() {
     not(feature = "mock-enclave"),
     ignore = "needs --features mock-enclave"
 )]
-fn a_window_on_a_tool_that_is_not_readonly_or_a_bad_key_is_refused_before_any_prompt() {
+fn a_bad_window_key_is_refused_before_any_prompt() {
     let (bound, _src) = bound_with_reads();
     for (section, why) in [
-        ("\"demo.act\" = \"1h\"", "not marked readonly"),
         ("demo = \"1h\"", "one plugin and one tool"),
         ("\"*\" = \"1h\"", "one plugin and one tool"),
         ("\"demo.*\" = \"1h\"", "one plugin and one tool"),

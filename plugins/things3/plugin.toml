@@ -1,26 +1,23 @@
 name = "things3"
 description = "Things 3 todos, through the things CLI"
-version = "2.1.0"
+version = "2.1.1"
 requires = "things"
 install = "brew install ossianhempel/tap/things3-cli"
 
 [[tool]]
 name = "inbox"
-readonly = true
 description = "List inbox todos"
 params = []
 run = ["things", "inbox"]
 
 [[tool]]
 name = "today"
-readonly = true
 description = "List today's todos"
 params = []
 run = ["things", "today"]
 
 [[tool]]
 name = "search"
-readonly = true
 description = "Search todos for a query"
 params = ["query"]
 limits = { query = { max_len = 200 } }
@@ -30,14 +27,12 @@ run = ["things", "search", "--", "{query}"]
 
 [[tool]]
 name = "today_json"
-readonly = true
 description = "Today's todos as JSON, with their checklists"
 params = []
 run = ["things", "today", "--json", "--recursive"]
 
 [[tool]]
 name = "inbox_json"
-readonly = true
 description = "Up to limit inbox todos as JSON, with their checklists"
 params = ["limit"]
 limits = { limit = { max = 100 } }
@@ -45,7 +40,6 @@ run = ["things", "inbox", "--json", "--recursive", "--limit", "{limit}"]
 
 [[tool]]
 name = "search_json"
-readonly = true
 description = "Todos matching a query, as JSON"
 params = ["query"]
 limits = { query = { max_len = 200 } }
@@ -53,21 +47,18 @@ run = ["things", "search", "--json", "--", "{query}"]
 
 [[tool]]
 name = "upcoming"
-readonly = true
 description = "Upcoming todos as JSON, with their checklists"
 params = []
 run = ["things", "upcoming", "--json", "--recursive"]
 
 [[tool]]
 name = "logbook"
-readonly = true
 description = "Logbook todos as JSON"
 params = []
 run = ["things", "logbook", "--json"]
 
 [[tool]]
 name = "completed"
-readonly = true
 description = "Todos completed or changed after a date such as 2026-01-31, as JSON"
 params = ["modified_after"]
 limits = { modified_after = { date = true } }
@@ -75,14 +66,12 @@ run = ["things", "completed", "--json", "--modified-after", "{modified_after}"]
 
 [[tool]]
 name = "all"
-readonly = true
 description = "Every todo"
 params = []
 run = ["things", "all"]
 
 [[tool]]
 name = "trash"
-readonly = true
 description = "Trashed todos"
 params = []
 run = ["things", "trash"]

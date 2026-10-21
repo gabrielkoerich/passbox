@@ -152,7 +152,7 @@ Cost: one secret per plugin, since stdin carries one value. A plugin you write y
 
 ## Plugins read, they never act
 
-passbox gives what it was asked for, a secret or data, and never acts for the caller. Every first-party tool is a read and is marked `readonly = true`. A tool that sends, adds, writes or pushes lets the caller act as the owner, and an approval or a window on it hands over that power for as long as it lasts. The `git` and `gh` plugins gated nothing, since an agent runs git and gh directly, so they were removed with `things3.add`, `mail.send` and `mail.attachments`, which wrote files. Gated git goes through the SSH agent, which prompts for every signature, and gh and a mail client get their credential for one command from `passbox exec`.
+passbox gives what it was asked for, a secret or data, and never acts for the caller. Every first-party tool is a read. A tool that sends, adds, writes or pushes lets the caller act as the owner, and an approval or a window on it hands over that power for as long as it lasts. The `git` and `gh` plugins gated nothing, since an agent runs git and gh directly, so they were removed with `things3.add`, `mail.send` and `mail.attachments`, which wrote files. Gated git goes through the SSH agent, which prompts for every signature, and gh and a mail client get their credential for one command from `passbox exec`.
 
 Rejected: keeping the acting tools behind a prompt on every call. A prompt then named the tool and not its arguments, so approving `mail.send` approved any recipient and any body, and a prompt that shows a cut body still cannot show all of it. Cost: 2.0.0 drops those tools, and a job that used them calls its own client under `passbox exec`.
 
@@ -167,7 +167,7 @@ Cost: the binary is ad hoc signed, and TCC ties the grant to the signature, so m
 A plugin call prompts by default. `[plugins.windows]` in `~/.passbox/config.toml` maps one exact `"<plugin>.<tool>"` to a duration, and after one approved call the broker skips the prompt for that tool from the same caller scope until the window ends. The policy belongs to the owner, who edits the file, and not to the caller, which only asks.
 
 - A key is one plugin and one tool. A plugin name, `*` or `things3.*` is refused at load, as is a plugin that is not installed or a tool it lacks, so a window never covers a tool added later.
-- Only a `readonly` tool can have a window, and a key naming any other is refused at load.
+- Any installed tool can have a window. A `readonly` flag the plugin set itself was dropped: the plugin author wrote it, so it proved nothing, and the owner already decides by listing the tool.
 - A window is capped at 24 hours, the grant ceiling, and lives in the broker's memory, so a restart ends it as it ends tokens.
 - The scope is the caller identity the broker can check: the `tailscale whois` name for a tailnet request, and one local scope for everything on the Mac, since a local agent name is self declared.
 - A fed plugin such as `imap` still runs from its checked bundled copy on every call. The window holds the secret in memory, as a token holds its values, and feeds it on stdin, so the key can lapse while the window runs. The call is audited `by window` and the secret `released`.
@@ -189,6 +189,8 @@ Cost: a job whose arguments change prompts on every call. One approval opens tha
 ## Sync
 
 The store is opaque files with no shared mutable state, so sync is a union copy: every id on either side, newest modification time wins, and the loser goes into `.versions`.
+
+What never syncs, one list in `src/sync.rs` that the directory copy and rclone's `--exclude` rules both use: `broker.sock`, `ssh-agent.sock`, `ssh-keys.pub`, `host`, `config.toml`, the old `remote` and `names`, `plugins/`, `.git/`, `.gitignore`, `store/.versions/`, `*.partial`, `grants-<host>.age` and `windows-<host>.json`, matched without regard to case as macOS and iCloud Drive name files. The copy also skips anything that is not a regular file or a directory, so a new socket cannot stop it. A failed copy does not stop the rest. The run ends with one warning naming the destination, the count and the first error, so a folder macOS refuses to write gives one line, not one per file.
 
 Deletes travel as tombstones. A `rm` writes `<id>.tomb`, which copies like any other file and suppresses its id everywhere. The algorithm only ever copies files and writes markers, so it cannot delete a secret it misunderstood. Tombstones are pruned after 90 days.
 
