@@ -17,7 +17,41 @@ fn main() {
         _ => "arm64",
     };
 
-    let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join("passbox-se");
+    // EventKit denies a process with no calendar usage key without a prompt, and a remote calendar
+    // call runs icalBuddy inside the broker, so the binary carries its own Info.plist
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    let plist = out_dir.join("Info.plist");
+    let reason = "passbox runs the calendar plugin's agenda tools for you.";
+    std::fs::write(
+        &plist,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.gabrielkoerich.passbox</string>
+	<key>CFBundleName</key>
+	<string>passbox</string>
+	<key>CFBundleShortVersionString</key>
+	<string>{}</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>{reason}</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>{reason}</string>
+</dict>
+</plist>
+"#,
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .expect("could not write Info.plist");
+    println!(
+        "cargo:rustc-link-arg-bins=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+        plist.display()
+    );
+
+    let out = out_dir.join("passbox-se");
     let status = Command::new("swiftc")
         .args(["-O", "-target", &format!("{arch}-apple-macosx13.0"), "-o"])
         .arg(&out)
