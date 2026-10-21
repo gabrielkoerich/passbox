@@ -154,7 +154,7 @@ Cost: one secret per plugin, since stdin carries one value. A plugin you write y
 
 passbox gives what it was asked for, a secret or data, and never acts for the caller. Every first-party tool is a read and is marked `readonly = true`. A tool that sends, adds, writes or pushes lets the caller act as the owner, and an approval or a window on it hands over that power for as long as it lasts. The `git` and `gh` plugins gated nothing, since an agent runs git and gh directly, so they were removed with `things3.add`, `mail.send` and `mail.attachments`, which wrote files. Gated git goes through the SSH agent, which prompts for every signature, and gh and a mail client get their credential for one command from `passbox exec`.
 
-Rejected: keeping the acting tools behind a prompt on every call. A prompt names the tool and not what it does with its arguments, so approving `mail.send` approves any recipient and any body. Cost: 2.0.0 drops those tools, and a job that used them calls its own client under `passbox exec`.
+Rejected: keeping the acting tools behind a prompt on every call. A prompt then named the tool and not its arguments, so approving `mail.send` approved any recipient and any body, and a prompt that shows a cut body still cannot show all of it. Cost: 2.0.0 drops those tools, and a job that used them calls its own client under `passbox exec`.
 
 ## Plugin windows
 
@@ -170,7 +170,15 @@ The tamper guard: the config is plain text that any process of the user can edit
 
 Rejected: grants naming plugin tools, as `passbox grant plugin:things3.logbook`. A grant is minted by the caller and travels as a bearer token, so whoever holds it sets the policy and anyone it leaks to inherits it. A window is set by the owner in a file on the Mac and covers one scope. Rejected: windows on secrets, which the broker section rejects as per-agent approval windows: a plugin window opens one read of an app, never a value. Rejected: refusing `config.toml` edits outright, which would leave no way to change a window without a new release.
 
-Cost: one approval opens that tool for that scope for the whole window. On the Mac the scope is every local caller, so any process of the user can call a windowed tool without a prompt until it ends, and only the audit log shows what ran during it. A windowed fed plugin keeps its secret in broker memory for the window, and a rotated password is not seen until the window ends. A windowed call still takes the broker lock, so it waits behind an open prompt.
+A window is bound to the exact call. The prompt shows the bound arguments in call order, such as `run plugin:imap.search query="invoice" mailbox="INBOX" for claude`, and the window covers only that call, so a fingerprint allows only what its prompt showed. The window key is the scope, the tool and a SHA-256 of every declared parameter and its value, sorted by name, as JSON, with an omitted optional bound as empty, so an empty and an omitted value are one call and no value can move into its neighbour. A call with any other value prompts, and its approval opens its own window. The broker holds at most 256 windows per scope and drops the oldest first, and the idle sweep drops expired ones. The audit record of an `approved`, `by window` or `released` call carries `args`, the arguments as shown, encrypted with the rest of the record.
+
+A shown value keeps printable ASCII: control characters are removed, other characters become `?`, a backslash and a quote are escaped. Each value is cut at 64 characters, as the SSH agent cuts the names in its purpose, and the argument list at 256, each cut marked `...`. The key is built from the raw values, so two values that look the same in the prompt are still two calls.
+
+Binding is enforced only where the broker runs the command: a fed plugin such as `imap`, and every tailnet call. For a local plugin without `stdin`, the CLI and MCP send the params they built the command from and run it after approval, but any local process can run the underlying CLI, such as `things`, without passbox. There the approval is a prompt for the owner, not a boundary.
+
+Rejected: a per-tool `window = false` flag for search, read and attachments. It forces a fingerprint per call on a job that repeats the same query, and a tool with no free argument can still be wide, such as `recent` with a large count. Arguments are also checked against `limits` in the manifest before any prompt, such as `count` at most 50 and an IMAP id as digits only, so a wide call cannot be asked for at all. The check is in `Tool::command`, which every path builds the command through.
+
+Cost: a job whose arguments change prompts on every call. One approval opens that call for that scope for the whole window. On the Mac the scope is every local caller, so any process of the user can repeat a windowed call without a prompt until it ends, and only the audit log shows what ran during it. A windowed fed plugin keeps its secret in broker memory for the window, and a rotated password is not seen until the window ends. A windowed call still takes the broker lock, so it waits behind an open prompt.
 
 ## Sync
 

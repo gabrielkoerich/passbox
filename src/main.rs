@@ -579,7 +579,7 @@ fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Re
         .with_context(|| format!("no secret named {name}"))?;
     let _ = for_agent;
     let caller = broker::ancestry(std::process::id() as libc::pid_t);
-    broker::append_audit(store, agent, name, "released", &caller)?;
+    broker::append_audit(store, agent, name, "released", &caller, "")?;
     Ok(secret.value.clone())
 }
 
@@ -1371,9 +1371,10 @@ fn plugin_run_local(
     }
 
     if !headless() && store.has_se_wrap() {
-        broker::plugin_approve(store, name, action, &agent())?;
+        // The same params the command was built from, so the prompt shows what runs
+        broker::plugin_approve(store, name, action, &params, &agent())?;
     } else {
-        unlock(store, &format!("run {name} {action}"))?;
+        unlock(store, &manifest.approval(action, &agent(), &params))?;
     }
     let status = command
         .status()
@@ -1407,12 +1408,16 @@ fn plugin_run_fed(
         .stdin
         .as_deref()
         .with_context(|| format!("{name} reads no secret in its bundled copy"))?;
-    let key = unlock(store, &manifest.approval(action, &agent()))?;
+    let key = unlock(store, &manifest.approval(action, &agent(), &params))?;
     let Some((_, entry)) = store.find(secret, &key)? else {
         return Err(plugin::missing(name, secret));
     };
     let caller = broker::ancestry(std::process::id() as libc::pid_t);
-    broker::append_audit(store, &agent(), secret, "released", &caller)?;
+    let args = manifest
+        .tool(action)
+        .map(|t| t.shown(&params))
+        .unwrap_or_default();
+    broker::append_audit(store, &agent(), secret, "released", &caller, &args)?;
     print_output(&plugin::run_fed(command, &entry.value)?);
     Ok(())
 }

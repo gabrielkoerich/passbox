@@ -1,6 +1,6 @@
 name = "imap"
 description = "IMAP mail, such as Proton Mail through Bridge: read, search and save attachments"
-version = "1.1.0"
+version = "1.2.0"
 requires = "/usr/bin/python3"
 
 # The account entry, written to the script's stdin by the broker: password first, then fields
@@ -13,6 +13,7 @@ name = "recent"
 readonly = true
 description = "Most recent messages: id, date, sender, subject"
 params = ["count?", "mailbox?"]
+limits = { count = { max = 50 }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "recent", "{count}", "{mailbox}"]
 
 [[tool]]
@@ -20,6 +21,7 @@ name = "search"
 readonly = true
 description = "Search messages for text in headers or body, newest 50"
 params = ["query", "mailbox?"]
+limits = { query = { max_len = 200 }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "search", "{query}", "{mailbox}"]
 
 [[tool]]
@@ -27,6 +29,7 @@ name = "read"
 readonly = true
 description = "Headers, attachment names and the text body of one message, by id"
 params = ["id", "mailbox?"]
+limits = { id = { digits = true }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "read", "{id}", "{mailbox}"]
 
 [[tool]]
@@ -34,4 +37,5 @@ name = "attachments"
 readonly = true
 description = "The attachments of one message, by id, as JSON with name, type, size and base64"
 params = ["id", "mailbox?"]
+limits = { id = { digits = true }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "attachments", "{id}", "{mailbox}"]
