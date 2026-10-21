@@ -2,12 +2,12 @@ name: CI
 
 on:
   push:
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '**/*.txt'
-      - '*.md'
-      - '*.txt'
+    # paths-ignore:
+    #   - 'docs/**'
+    #   - '**/*.md'
+    #   - '**/*.txt'
+    #   - '*.md'
+    #   - '*.txt'
   workflow_dispatch: {}
 
 permissions:
