@@ -1,6 +1,6 @@
 name = "calendar"
 description = "Apple Calendar agenda, through icalBuddy"
-version = "1.1.0"
+version = "1.2.0"
 requires = "icalBuddy"
 install = "brew install ical-buddy"
 
@@ -16,4 +16,5 @@ name = "agenda"
 readonly = true
 description = "Events from today through the next N days, default today only"
 params = ["days?"]
+limits = { days = { max = 31 } }
 run = ["bash", "agenda.sh", "{days}"]

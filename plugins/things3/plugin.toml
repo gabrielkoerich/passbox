@@ -1,6 +1,6 @@
 name = "things3"
 description = "Things 3 todos, through the things CLI"
-version = "2.0.0"
+version = "2.1.0"
 requires = "things"
 install = "brew install ossianhempel/tap/things3-cli"
 
@@ -23,6 +23,7 @@ name = "search"
 readonly = true
 description = "Search todos for a query"
 params = ["query"]
+limits = { query = { max_len = 200 } }
 run = ["things", "search", "--", "{query}"]
 
 # JSON tools for scheduled jobs that parse the output, each matching one `things` call
@@ -39,6 +40,7 @@ name = "inbox_json"
 readonly = true
 description = "Up to limit inbox todos as JSON, with their checklists"
 params = ["limit"]
+limits = { limit = { max = 100 } }
 run = ["things", "inbox", "--json", "--recursive", "--limit", "{limit}"]
 
 [[tool]]
@@ -46,6 +48,7 @@ name = "search_json"
 readonly = true
 description = "Todos matching a query, as JSON"
 params = ["query"]
+limits = { query = { max_len = 200 } }
 run = ["things", "search", "--json", "--", "{query}"]
 
 [[tool]]
@@ -67,6 +70,7 @@ name = "completed"
 readonly = true
 description = "Todos completed or changed after a date such as 2026-01-31, as JSON"
 params = ["modified_after"]
+limits = { modified_after = { date = true } }
 run = ["things", "completed", "--json", "--modified-after", "{modified_after}"]
 
 [[tool]]

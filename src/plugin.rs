@@ -49,6 +49,57 @@ pub struct Tool {
     /// Only a tool marked as a read can be named in `[plugins.windows]`
     #[serde(default)]
     pub readonly: bool,
+    /// Checks on a parameter's value, refused before any prompt
+    #[serde(default)]
+    pub limits: BTreeMap<String, Limit>,
+}
+
+/// `{ max = 50 }`, `{ max_len = 200 }`, `{ digits = true }` or `{ date = true }` for YYYY-MM-DD
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Limit {
+    #[serde(default)]
+    pub max: Option<u64>,
+    #[serde(default)]
+    pub max_len: Option<usize>,
+    #[serde(default)]
+    pub digits: bool,
+    #[serde(default)]
+    pub date: bool,
+}
+
+impl Limit {
+    // An omitted optional binds as empty, which no limit applies to
+    fn check(&self, tool: &str, name: &str, value: &str) -> Result<()> {
+        if value.is_empty() {
+            return Ok(());
+        }
+        let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+        if let Some(max) = self.max
+            && !(digits(value) && value.parse::<u64>().is_ok_and(|n| n <= max))
+        {
+            bail!("{tool}: {name} must be a whole number of at most {max}");
+        }
+        if let Some(max) = self.max_len
+            && value.chars().count() > max
+        {
+            bail!("{tool}: {name} must be at most {max} characters");
+        }
+        if self.digits && !digits(value) {
+            bail!("{tool}: {name} must be digits only");
+        }
+        let date = |t: &str| {
+            let parts: Vec<&str> = t.split('-').collect();
+            matches!(parts.as_slice(), [y, m, d]
+                if y.len() == 4 && digits(y)
+                && m.len() == 2 && digits(m) && (1..=12).contains(&m.parse::<u8>().unwrap_or(0))
+                && d.len() == 2 && digits(d) && (1..=31).contains(&d.parse::<u8>().unwrap_or(0)))
+        };
+        if self.date && !date(value) {
+            bail!("{tool}: {name} must be a date such as 2026-01-31");
+        }
+        Ok(())
+    }
 }
 
 /// Whether a command resolves, by its own path or on PATH, without running it
@@ -93,9 +144,15 @@ impl Manifest {
         self.tools.iter().find(|t| t.name == action)
     }
 
-    /// The prompt text, which names the secret the run releases
-    pub fn approval(&self, action: &str, agent: &str) -> String {
-        let mut text = format!("run plugin:{}.{action} for {agent}", self.name);
+    /// The prompt text, which names the arguments and the secret the run releases
+    pub fn approval(&self, action: &str, agent: &str, args: &HashMap<String, String>) -> String {
+        let mut text = format!("run plugin:{}.{action}", self.name);
+        let shown = self.tool(action).map(|t| t.shown(args)).unwrap_or_default();
+        if !shown.is_empty() {
+            text.push(' ');
+            text.push_str(&shown);
+        }
+        text.push_str(&format!(" for {agent}"));
         if let Some(secret) = &self.stdin {
             text.push_str(&format!(", releasing {secret}"));
         }
@@ -103,7 +160,57 @@ impl Manifest {
     }
 }
 
+/// Longest value a prompt shows, as the SSH agent cuts the names in its purpose
+const SHOWN_VALUE: usize = 64;
+/// Longest argument list a prompt shows, so the agent and the secret after it stay in view
+const SHOWN_ARGS: usize = 256;
+
+fn cut(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    format!("{}...", text.chars().take(max).collect::<String>())
+}
+
 impl Tool {
+    /// Each declared parameter in call order, an omitted optional the same as an empty one
+    fn bound<'a>(
+        &'a self,
+        args: &'a HashMap<String, String>,
+    ) -> impl Iterator<Item = (&'a str, &'a str)> {
+        self.params.iter().map(|p| {
+            let name = p.trim_end_matches('?');
+            (name, args.get(name).map_or("", String::as_str))
+        })
+    }
+
+    /// `query="invoice" mailbox="INBOX"`, in printable ASCII with quotes escaped and long values cut
+    pub fn shown(&self, args: &HashMap<String, String>) -> String {
+        let parts: Vec<String> = self
+            .bound(args)
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(name, value)| {
+                let clean: String = value
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .map(|c| if c.is_ascii() { c } else { '?' })
+                    .collect();
+                let clean = cut(&clean, SHOWN_VALUE)
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"");
+                format!("{name}=\"{clean}\"")
+            })
+            .collect();
+        cut(&parts.join(" "), SHOWN_ARGS)
+    }
+
+    /// The exact call a window is bound to, as a hash of the values sorted by name
+    pub fn call(&self, args: &HashMap<String, String>) -> String {
+        let mut pairs: Vec<_> = self.bound(args).collect();
+        pairs.sort();
+        crate::project::hash(&serde_json::to_vec(&pairs).expect("strings serialise"))
+    }
+
     fn required(&self) -> impl Iterator<Item = &str> {
         self.params
             .iter()
@@ -137,6 +244,15 @@ impl Tool {
             if !self.known(key) {
                 bail!("{} has no parameter {key}", self.name);
             }
+        }
+        for (name, limit) in &self.limits {
+            if !self.known(name) {
+                bail!(
+                    "{} has a limit on {name}, which is not a parameter",
+                    self.name
+                );
+            }
+            limit.check(&self.name, name, args.get(name).map_or("", String::as_str))?;
         }
         let (program, rest) = self.run.split_first().context("tool has no command")?;
         let mut command = Command::new(program);
@@ -472,6 +588,7 @@ mod tests {
                 "{body}".into(),
             ],
             readonly: false,
+            limits: BTreeMap::new(),
         }
     }
 
@@ -727,13 +844,200 @@ mod tests {
     fn the_prompt_names_the_secret_the_run_releases() {
         let mut manifest = fed();
         assert_eq!(
-            manifest.approval("recent", "claude"),
-            "run plugin:demo.recent for claude, releasing mail/imap"
+            manifest.approval("recent", "claude", &args(&[("q", "x")])),
+            "run plugin:demo.recent q=\"x\" for claude, releasing mail/imap"
         );
         manifest.stdin = None;
         assert_eq!(
-            manifest.approval("recent", "claude"),
+            manifest.approval("recent", "claude", &args(&[])),
             "run plugin:demo.recent for claude"
+        );
+    }
+
+    fn bundled(plugin: &str) -> Manifest {
+        let text = std::fs::read_to_string(format!("plugins/{plugin}/plugin.toml")).unwrap();
+        toml::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn the_prompt_shows_the_query_and_the_mailbox_in_call_order() {
+        let imap = bundled("imap");
+        let call = args(&[("mailbox", "INBOX"), ("query", "invoice")]);
+        assert_eq!(
+            imap.approval("search", "claude", &call),
+            "run plugin:imap.search query=\"invoice\" mailbox=\"INBOX\" for claude, releasing mail/imap"
+        );
+        assert_eq!(
+            bundled("mail").approval("search", "claude", &args(&[("query", "invoice")])),
+            "run plugin:mail.search query=\"invoice\" for claude"
+        );
+    }
+
+    #[test]
+    fn a_shown_value_is_printable_ascii_with_quotes_escaped_and_a_long_one_is_cut() {
+        let search = bundled("imap");
+        let search = search.tool("search").unwrap();
+        let forged = "a\"\n\r\u{1b}[2K\\b\u{202e}c\t";
+        assert_eq!(
+            search.shown(&args(&[("query", forged)])),
+            "query=\"a\\\"[2K\\\\b?c\""
+        );
+        let long = search.shown(&args(&[("query", &"x".repeat(500))]));
+        assert_eq!(long, format!("query=\"{}...\"", "x".repeat(64)));
+
+        // Many values still end in a marked cut, so the prompt stays a readable length
+        let mut many = bundled("imap");
+        many.tools[1].params = (0..20).map(|i| format!("p{i}")).collect();
+        let wide: Vec<(String, String)> =
+            (0..20).map(|i| (format!("p{i}"), "y".repeat(64))).collect();
+        let wide: HashMap<_, _> = wide.into_iter().collect();
+        let shown = many.tools[1].shown(&wide);
+        assert!(shown.ends_with("..."), "{shown}");
+        assert_eq!(shown.chars().count(), 256 + 3);
+        assert!(!shown.chars().any(|c| c.is_control() || !c.is_ascii()));
+    }
+
+    #[test]
+    fn a_value_over_each_kind_of_limit_is_refused_and_one_inside_passes() {
+        let long = |n: usize| "q".repeat(n);
+        let (q200, q201, m100, m101) = (long(200), long(201), long(100), long(101));
+        type Case<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>, Option<&'a str>);
+        let cases: Vec<Case> = vec![
+            ("imap", "recent", vec![("count", "50")], None),
+            (
+                "imap",
+                "recent",
+                vec![("count", "51")],
+                Some("count must be a whole number of at most 50"),
+            ),
+            (
+                "imap",
+                "recent",
+                vec![("count", "-1")],
+                Some("count must be a whole number"),
+            ),
+            ("mail", "recent", vec![("count", "51")], Some("at most 50")),
+            ("imap", "read", vec![("id", "42")], None),
+            (
+                "imap",
+                "read",
+                vec![("id", "42:*")],
+                Some("id must be digits only"),
+            ),
+            (
+                "imap",
+                "attachments",
+                vec![("id", "1 OR 2")],
+                Some("id must be digits only"),
+            ),
+            (
+                "imap",
+                "search",
+                vec![("query", &q200), ("mailbox", &m100)],
+                None,
+            ),
+            (
+                "imap",
+                "search",
+                vec![("query", &q201)],
+                Some("query must be at most 200 characters"),
+            ),
+            (
+                "imap",
+                "search",
+                vec![("query", "a"), ("mailbox", &m101)],
+                Some("mailbox must be at most 100"),
+            ),
+            (
+                "mail",
+                "search",
+                vec![("query", &q201)],
+                Some("at most 200"),
+            ),
+            (
+                "things3",
+                "search_json",
+                vec![("query", &q201)],
+                Some("at most 200"),
+            ),
+            ("calendar", "agenda", vec![("days", "31")], None),
+            (
+                "calendar",
+                "agenda",
+                vec![("days", "32")],
+                Some("days must be a whole number of at most 31"),
+            ),
+            (
+                "things3",
+                "inbox_json",
+                vec![("limit", "101")],
+                Some("at most 100"),
+            ),
+            (
+                "things3",
+                "completed",
+                vec![("modified_after", "2026-01-31")],
+                None,
+            ),
+            (
+                "things3",
+                "completed",
+                vec![("modified_after", "2026-13-01")],
+                Some("must be a date such as 2026-01-31"),
+            ),
+            (
+                "things3",
+                "completed",
+                vec![("modified_after", "--help")],
+                Some("must be a date"),
+            ),
+        ];
+        for (plugin, action, pairs, refused) in cases {
+            let manifest = bundled(plugin);
+            let result = manifest.tool(action).unwrap().command(&args(&pairs));
+            match refused {
+                None => assert!(result.is_ok(), "{plugin}.{action}: {:?}", result.err()),
+                Some(why) => {
+                    let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+                    assert!(err.contains(why), "{plugin}.{action} {pairs:?}: {err}");
+                }
+            }
+        }
+
+        let mut typo = tool();
+        typo.limits.insert("bcc".into(), Limit::default());
+        let err = typo
+            .command(&args(&[("to", "a"), ("subject", "b")]))
+            .unwrap_err();
+        assert!(err.to_string().contains("limit on bcc"), "{err}");
+        let unknown = toml::from_str::<Manifest>(
+            "name = \"d\"\ndescription = \"\"\n[[tool]]\nname = \"t\"\nparams = [\"n\"]\n\
+             limits = { n = { maximum = 5 } }\nrun = [\"true\"]\n",
+        );
+        assert!(unknown.is_err(), "a misspelt limit is refused");
+    }
+
+    #[test]
+    fn an_empty_and_an_omitted_optional_are_the_same_call_and_any_other_value_is_not() {
+        let imap = bundled("imap");
+        let search = imap.tool("search").unwrap();
+        let call = |pairs: &[(&str, &str)]| search.call(&args(pairs));
+        let invoice = call(&[("query", "invoice")]);
+        assert_eq!(invoice, call(&[("query", "invoice"), ("mailbox", "")]));
+        assert_ne!(invoice, call(&[("query", "receipt")]));
+        assert_ne!(
+            invoice,
+            call(&[("query", "invoice"), ("mailbox", "Archive")])
+        );
+        // A value cannot move into its neighbour and still name the same call
+        assert_ne!(
+            call(&[("query", "a"), ("mailbox", "b")]),
+            call(&[("query", "a\",\"b"), ("mailbox", "")])
+        );
+        let read = imap.tool("read").unwrap();
+        assert_ne!(
+            read.call(&args(&[("id", "42")])),
+            read.call(&args(&[("id", "43")]))
         );
     }
 

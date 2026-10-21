@@ -218,7 +218,7 @@ If a project uses both, the `.toml` covers the same names the `.env` maps, so th
 passbox audit --tail 50
 ```
 
-Every decision is logged, encrypted, one record per line, with the agent, the secret and the caller's process chain. A `granted`, `delegated` or `by token` record also carries `grant`, the id of the approval behind it, so every read through a token or its children traces back to one fingerprint.
+Every decision is logged, encrypted, one record per line, with the agent, the secret and the caller's process chain. A `granted`, `delegated` or `by token` record also carries `grant`, the id of the approval behind it, so every read through a token or its children traces back to one fingerprint. A plugin record that is `approved`, `by window` or `released` also carries `args`, the call's arguments as its prompt showed them, such as `query="invoice" mailbox="INBOX"`.
 
 | Decision | Meaning |
 |---|---|
@@ -251,7 +251,7 @@ First-party plugins:
 
 | Plugin | Needs | Tools |
 |---|---|---|
-| `mail` | Mail.app, nothing to install | `recent`, `search` |
+| `mail` | Mail.app, nothing to install | `recent` in the Inbox, `search` in every mailbox |
 | `calendar` | the `icalBuddy` CLI | `today`, `agenda` |
 | `things3` | the `things` CLI | `inbox`, `today`, `search`, and for jobs that parse JSON `today_json`, `inbox_json`, `search_json`, `upcoming`, `logbook`, `completed`, plus `all` and `trash` |
 | `imap` | `/usr/bin/python3` from the Command Line Tools, an account entry in the store | `recent`, `search`, `read`, `attachments` |
@@ -306,6 +306,26 @@ A tool whose command is missing is refused before it prompts, with the install l
 
 Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument. Mark a tool that only reads with `readonly = true`, so a window can cover it. Every first-party tool is marked.
 
+A tool can also declare `limits`, checked on every path before any prompt. A value that breaks one is refused with the parameter and the limit named, and an omitted optional is not checked.
+
+```toml
+[[tool]]
+name = "read"
+readonly = true
+params = ["id", "mailbox?"]
+limits = { id = { digits = true }, mailbox = { max_len = 100 } }
+run = ["/usr/bin/python3", "-I", "-c", "imap.py", "read", "{id}", "{mailbox}"]
+```
+
+| Limit | Allows |
+|---|---|
+| `max = 50` | a whole number from 0 to 50 |
+| `max_len = 200` | at most 200 characters |
+| `digits = true` | digits only, such as a message id |
+| `date = true` | a date such as `2026-01-31` |
+
+The first-party tools cap `count` at 50, `query` at 200 characters, `mailbox` at 100, calendar `days` at 31 and Things 3 `limit` at 100, take an IMAP message id as digits only, and take `modified_after` as a date.
+
 A first-party plugin can name one store secret with `stdin = "<secret name>"`. Such a plugin runs only inside the broker and only as its bundled copy. Each run prompts naming the secret, audits it as `released`, writes it to the tool's stdin and closes it, and returns the tool's output with the secret scrubbed out. A request that asks only for approval is refused, so the value never goes back to a caller. A plugin you write yourself cannot read a secret: one with `stdin` is refused. Run it under `passbox exec` instead.
 
 Each plugin carries a `version`. `passbox plugin update <name|dir>` refreshes an installed plugin, and `plugin list` flags a first-party plugin whose bundled version differs from the installed copy, which is what happens after a `brew upgrade`.
@@ -321,10 +341,13 @@ Every plugin call prompts. A job that reads Things 3 every few minutes would nee
 "imap.search" = "1h"
 ```
 
-After one approved call, later calls of that tool skip the prompt until the window ends, and each is audited as `by window`. A window is a duration in `s`, `m` or `h`, capped at 24 hours like a grant.
+The prompt shows the call's arguments, such as `run plugin:imap.search query="invoice" mailbox="INBOX" for claude, releasing mail/imap`, and the window covers that exact call. After one approved call, later calls of that tool with the same arguments skip the prompt until the window ends, and each is audited as `by window`. A call with another query, mailbox or message id prompts, and approving it opens a window of its own. A window is a duration in `s`, `m` or `h`, capped at 24 hours like a grant.
+
+The cost: a job that repeats one call, such as `things3.logbook` or `imap.recent --count 20`, prompts once per window, and a job whose query changes prompts on every call. An omitted optional and an empty one are the same call. The broker holds at most 256 windows per scope and drops the oldest first.
 
 - A key names one plugin and one tool, in quotes. `things3`, `*` and `things3.*` are refused, and so is a plugin that is not installed or a tool it does not have.
 - Only a tool marked `readonly = true` can have a window. A key naming any other tool is refused.
+- For a plugin without `stdin`, such as `mail` or `things3`, the broker approves and your local caller runs the command, so the binding holds only for callers that go through passbox. Any process of yours can run the app's own CLI without passbox. It is enforced where the broker runs the command: a plugin with `stdin` such as `imap`, and every call from a tailnet client.
 - A window covers the caller that opened it. A tailnet client is named by `tailscale whois`, so one host's window does not cover another host. Every caller on the Mac is one scope, and it does not cover a tailnet client.
 - The file is plain text that any process of yours can edit. The broker keeps the hash of the section you approved, and of each named tool's command. An edit takes effect only after one prompt that lists the new windows, such as `allow plugin windows things3.logbook 24h, imap.search 1h for claude, then run plugin:things3.logbook for claude`. Approving it ends the windows opened under the old section, and a refused prompt keeps the old section.
 - Windows live in the broker's memory, so a restart ends them. The approved hash survives it.

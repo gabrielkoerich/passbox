@@ -390,10 +390,10 @@ fn a_stale_first_party_plugin_is_flagged_for_update() {
     let toml = cli.path().join("plugins/things3/plugin.toml");
     let older = std::fs::read_to_string(&toml)
         .unwrap()
-        .replace("version = \"2.0.0\"", "version = \"0.1.0\"");
+        .replace("version = \"2.1.0\"", "version = \"0.1.0\"");
     std::fs::write(&toml, older).unwrap();
     let list = cli.run(&["plugin", "list"], None).unwrap();
-    assert!(list.contains("update available: 0.1.0 -> 2.0.0"), "{list}");
+    assert!(list.contains("update available: 0.1.0 -> 2.1.0"), "{list}");
 }
 
 #[test]
@@ -1752,7 +1752,12 @@ fn bound_with_reads() -> (Bound, tempfile::TempDir) {
         "name = \"demo\"\ndescription = \"test\"\n\n\
          [[tool]]\nname = \"a\"\nreadonly = true\nrun = [\"printf\", \"read a\"]\n\n\
          [[tool]]\nname = \"b\"\nreadonly = true\nrun = [\"printf\", \"read b\"]\n\n\
-         [[tool]]\nname = \"act\"\nrun = [\"printf\", \"acted\"]\n",
+         [[tool]]\nname = \"act\"\nrun = [\"printf\", \"acted\"]\n\n\
+         [[tool]]\nname = \"search\"\nreadonly = true\nparams = [\"query\", \"mailbox?\"]\n\
+         limits = { query = { max_len = 10 } }\n\
+         run = [\"printf\", \"%s|%s\", \"{query}\", \"{mailbox}\"]\n\n\
+         [[tool]]\nname = \"read\"\nreadonly = true\nparams = [\"id\"]\n\
+         run = [\"printf\", \"%s\", \"{id}\"]\n",
     )
     .unwrap();
     bound
@@ -1781,6 +1786,222 @@ fn count(log: &str, secret: &str, decision: &str) -> usize {
 }
 
 const RUN_A: &str = "run plugin:demo.a for test-agent";
+
+/// Audit records for one slot and decision that carry these arguments
+fn count_args(log: &str, secret: &str, decision: &str, args: &str) -> usize {
+    let args = format!("\"args\":{}", serde_json::to_string(args).unwrap());
+    log.lines()
+        .filter(|l| {
+            l.contains(&format!("\"secret\":\"{secret}\""))
+                && l.contains(&format!("\"decision\":\"{decision}\""))
+                && l.contains(&args)
+        })
+        .count()
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn local_cli_approval_sends_the_params_and_the_prompt_shows_them() {
+    let (bound, _src) = bound_with_reads();
+    let out = bound.run(
+        &[
+            "plugin",
+            "demo",
+            "search",
+            "--query",
+            "invoice",
+            "--mailbox",
+            "INBOX",
+        ],
+        None,
+    );
+    assert_eq!(out.unwrap(), "invoice|INBOX");
+    assert_eq!(
+        bound.prompts(),
+        ["run plugin:demo.search query=\"invoice\" mailbox=\"INBOX\" for test-agent"]
+    );
+
+    // A missing required parameter is refused by the broker before any prompt
+    bound.forget_prompts();
+    let approve = r#"{"name":"demo","agent":"raw","op":"plugin","action":"search","run":false}"#;
+    assert!(ask_socket(&bound, approve).contains("needs --query"));
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn an_argument_over_its_limit_is_refused_before_the_prompt_on_every_path() {
+    let (bound, _src) = bound_with_reads();
+    let err = bound
+        .run(
+            &["plugin", "demo", "search", "--query", "elevenchars"],
+            None,
+        )
+        .unwrap_err();
+    assert!(err.contains("query must be at most 10 characters"), "{err}");
+    let raw = r#"{"name":"demo","agent":"raw","op":"plugin","action":"search","params":[["query","elevenchars"]],"run":true}"#;
+    assert!(ask_socket(&bound, raw).contains("at most 10 characters"));
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+    assert_eq!(
+        bound
+            .run(&["plugin", "demo", "search", "--query", "tenchars10"], None)
+            .unwrap(),
+        "tenchars10|"
+    );
+
+    let bound = bound_with_imap();
+    for (args, why) in [
+        (&["read", "--id", "1:*"][..], "id must be digits only"),
+        (&["recent", "--count", "51"][..], "at most 50"),
+    ] {
+        let err = bound
+            .run(&[&["plugin", "imap"], args].concat(), None)
+            .unwrap_err();
+        assert!(err.contains(why), "{args:?}: {err}");
+    }
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_window_covers_the_exact_call_and_any_other_argument_prompts() {
+    let (bound, _src) = bound_with_reads();
+    set_windows(&bound, "\"demo.search\" = \"1h\"\n\"demo.read\" = \"1h\"");
+    let search = |args: &[&str]| {
+        bound
+            .run(&[&["plugin", "demo", "search"], args].concat(), None)
+            .unwrap()
+    };
+    let prompted = |what: &str, expected: usize| {
+        assert_eq!(
+            bound.prompts().len(),
+            expected,
+            "{what}: {:?}",
+            bound.prompts()
+        );
+    };
+
+    assert_eq!(search(&["--query", "invoice"]), "invoice|");
+    assert_eq!(
+        bound.prompts(),
+        [
+            "allow plugin windows demo.read 1h, demo.search 1h for test-agent, \
+          then run plugin:demo.search query=\"invoice\" for test-agent"
+        ]
+    );
+    search(&["--query", "invoice"]);
+    prompted("the same call", 1);
+    search(&["--query", "invoice", "--mailbox", ""]);
+    prompted("an empty optional is the omitted one", 1);
+
+    search(&["--query", "receipt"]);
+    prompted("another query", 2);
+    search(&["--query", "receipt"]);
+    prompted("the second query has its own window", 2);
+    search(&["--query", "invoice"]);
+    prompted("the first window is still open", 2);
+    search(&["--query", "invoice", "--mailbox", "Archive"]);
+    prompted("another mailbox", 3);
+
+    let read = |id: &str| {
+        bound
+            .run(&["plugin", "demo", "read", "--id", id], None)
+            .unwrap()
+    };
+    assert_eq!(read("42"), "42");
+    read("42");
+    prompted("one message id", 4);
+    read("43");
+    prompted("another message id", 5);
+
+    let log = bound.audit();
+    let invoice = "query=\"invoice\"";
+    assert_eq!(
+        count_args(&log, "plugin:demo.search", "approved", invoice),
+        1,
+        "{log}"
+    );
+    assert_eq!(
+        count_args(&log, "plugin:demo.search", "by window", invoice),
+        3,
+        "{log}"
+    );
+    assert_eq!(
+        count_args(&log, "plugin:demo.read", "approved", "id=\"43\""),
+        1,
+        "{log}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_fed_plugin_window_is_bound_by_its_arguments_and_still_feeds_its_secret() {
+    let bound = bound_with_imap();
+    set_windows(&bound, "\"imap.search\" = \"1h\"\n\"imap.read\" = \"1h\"");
+    let run = |args: &[&str]| {
+        let out = bound
+            .run(&[&["plugin", "imap"], args].concat(), None)
+            .unwrap();
+        // The script got the account on stdin, since it went on to connect
+        assert!(out.contains("ConnectionRefusedError"), "{out}");
+        assert!(!out.contains(IMAP_PW), "{out}");
+    };
+    let prompted = |what: &str, expected: usize| {
+        assert_eq!(
+            bound.prompts().len(),
+            expected,
+            "{what}: {:?}",
+            bound.prompts()
+        );
+    };
+
+    run(&["search", "--query", "invoice", "--mailbox", "INBOX"]);
+    assert_eq!(
+        bound.prompts(),
+        [
+            "allow plugin windows imap.read 1h, imap.search 1h for test-agent, then run \
+          plugin:imap.search query=\"invoice\" mailbox=\"INBOX\" for test-agent, releasing mail/imap"
+        ]
+    );
+    run(&["search", "--query", "invoice", "--mailbox", "INBOX"]);
+    prompted("the same call", 1);
+    run(&["search", "--query", "receipt", "--mailbox", "INBOX"]);
+    prompted("another query", 2);
+    run(&["search", "--query", "invoice", "--mailbox", "Archive"]);
+    prompted("another mailbox", 3);
+    run(&["read", "--id", "42"]);
+    run(&["read", "--id", "42", "--mailbox", ""]);
+    prompted("one message id", 4);
+    run(&["read", "--id", "43"]);
+    prompted("another message id", 5);
+
+    let log = bound.audit();
+    let call = "query=\"invoice\" mailbox=\"INBOX\"";
+    assert_eq!(
+        count_args(&log, "plugin:imap.search", "approved", call),
+        1,
+        "{log}"
+    );
+    assert_eq!(
+        count_args(&log, "plugin:imap.search", "by window", call),
+        1,
+        "{log}"
+    );
+    assert_eq!(count_args(&log, "mail/imap", "released", call), 2, "{log}");
+    assert_eq!(count(&log, "mail/imap", "released"), 7, "{log}");
+}
 
 #[test]
 #[cfg_attr(

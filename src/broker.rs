@@ -154,6 +154,7 @@ fn mint_child(shared: &Shared, request: &Request, caller: &str) -> Option<Result
             "delegated",
             caller,
             &grant,
+            "",
         ) {
             return Some(Err(e));
         }
@@ -217,6 +218,9 @@ struct AuditRecord<'a> {
     /// The approval a token read or a child came from, absent for everything else
     #[serde(skip_serializing_if = "str::is_empty")]
     grant: &'a str,
+    /// A plugin call's arguments as its prompt showed them, absent for everything else
+    #[serde(skip_serializing_if = "str::is_empty")]
+    args: &'a str,
 }
 
 /* Tokens, held past the store key's life. The key opens everything and so is dropped quickly,
@@ -245,28 +249,37 @@ struct Broker {
     #[cfg(feature = "host")]
     grants: Vec<Grant>,
     // In memory only, like tokens, so a restart ends every window
-    windows: HashMap<(String, String), Window>,
+    windows: HashMap<WindowKey, Window>,
     /// The `[plugins.windows]` hash this run verified, set by an approval or a checked record
     approved: Option<String>,
 }
 
-/// One tool opened for one caller scope, with a fed plugin's secret held as a token holds its values
+/// Caller scope, tool, and the exact call from `Tool::call`
+#[cfg(feature = "host")]
+type WindowKey = (String, String, String);
+
+/// Each distinct call is its own window, so this caps what one scope can hold
+#[cfg(feature = "host")]
+const MAX_WINDOWS_PER_SCOPE: usize = 256;
+
+/// One call opened for one caller scope, with a fed plugin's secret held as a token holds its values
 #[cfg(feature = "host")]
 struct Window {
     opened: u64,
     secret: Option<String>,
 }
 
-/* A window covers a later call of the same tool from the same scope while the approved section
-still lists it. The length is read from the section on each call, so a shortened window ends
-sooner. Split out so scope and expiry can be tested without a prompt */
+/* A window covers a later call of the same tool with the same arguments from the same scope while
+the approved section still lists it. The length is read from the section on each call, so a
+shortened window ends sooner. Split out so scope and expiry can be tested without a prompt */
 #[cfg(feature = "host")]
 fn window_open<'a>(
-    windows: &'a HashMap<(String, String), Window>,
+    windows: &'a HashMap<WindowKey, Window>,
     policy: &crate::plugin::Windows,
     approved: Option<&str>,
     scope: &str,
     tool: &str,
+    call: &str,
     now: u64,
 ) -> Option<&'a Window> {
     if approved != Some(policy.hash.as_str()) {
@@ -274,8 +287,25 @@ fn window_open<'a>(
     }
     let secs = policy.tools.get(tool)?;
     windows
-        .get(&(scope.to_string(), tool.to_string()))
+        .get(&(scope.to_string(), tool.to_string(), call.to_string()))
         .filter(|w| now < w.opened.saturating_add(*secs))
+}
+
+/// A full scope drops its oldest window first
+#[cfg(feature = "host")]
+fn open_window(windows: &mut HashMap<WindowKey, Window>, key: WindowKey, window: Window) {
+    let full = windows.keys().filter(|k| k.0 == key.0).count() >= MAX_WINDOWS_PER_SCOPE;
+    if full && !windows.contains_key(&key) {
+        let oldest = windows
+            .iter()
+            .filter(|(k, _)| k.0 == key.0)
+            .min_by_key(|(_, w)| w.opened)
+            .map(|(k, _)| k.clone());
+        if let Some(oldest) = oldest {
+            windows.remove(&oldest);
+        }
+    }
+    windows.insert(key, window);
 }
 
 #[cfg(feature = "host")]
@@ -322,7 +352,7 @@ impl Broker {
             "prompt failed"
         };
         for secret in secrets {
-            let _ = self.audit_by(agent, secret, decision, caller);
+            let _ = self.audit_by(agent, secret, decision, caller, "");
         }
         error
     }
@@ -401,17 +431,24 @@ impl Broker {
         }
     }
 
-    /* The prompt for one plugin call, or the window that covers it. A changed `[plugins.windows]`
-    section is listed in this one prompt, and approving it records the new hash. Returns the value of
-    a fed plugin's secret, read from the store after a prompt or held by the window */
+    /* The prompt for one plugin call, or the window that covers that exact call. A changed
+    `[plugins.windows]` section is listed in this one prompt, and approving it records the new hash.
+    Returns the value of a fed plugin's secret, read from the store after a prompt or held by the
+    window */
     fn plugin_approval(
         &mut self,
         request: &Request,
         caller: &str,
         scope: &str,
-        reason: String,
-        secret: Option<&str>,
+        manifest: &crate::plugin::Manifest,
+        bound: &HashMap<String, String>,
     ) -> Result<Option<String>> {
+        let secret = manifest.stdin.as_deref();
+        let reason = manifest.approval(&request.action, &request.agent, bound);
+        let (args, call) = manifest
+            .tool(&request.action)
+            .map(|t| (t.shown(bound), t.call(bound)))
+            .ok_or_else(|| anyhow!("{} has no action {}", request.name, request.action))?;
         let tool = format!("{}.{}", request.name, request.action);
         let slot = format!("plugin:{tool}");
         let policy = crate::plugin::windows(&self.store)?;
@@ -421,10 +458,11 @@ impl Broker {
             self.approved.as_deref(),
             scope,
             &tool,
+            &call,
             store::now(),
         ) {
             let held = window.secret.clone();
-            self.audit_by(&request.agent, &slot, "by window", caller)?;
+            self.audit_by(&request.agent, &slot, "by window", caller, &args)?;
             return Ok(held);
         }
 
@@ -453,7 +491,7 @@ impl Broker {
         // A record this broker did not sign is ignored, so a forged one opens nothing
         let trusted = changed || stored.is_some_and(|a| a.hash == policy.hash && a.verify(&key));
         self.approved = trusted.then(|| policy.hash.clone());
-        self.audit_by(&request.agent, &slot, "approved", caller)?;
+        self.audit_by(&request.agent, &slot, "approved", caller, &args)?;
 
         let value = match secret {
             Some(name) => match self.store.find(name, &key)? {
@@ -463,8 +501,9 @@ impl Broker {
             None => None,
         };
         if trusted && policy.tools.contains_key(&tool) {
-            self.windows.insert(
-                (scope.to_string(), tool),
+            open_window(
+                &mut self.windows,
+                (scope.to_string(), tool, call),
                 Window {
                     opened: store::now(),
                     secret: value.clone(),
@@ -487,11 +526,10 @@ impl Broker {
         let tool = manifest
             .tool(&request.action)
             .ok_or_else(|| anyhow!("{} has no action {}", request.name, request.action))?;
-        let reason = format!(
-            "run plugin:{}.{} for {}",
-            request.name, request.action, request.agent
-        );
-        self.plugin_approval(request, caller, scope, reason, None)?;
+        // Built before the prompt, so a missing or unknown parameter is refused without one
+        let bound: HashMap<String, String> = request.params.iter().cloned().collect();
+        let mut command = tool.command(&bound)?;
+        self.plugin_approval(request, caller, scope, &manifest, &bound)?;
         if !request.run {
             return Ok("ok".to_string());
         }
@@ -501,8 +539,6 @@ impl Broker {
             bail!("{} runs on the caller, not on the host", request.name);
         }
         manifest.ensure_available()?;
-        let bound: HashMap<String, String> = request.params.iter().cloned().collect();
-        let mut command = tool.command(&bound)?;
         command.current_dir(self.store.plugins_dir().join(&request.name));
         run_plugin_command(command)
     }
@@ -530,11 +566,14 @@ impl Broker {
             .stdin
             .as_deref()
             .ok_or_else(|| anyhow!("{} reads no secret in its bundled copy", request.name))?;
-        let reason = manifest.approval(&request.action, &request.agent);
         let value = self
-            .plugin_approval(request, caller, scope, reason, Some(secret))?
+            .plugin_approval(request, caller, scope, &manifest, &bound)?
             .ok_or_else(|| anyhow!("no secret for {}, approve it again", request.name))?;
-        self.audit_by(&request.agent, secret, "released", caller)?;
+        let args = manifest
+            .tool(&request.action)
+            .map(|t| t.shown(&bound))
+            .unwrap_or_default();
+        self.audit_by(&request.agent, secret, "released", caller, &args)?;
         // The output crosses the socket or the tailnet, so it is scrubbed on the way out
         crate::plugin::run_fed(command, &value)
     }
@@ -646,6 +685,7 @@ impl Broker {
                 "granted",
                 caller,
                 &grant,
+                "",
             )?;
         }
         Ok(format!("{token}\n{}", granted.join("\n")))
@@ -674,6 +714,7 @@ impl Broker {
                 "by token",
                 caller,
                 &grant,
+                "",
             )?;
             return Ok(value);
         }
@@ -701,9 +742,16 @@ impl Broker {
 
     /* A token read has no key by design, and the audit line only ever needed the public half,
     so the record is written to the store's recipient instead. Token reads stay auditable. */
-    fn audit_by(&self, agent: &str, secret: &str, decision: &str, caller: &str) -> Result<()> {
+    fn audit_by(
+        &self,
+        agent: &str,
+        secret: &str,
+        decision: &str,
+        caller: &str,
+        args: &str,
+    ) -> Result<()> {
         let to = self.store.recipient()?;
-        self.audit_to(&to, agent, secret, decision, caller)
+        append_audit_to(&self.store, &to, agent, secret, decision, caller, "", args)
     }
 
     fn audit(
@@ -725,7 +773,7 @@ impl Broker {
         decision: &str,
         caller: &str,
     ) -> Result<()> {
-        append_audit_to(&self.store, to, agent, secret, decision, caller, "")
+        append_audit_to(&self.store, to, agent, secret, decision, caller, "", "")
     }
 }
 
@@ -875,6 +923,7 @@ fn reply<S: std::io::Read + Write>(
                             "by token",
                             caller,
                             &grant,
+                            "",
                         )
                     })
                     .map(|()| value),
@@ -1230,6 +1279,7 @@ pub(crate) fn append_audit(
     secret: &str,
     decision: &str,
     caller: &str,
+    args: &str,
 ) -> Result<()> {
     append_audit_to(
         store,
@@ -1239,9 +1289,11 @@ pub(crate) fn append_audit(
         decision,
         caller,
         "",
+        args,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_audit_to(
     store: &Store,
     to: &age::x25519::Recipient,
@@ -1250,6 +1302,7 @@ fn append_audit_to(
     decision: &str,
     caller: &str,
     grant: &str,
+    args: &str,
 ) -> Result<()> {
     let record = AuditRecord {
         at: crate::store::now(),
@@ -1258,6 +1311,7 @@ fn append_audit_to(
         decision,
         caller,
         grant,
+        args,
     };
     let line = crate::crypto::encrypt_line(&serde_json::to_vec(&record)?, to)?;
     let mut file = std::fs::OpenOptions::new()
@@ -1351,9 +1405,16 @@ pub fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<S
     )
 }
 
-/// Ask the broker to approve one plugin action. The caller runs the command once this returns ok
+/// Ask the broker to approve one plugin call. The caller runs the command built from these
+/// `params` once this returns ok
 #[cfg(feature = "host")]
-pub fn plugin_approve(store: &Store, name: &str, action: &str, agent: &str) -> Result<()> {
+pub fn plugin_approve(
+    store: &Store,
+    name: &str,
+    action: &str,
+    params: &HashMap<String, String>,
+    agent: &str,
+) -> Result<()> {
     ask_broker(
         store,
         Request {
@@ -1364,7 +1425,7 @@ pub fn plugin_approve(store: &Store, name: &str, action: &str, agent: &str) -> R
             ttl: 0,
             names: Vec::new(),
             action: action.to_string(),
-            params: Vec::new(),
+            params: params.clone().into_iter().collect(),
             run: false,
         },
     )
@@ -1769,9 +1830,9 @@ mod tests {
         }
     }
 
-    fn opened(scope: &str, tool: &str, at: u64) -> HashMap<(String, String), Window> {
+    fn opened(scope: &str, tool: &str, at: u64) -> HashMap<WindowKey, Window> {
         HashMap::from([(
-            (scope.to_string(), tool.to_string()),
+            (scope.to_string(), tool.to_string(), "call".to_string()),
             Window {
                 opened: at,
                 secret: None,
@@ -1784,7 +1845,16 @@ mod tests {
         let windows = opened("local", "things3.logbook", 1_000);
         let full = policy("things3.logbook", 60);
         let open = |policy: &crate::plugin::Windows, tool: &str, now| {
-            window_open(&windows, policy, Some("approved"), "local", tool, now).is_some()
+            window_open(
+                &windows,
+                policy,
+                Some("approved"),
+                "local",
+                tool,
+                "call",
+                now,
+            )
+            .is_some()
         };
         assert!(open(&full, "things3.logbook", 1_000));
         assert!(open(&full, "things3.logbook", 1_059));
@@ -1800,17 +1870,38 @@ mod tests {
     }
 
     #[test]
+    fn a_window_covers_only_the_exact_call_that_opened_it() {
+        let windows = opened("local", "imap.search", 1_000);
+        let policy = policy("imap.search", 3_600);
+        let open = |call: &str| {
+            window_open(
+                &windows,
+                &policy,
+                Some("approved"),
+                "local",
+                "imap.search",
+                call,
+                1_001,
+            )
+            .is_some()
+        };
+        assert!(open("call"));
+        assert!(!open("another call"));
+    }
+
+    #[test]
     fn a_window_covers_only_the_scope_that_opened_it() {
         let a = "server (someone@example.com, 100.64.0.7)";
         let b = "laptop (someone@example.com, 100.64.0.8)";
         let policy = policy("imap.search", 3_600);
-        let open = |windows: &HashMap<(String, String), Window>, scope: &str| {
+        let open = |windows: &HashMap<WindowKey, Window>, scope: &str| {
             window_open(
                 windows,
                 &policy,
                 Some("approved"),
                 scope,
                 "imap.search",
+                "call",
                 1_001,
             )
             .is_some()
@@ -1827,11 +1918,49 @@ mod tests {
     }
 
     #[test]
+    fn a_full_scope_drops_its_oldest_window_and_leaves_other_scopes() {
+        let key =
+            |scope: &str, n: usize| (scope.to_string(), "imap.read".to_string(), n.to_string());
+        let window = |opened| Window {
+            opened,
+            secret: None,
+        };
+        let mut windows = HashMap::new();
+        open_window(&mut windows, key("other", 0), window(1));
+        for n in 0..MAX_WINDOWS_PER_SCOPE {
+            open_window(&mut windows, key("local", n), window(1_000 + n as u64));
+        }
+        assert_eq!(windows.len(), MAX_WINDOWS_PER_SCOPE + 1);
+
+        // Reopening a call already held replaces it and drops nothing
+        open_window(&mut windows, key("local", 5), window(5_000));
+        assert_eq!(windows.len(), MAX_WINDOWS_PER_SCOPE + 1);
+
+        open_window(&mut windows, key("local", 999), window(9_000));
+        assert_eq!(windows.len(), MAX_WINDOWS_PER_SCOPE + 1);
+        assert!(!windows.contains_key(&key("local", 0)), "the oldest went");
+        assert!(windows.contains_key(&key("local", 1)));
+        assert!(windows.contains_key(&key("local", 999)));
+        assert!(
+            windows.contains_key(&key("other", 0)),
+            "another scope keeps its window"
+        );
+    }
+
+    #[test]
     fn no_window_applies_from_a_section_that_was_not_approved() {
         let windows = opened("local", "imap.search", 1_000);
         let policy = policy("imap.search", 3_600);
         for approved in [None, Some("an older section")] {
-            let found = window_open(&windows, &policy, approved, "local", "imap.search", 1_001);
+            let found = window_open(
+                &windows,
+                &policy,
+                approved,
+                "local",
+                "imap.search",
+                "call",
+                1_001,
+            );
             assert!(found.is_none(), "{approved:?}");
         }
         let emptied = crate::plugin::Windows {
@@ -1844,6 +1973,7 @@ mod tests {
             Some("approved"),
             "local",
             "imap.search",
+            "call",
             1_001,
         );
         assert!(found.is_none());

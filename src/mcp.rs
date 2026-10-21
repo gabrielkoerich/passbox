@@ -212,7 +212,8 @@ fn plugin_call(store: &Store, agent: &str, name: &str, args: &Value) -> Result<S
     if !manifest.runs_in_caller_dir() {
         command.current_dir(store.plugins_dir().join(plugin));
     }
-    crate::broker::plugin_approve(store, plugin, action, agent)?;
+    // The same params the command was built from, so the prompt shows what runs
+    crate::broker::plugin_approve(store, plugin, action, &bound, agent)?;
     let output = command
         .output()
         .with_context(|| format!("could not run {name}"))?;
