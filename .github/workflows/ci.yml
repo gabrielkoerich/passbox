@@ -380,6 +380,9 @@ jobs:
             grep -q "runtime" sig.txt
             # Ad hoc, so the binary needs no developer identity
             grep -q "Signature=adhoc" sig.txt
+            # Without the bound calendar key EventKit denies the broker with no prompt (#36)
+            grep -q "Info.plist entries=" sig.txt
+            launchctl plist __TEXT,__info_plist "target/$TARGET/release/passbox" | grep -q NSCalendarsFullAccessUsageDescription
           fi
           # The mock enclave must never ship, whatever this build was configured with. Only the
           # gated code holds that name, and a mock build aborts outside a cargo target directory

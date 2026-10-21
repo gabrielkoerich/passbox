@@ -156,6 +156,12 @@ passbox gives what it was asked for, a secret or data, and never acts for the ca
 
 Rejected: keeping the acting tools behind a prompt on every call. A prompt then named the tool and not its arguments, so approving `mail.send` approved any recipient and any body, and a prompt that shows a cut body still cannot show all of it. Cost: 2.0.0 drops those tools, and a job that used them calls its own client under `passbox exec`.
 
+## Calendar access
+
+A remote plugin call runs inside the broker, a LaunchAgent, so EventKit checks Calendar access against passbox itself. A process with no `NSCalendarsFullAccessUsageDescription` is denied without a prompt, and icalBuddy then sees no calendars. The macOS host build embeds an Info.plist in the binary's `__TEXT,__info_plist` section at link time, with the identifier `com.gabrielkoerich.passbox` and the two calendar usage keys and nothing else, so the first remote calendar call raises the macOS prompt. The release job checks that the signed binary has the section bound. Rejected: an app bundle around the CLI, which Homebrew and `cargo install` do not install. Rejected: running icalBuddy on the caller's side, which a tailnet client cannot do.
+
+Cost: the binary is ad hoc signed, and TCC ties the grant to the signature, so macOS may forget it after an upgrade and prompt again. A stable signing identity would fix that, and it needs a paid developer account.
+
 ## Plugin windows
 
 A plugin call prompts by default. `[plugins.windows]` in `~/.passbox/config.toml` maps one exact `"<plugin>.<tool>"` to a duration, and after one approved call the broker skips the prompt for that tool from the same caller scope until the window ends. The policy belongs to the owner, who edits the file, and not to the caller, which only asks.
