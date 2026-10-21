@@ -306,14 +306,13 @@ There is no plugin for sending mail, adding a todo, git or gh. A job that sends 
 
 A tool whose command is missing is refused before it prompts, with the install line above.
 
-Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument. Mark a tool that only reads with `readonly = true`, so a window can cover it. Every first-party tool is marked.
+Write your own plugin as a directory with a `plugin.toml`, then `passbox plugin add <dir>`. A tool declares its `params` and a `run` command where `{param}` is one whole argument. A plugin tool only reads: passbox gives data and never acts for the caller, so do not install a plugin whose tools send, add, write or push.
 
 A tool can also declare `limits`, checked on every path before any prompt. A value that breaks one is refused with the parameter and the limit named, and an omitted optional is not checked.
 
 ```toml
 [[tool]]
 name = "read"
-readonly = true
 params = ["id", "mailbox?"]
 limits = { id = { digits = true }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "read", "{id}", "{mailbox}"]
@@ -348,7 +347,7 @@ The prompt shows the call's arguments, such as `run plugin:imap.search query="in
 The cost: a job that repeats one call, such as `things3.logbook` or `imap.recent --count 20`, prompts once per window, and a job whose query changes prompts on every call. An omitted optional and an empty one are the same call. The broker holds at most 256 windows per scope and drops the oldest first.
 
 - A key names one plugin and one tool, in quotes. `things3`, `*` and `things3.*` are refused, and so is a plugin that is not installed or a tool it does not have.
-- Only a tool marked `readonly = true` can have a window. A key naming any other tool is refused.
+- A window names one installed tool. You choose which tools get one, since every tool should only read.
 - For a plugin without `stdin`, such as `mail` or `things3`, the broker approves and your local caller runs the command, so the binding holds only for callers that go through passbox. Any process of yours can run the app's own CLI without passbox. It is enforced where the broker runs the command: a plugin with `stdin` such as `imap`, and every call from a tailnet client.
 - A window covers the caller that opened it. A tailnet client is named by `tailscale whois`, so one host's window does not cover another host. Every caller on the Mac is one scope, and it does not cover a tailnet client.
 - The file is plain text that any process of yours can edit. The broker keeps the hash of the section you approved, and of each named tool's command. An edit takes effect only after one prompt that lists the new windows, such as `allow plugin windows things3.logbook 24h, imap.search 1h for claude, then run plugin:things3.logbook for claude`. Approving it ends the windows opened under the old section, and a refused prompt keeps the old section.

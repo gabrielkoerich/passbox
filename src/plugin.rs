@@ -46,9 +46,6 @@ pub struct Tool {
     pub params: Vec<String>,
     /// Command and arguments. `{param}` is replaced with the bound value
     pub run: Vec<String>,
-    /// Only a tool marked as a read can be named in `[plugins.windows]`
-    #[serde(default)]
-    pub readonly: bool,
     /// Checks on a parameter's value, refused before any prompt
     #[serde(default)]
     pub limits: BTreeMap<String, Limit>,
@@ -471,8 +468,7 @@ fn duration(text: &str) -> Result<u64> {
     Ok(count.saturating_mul(unit))
 }
 
-// One plugin and one tool, so a window never covers a tool added later, and only a readonly tool,
-// since a window on an action would let any caller act as the owner
+// One plugin and one tool, so a window never covers a tool added later
 fn parse_windows(text: &str, manifest: impl Fn(&str) -> Result<Manifest>) -> Result<Windows> {
     let config: toml::Table = toml::from_str(text)?;
     let Some(plugins) = config.get("plugins") else {
@@ -516,9 +512,6 @@ fn parse_windows(text: &str, manifest: impl Fn(&str) -> Result<Manifest>) -> Res
         let tool = manifest
             .tool(action)
             .with_context(|| format!("{key}: {plugin} has no tool {action}"))?;
-        if !tool.readonly {
-            bail!("{key} is not marked readonly in its manifest, so it prompts on every call");
-        }
         hashed.push_str(&format!(
             "{key}={secs} stdin={:?} run={:?}\n",
             manifest.stdin, tool.run
@@ -587,7 +580,6 @@ mod tests {
                 "{subject}".into(),
                 "{body}".into(),
             ],
-            readonly: false,
             limits: BTreeMap::new(),
         }
     }
@@ -1114,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn a_window_names_exactly_one_installed_readonly_tool() {
+    fn a_window_names_exactly_one_installed_tool() {
         let ok = parsed("\"demo.read\" = \"90s\"").unwrap();
         assert_eq!(ok.tools["demo.read"], 90);
         for (bad, why) in [
@@ -1125,7 +1117,6 @@ mod tests {
             ("\"demo.read.x\" = \"1h\"", "one plugin and one tool"),
             ("\"demo.\" = \"1h\"", "one plugin and one tool"),
             ("allow_writes = true", "one plugin and one tool"),
-            ("\"demo.act\" = \"1h\"", "not marked readonly"),
             ("\"demo.nope\" = \"1h\"", "demo has no tool nope"),
             ("\"other.read\" = \"1h\"", "not installed"),
             ("\"demo.read\" = \"1d\"", "not a duration"),
@@ -1190,14 +1181,11 @@ mod tests {
     }
 
     #[test]
-    fn every_first_party_tool_is_a_read() {
-        for plugin in ["mail", "calendar", "things3", "imap"] {
-            let text = std::fs::read_to_string(format!("plugins/{plugin}/plugin.toml")).unwrap();
-            let manifest: Manifest = toml::from_str(&text).unwrap();
-            for tool in &manifest.tools {
-                assert!(tool.readonly, "{plugin}.{} is not readonly", tool.name);
-            }
-        }
+    fn a_window_covers_any_installed_tool_and_an_old_readonly_key_still_loads() {
+        let ok = parsed("\"demo.act\" = \"1h\"").unwrap();
+        assert_eq!(ok.tools["demo.act"], 3600);
+        // Manifests from before 2.1 mark their tools readonly, and the key is now ignored
+        assert!(installed_demo("demo").unwrap().tool("read").is_some());
     }
 
     #[test]
