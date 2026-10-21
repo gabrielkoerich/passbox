@@ -251,7 +251,7 @@ First-party plugins:
 
 | Plugin | Needs | Tools |
 |---|---|---|
-| `mail` | Mail.app, nothing to install | `recent`, `search` |
+| `mail` | Mail.app, nothing to install | `recent` in the Inbox, `search` in every mailbox |
 | `calendar` | the `icalBuddy` CLI | `today`, `agenda` |
 | `things3` | the `things` CLI | `inbox`, `today`, `search`, and for jobs that parse JSON `today_json`, `inbox_json`, `search_json`, `upcoming`, `logbook`, `completed`, plus `all` and `trash` |
 | `imap` | `/usr/bin/python3` from the Command Line Tools, an account entry in the store | `recent`, `search`, `read`, `attachments` |

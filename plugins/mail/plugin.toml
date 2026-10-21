@@ -13,7 +13,7 @@ run = ["osascript", "recent.applescript", "{count}"]
 [[tool]]
 name = "search"
 readonly = true
-description = "Search inbox subjects for a query"
+description = "Search subjects and senders in every mailbox for a query, up to 50, each with its mailbox"
 params = ["query"]
 limits = { query = { max_len = 200 } }
 run = ["osascript", "search.applescript", "{query}"]
