@@ -7,7 +7,7 @@ description: Read secrets from passbox, inject them into a child process, and st
 
 An agentic password manager. An agent asks for a secret, macOS raises a Touch ID prompt naming the agent and the secret, and the value goes into one child process. It never enters the agent.
 
-Store lives at `~/.passbox` (`PASSBOX_DIR` overrides). Every secret is one age file with a random id; the name and policy are inside the ciphertext.
+The store lives at `~/.passbox` (`PASSBOX_DIR` overrides). Every secret is one age file with a random id; the name and policy are inside the ciphertext.
 
 ## Setup
 
@@ -35,7 +35,7 @@ mkdir -p ~/.claude/skills/passbox && cp SKILL.md ~/.claude/skills/passbox/
 
 ```bash
 passbox get github/token                    # prints it, refuses unless stdout is a terminal
-passbox copy github/token                   # to the clipboard, cleared after a few seconds
+passbox copy github/token                   # to the clipboard, cleared after 20 seconds
 passbox ls                                  # tree of names, needs a prompt
 ```
 
@@ -58,7 +58,7 @@ Use this first when a daemon runs 24/7. A token expires, and renewing one needs 
 passbox exec --env SIGNING_KEY=acme/signing-key -- python -m your.daemon
 ```
 
-One approval at launch. The value lands in the process environment and every child inherits it, so nothing reads passbox again for the life of that process. A daemon runs for weeks on one fingerprint and needs you only when you restart it.
+It takes one approval at launch. The value lands in the process environment and every child inherits it, so nothing reads passbox again for the life of that process. A daemon runs for weeks on one fingerprint and needs you only when you restart it.
 
 This works because a credential layer should check environment variables before any provider. If yours does, injecting needs no code change: the reads stop reaching passbox.
 
@@ -68,7 +68,7 @@ Limit: passbox passes a variable name with a hyphen (`HL_SUBACCOUNT_XSMOM-XYZ_AD
 
 ## Grants and tokens
 
-A **grant** is one approval that mints a **token**: a bearer string that opens exactly the secrets it was granted, for whoever holds it, until it lapses. Capped at 24 hours.
+A **grant** is one approval that mints a **token**: a bearer string that opens exactly the secrets it was granted, for whoever holds it, until it lapses. A token lasts at most 24 hours.
 
 ```bash
 export PASSBOX_TOKEN=$(passbox grant acme/signing-key acme/api-key --for 3600)
@@ -79,7 +79,7 @@ The token goes to stdout and the covered names to stderr, so `$(...)` captures t
 
 **A namespace is refused.** `grant acme` would hand over everything under it to save one prompt, and it scopes on how the store is laid out rather than on what the job reads. Put everything at the root and a namespace rule protects nothing. The refusal lists the names so you can copy the ones you want. It costs no fingerprint when the broker's key is still warm from a recent read.
 
-Revoke by restarting the broker, which tears up every outstanding token:
+Restarting the broker revokes every outstanding token:
 
 ```bash
 pkill -f "passbox broker"

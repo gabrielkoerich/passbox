@@ -12,7 +12,7 @@ Secrets are ordinary [age](https://age-encryption.org) files. The broker decides
 
 It runs without an Apple Developer Program membership.
 
-> This is a new way to store passwords, a fingerprint releases one or more secrets into one process. It is young and may have bugs. Keep another copy of anything you cannot lose.
+> This is a new way to store passwords: a fingerprint releases one or more secrets into one process. It is young and may have bugs. Keep another copy of anything you cannot lose.
 
 ## Install
 
@@ -23,15 +23,15 @@ passbox init
 
 Recent Homebrew asks you to trust a third party tap before it will build from one. If the install stops and says so, run `brew trust --formula gabrielkoerich/tap/passbox` and try again.
 
-That downloads a prebuilt binary. Nothing is compiled, so Rust is not needed.
+The formula downloads a prebuilt binary and compiles nothing, so you do not need Rust.
 
-Or build it from [crates.io](https://crates.io/crates/passbox), which needs Rust and the Command Line Tools for `swiftc`. A full Xcode is not needed.
+Or build it from [crates.io](https://crates.io/crates/passbox), which needs Rust and the Command Line Tools for `swiftc`. You do not need a full Xcode.
 
 ```bash
 cargo install passbox
 ```
 
-On the Mac passbox needs Touch ID and macOS 13 or later. The Homebrew formula is for Apple silicon only, and the menu-bar app needs macOS 14.
+On the Mac, passbox needs Touch ID and macOS 13 or later. The Homebrew formula is for Apple silicon only, and the menu-bar app needs macOS 14.
 
 `init` binds the store to this Mac's Secure Enclave and asks for nothing else. There is no passphrase, so there is no file anyone can carry off and grind at.
 
@@ -66,7 +66,7 @@ passbox copy github/token     # to the clipboard, cleared after 20 seconds
 
 ### Alfred
 
-The [Alfred workflow](integrations/alfred) copies a secret from Alfred: type `pbx`, press `⏎` and touch the sensor, Alfred reopens with your names, pick one, and `⏎` copies the password or `⌘⏎` the username, through `passbox copy`. It needs the Powerpack.
+The [Alfred workflow](integrations/alfred) copies a secret through `passbox copy`. Type `pbx`, press `⏎` and touch the sensor. Alfred reopens with your names: pick one, then press `⏎` to copy the password or `⌘⏎` to copy the username. It needs the Powerpack.
 
 ```bash
 curl -fsSLO https://github.com/gabrielkoerich/passbox/releases/latest/download/passbox.alfredworkflow
@@ -92,7 +92,7 @@ export SSH_AUTH_SOCK=~/.passbox/ssh-agent.sock   # in ~/.zshrc
 ssh-add -L                                        # lists it, no prompt
 ```
 
-Unencrypted Ed25519 and P-256 keys only. Remove a passphrase with `ssh-keygen -p -f KEY`, then delete the file once the key is in the store. The prompt says what is signed and with which key, such as "sign an SSH login as git with SSH key you@mac for ssh", and a key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
+The agent takes unencrypted Ed25519 and P-256 keys only. Remove a passphrase with `ssh-keygen -p -f KEY`, then delete the file once the key is in the store. The prompt says what is signed and with which key, such as "sign an SSH login as git with SSH key you@mac for ssh". A key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
 
 ### Coming from pass
 
@@ -102,7 +102,7 @@ passbox import-pass acme        # one namespace
 passbox import-pass acme/token  # one entry
 ```
 
-Each entry is decrypted through GPG and re-encrypted to the store key. The whole body is kept, so the `key: value` lines many pass entries carry under the password survive. Entries already in the store are skipped, and nothing in `pass` is changed or removed.
+passbox decrypts each entry through GPG and re-encrypts it to the store key. It keeps the whole body, so the `key: value` lines many pass entries carry under the password survive. It skips entries already in the store, and it changes or removes nothing in `pass`.
 
 ### Giving a secret to an agent
 
@@ -144,14 +144,14 @@ Any client that speaks MCP over stdio works, and the command is always `passbox 
 
 That file is `~/.claude.json` for Claude Code, `~/.codex/config.toml` for Codex in TOML form, and `~/.cursor/mcp.json` for Cursor. Check it took with `claude mcp list`.
 
-The server has two tools of its own, and neither returns a secret. Each installed plugin adds its tools beside them, see [Plugins](README.md#plugins).
+The server has two tools of its own, and neither returns a secret. Each installed plugin adds its tools beside them. See [Plugins](README.md#plugins).
 
 | Tool | Returns |
 |---|---|
 | `list_secrets` | names only |
 | `run_with_secret` | the command's output, with the value scrubbed out of it |
 
-There is deliberately no `get_secret`. A tool result lands in the model's context, where it is logged and sent onward, so the tools run the command for the agent. If the command prints the secret anyway, passbox replaces it in the output before returning.
+There is no `get_secret`. A tool result lands in the model's context, where it is logged and sent onward, so the tools run the command for the agent. If the command prints the secret anyway, passbox replaces it in the output before returning.
 
 The agent name in the prompt comes from the MCP handshake, so it is the client's own `clientInfo.name` rather than a guess up the process tree.
 
@@ -173,13 +173,13 @@ The server inherits the environment of whatever launched it, which for an editor
 }
 ```
 
-The cost is a bearer token in a config file. Worth it for an agent that reads the same few secrets all day and otherwise prompts on every call. For an agent that reads a secret now and then, take the prompt instead.
+The cost is a bearer token in a config file. It is worth it for an agent that reads the same few secrets all day and otherwise prompts on every call. For an agent that reads a secret now and then, take the prompt instead.
 
 [`examples/mcp`](examples/mcp) speaks the protocol to `passbox mcp` from Python with no SDK, and holds a project `.mcp.json`. Models that need the whole MCP guide in one place can read [`llms.txt`](llms.txt).
 
-A token cannot widen what the tools already refuse. `list_secrets` still returns names only, `run_with_secret` still runs the command, and there is still no `get_secret`. A token only changes whether you are asked.
+A token changes only whether you are asked. It cannot widen what the tools refuse: `list_secrets` still returns names only, `run_with_secret` still runs the command, and there is still no `get_secret`.
 
-Tokens live in the broker's memory, so restarting it revokes every one of them and the MCP server goes back to prompting. It does not need restarting itself.
+Tokens live in the broker's memory, so restarting it revokes every one of them and the MCP server goes back to prompting. The MCP server itself needs no restart.
 
 ### Approving a project once
 
@@ -198,7 +198,7 @@ The project is the caller's working directory, read from the kernel rather than 
 
 #### `.passbox.toml` and `.env.passbox` are different files
 
-The names are similar and the jobs are unrelated. They work together, and a project can have both.
+The names are similar and the jobs are different. A project can have both, and they work together.
 
 | | `.passbox.toml` | `.env.passbox` |
 |---|---|---|
@@ -208,7 +208,7 @@ The names are similar and the jobs are unrelated. They work together, and a proj
 | Approval | yes, bound to the file's hash | none, it is a lookup table |
 | Safe to commit | yes, it names secrets and grants nothing | yes, same |
 
-The `.toml` is a **request**: it changes how often you are asked. The `.env` is a **mapping**: it says where a value lands once you have it. Neither holds a value, which is why both can be committed, and neither is a grant on its own.
+The `.toml` changes how often you are asked. The `.env` says where a value lands once you have it. Neither holds a value, so you can commit both, and neither grants anything on its own.
 
 If a project uses both, the `.toml` covers the same names the `.env` maps, so the one prompt covers the whole startup.
 
@@ -245,7 +245,7 @@ passbox plugin mail recent --count 5            # run a tool, approved and audit
 passbox plugin remove mail
 ```
 
-The same tools appear over MCP as `mail.recent`, `mail.search` and so on, so an agent calls them through the server. Every call prompts, unless a [window](#approval-windows) you set covers it. The broker approves and audits, the caller runs the command, so it keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
+The same tools appear over MCP as `mail.recent`, `mail.search` and so on, so an agent calls them through the server. Every call prompts, unless a [window](#approval-windows) you set covers it. The broker approves and audits, and the caller runs the command, so the command keeps your GUI session. A value is passed as a whole argument to the command, never spliced into a script, so it cannot become code.
 
 First-party plugins:
 
@@ -291,7 +291,7 @@ tls: starttls
 fingerprint: 3a:1f:...:9c
 ```
 
-`tls` is `starttls` or `ssl`. Left out, it is `ssl` on port 993 and `starttls` on any other port, and a missing port is 993 for `ssl` and 143 for `starttls`. Plain IMAP is refused. Certificates are verified against the system roots. A server with a self-signed certificate, such as Bridge, is trusted through one pinned certificate instead: `fingerprint` is its SHA-256, compared before the password is sent, or `cafile` is the path to its exported PEM. Every tool takes an optional `--mailbox`, `INBOX` by default. `attachments` returns the message's attachments as one JSON array of `name`, `type`, `size` and `base64`, up to 10 MB a call, so nothing is written on the Mac and a remote caller gets the bytes itself. Past that limit an attachment is listed with `skipped` in place of `base64`. Each name keeps only its base name, so a caller that saves it under that name stays in its own directory.
+`tls` is `starttls` or `ssl`. Left out, it is `ssl` on port 993 and `starttls` on any other port, and a missing port is 993 for `ssl` and 143 for `starttls`. passbox refuses plain IMAP and verifies certificates against the system roots. A server with a self-signed certificate, such as Bridge, is trusted through one pinned certificate instead: `fingerprint` is its SHA-256, compared before the password is sent, or `cafile` is the path to its exported PEM. Every tool takes an optional `--mailbox`, `INBOX` by default. `attachments` returns the message's attachments as one JSON array of `name`, `type`, `size` and `base64`, up to 10 MB a call, so nothing is written on the Mac and a remote caller gets the bytes itself. Past that limit an attachment is listed with `skipped` in place of `base64`. Each name keeps only its base name, so a caller that saves it under that name stays in its own directory.
 
 For Proton Mail, install and sign in to [Proton Mail Bridge](https://proton.me/mail/bridge). Bridge shows the IMAP host, port, user and a Bridge password for the account, which is not your Proton password. Read the certificate fingerprint from Bridge itself:
 
@@ -376,11 +376,11 @@ This applies only to a directory, where the copy takes a few milliseconds. An rc
 
 Commit subjects name the operation and never the entry, because a subject naming a secret would undo the work of keeping names out of filenames.
 
-**What history costs.** `passbox rm` writes a tombstone and prunes after 90 days, so a secret really goes. Git keeps it: the old `.age` blob stays in the history, still readable by the store key. With a repo, `rm` no longer removes the secret from history. `pass` makes the same trade, so make it knowingly.
+**What history costs.** `passbox rm` writes a tombstone and prunes after 90 days, so a secret is gone. Git keeps it: the old `.age` blob stays in the history, still readable by the store key. `pass` makes the same trade, so make it knowingly.
 
 Git and sync are not alternatives. With both set up a write does both, and they answer different questions: the repo is this machine's history, the copy is what survives the machine. The repo is never copied to the mirror, because a shared directory holding two machines' git internals would be a mess, and the remote is a mirror rather than a clone.
 
-The Secure Enclave wraps are excluded, so the remote holds opaque age files that only this Mac can read. That protects you from deleting a secret by accident. It does **not** protect you from losing the Mac, because nothing in the backup can open it. For that, turn on sync.
+The Secure Enclave wraps are excluded, so the remote holds opaque age files that only this Mac can read. That protects you from deleting a secret by accident. It does not protect you from losing the Mac, because nothing in the backup can open it. For that, turn on sync.
 
 ### Sync
 
@@ -441,7 +441,7 @@ The config names the kind with `engine`. A destination given with `--remote` or 
 
 Git commits after the copy, which gives you history and an off-site remote.
 
-On a second Mac, `passbox sync` then `passbox machine add`, the same steps as recovering onto a replacement.
+On a second Mac, run `passbox sync` then `passbox machine add`, the same steps as recovering onto a replacement.
 
 ### If you lose the Mac
 
@@ -481,7 +481,7 @@ passbox yubikey-add age1yubikey1...    # or name the recipient from --list
 
 With no recipient, passbox lists every plugged token and drops the ones the store already holds. A token with no identity gets the same setup as `sync --enable`, but only when no plugged token has one, so unplug the old token first. If several new tokens are plugged in, it shows each serial and asks. It then offers to check the new token by opening the wrap with that token alone.
 
-passbox uses the **PIV** applet. OpenPGP keys live in a separate applet on the same chip and are never touched. Before provisioning a slot it reads what PIV already holds and shows you, using `ykman` when it is installed.
+passbox uses the PIV applet. OpenPGP keys live in a separate applet on the same chip and are never touched. Before provisioning a slot it reads what PIV already holds and shows you, using `ykman` when it is installed.
 
 ### When the YubiKey will not cooperate
 
@@ -489,7 +489,7 @@ Five failures give an error that names neither the cause nor the fix. They are l
 
 **`Failed to authenticate with the PIN-protected management key`**
 
-Firmware 5.7 sets the PIV management key algorithm to **AES192**, and `age-plugin-yubikey` supports TDES only. A factory reset does not help, because the reset sets AES192 too, so a brand new token arrives in this state.
+Firmware 5.7 sets the PIV management key algorithm to AES192, and `age-plugin-yubikey` supports TDES only. A factory reset does not help, because the reset sets AES192 too, so a brand new token arrives in this state.
 
 ```bash
 ykman piv info | grep "Management key algorithm"   # AES192 means read on
@@ -664,7 +664,7 @@ tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787
 
 The broker binds `127.0.0.1:8787` and Tailscale forwards to it. Binding the 100.x address directly looks right and does not work: macOS runs Tailscale as a network extension, the socket accepts the connection, and the first read fails with `ENOTCONN`. Measured 2026-09-27, and reproduced with a plain Python server, so it is the platform rather than passbox.
 
-Cost: loopback has none of the unix socket's `0600` protection, so any local user can reach that port. It is the only inbound path macOS actually delivers.
+Cost: loopback has none of the unix socket's `0600` protection, so any local user can reach that port. It is the only inbound path macOS delivers.
 
 `--proxy-protocol 1` makes Tailscale open each connection with the node's tailnet address, since through `serve` the broker only ever sees `127.0.0.1`. The broker resolves that address with `tailscale whois`, so the prompt and the audit log name the host, as in `claude on server (someone@example.com, 100.64.0.7)`. The name comes from the control plane, not from the client. The broker refuses a connection without the header, because a client could otherwise send its own and claim any host. Set `PASSBOX_AGENT` on the client to name the job as well, such as an orch job id.
 
@@ -798,7 +798,7 @@ There is no in-process read. `passbox get` refuses a pipe, and the `passbox` cra
 
 [`examples/`](examples) also holds [Python](examples/python) and [TypeScript](examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
 
-For agents specifically, see [AGENTS.md](AGENTS.md), and the [`SKILL.md`](SKILL.md) that teaches a coding agent to use passbox correctly.
+For agents, see [AGENTS.md](AGENTS.md), and the [`SKILL.md`](SKILL.md) that teaches a coding agent to use passbox.
 
 ## Comparisons
 

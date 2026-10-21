@@ -1,6 +1,6 @@
 # Mac app
 
-A menu-bar app for copying a credential quickly. Press `⌘⇧Space`, type part of a name, and press `⏎` to copy the password or `⌘⏎` to copy the username. `↑` and `↓` move the selection, `⌘R` lists the names again, and `esc` closes the panel. Phase 1 of [#21](https://github.com/gabrielkoerich/passbox/issues/21), notes and the Open view come later.
+A menu-bar app for copying a credential quickly. Press `⌘⇧Space`, type part of a name, and press `⏎` to copy the password or `⌘⏎` to copy the username. `↑` and `↓` move the selection, `⌘R` lists the names again, and `esc` closes the panel. This is phase 1 of [#21](https://github.com/gabrielkoerich/passbox/issues/21). Notes and the Open view come later.
 
 ## Build and run
 
