@@ -536,7 +536,7 @@ pub struct Approval {
     mac: String,
 }
 
-fn approval_path(store: &Store) -> std::path::PathBuf {
+pub(crate) fn approval_path(store: &Store) -> std::path::PathBuf {
     store
         .dir
         .join(format!("windows-{}.json", crate::store::hostname()))

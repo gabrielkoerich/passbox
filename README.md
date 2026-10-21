@@ -416,7 +416,7 @@ directory = ".passbox"   # icloud: one folder in iCloud Drive, .passbox when lef
 # remote = "git@github.com:you/s.git"   git, or "b2:passbox" for rclone
 ```
 
-The same file holds the [plugin windows](#approval-windows) in `[plugins.windows]`, which `--enable` keeps when it rewrites `[sync]`. To move the copy, edit one line. The file stays on this Mac and is never synced, since a USB path on one Mac means nothing on another. The older one-line `~/.passbox/remote` is deprecated. It is still read when there is no config, with a warning, and stops being read in v2. `passbox sync --enable` moves it to the config, with the same destination.
+The same file holds the [plugin windows](#approval-windows) in `[plugins.windows]`, which `--enable` keeps when it rewrites `[sync]`. To move the copy, edit one line. The file stays on this Mac and is never synced, since a USB path on one Mac means nothing on another. The older one-line `~/.passbox/remote` is deprecated. It is still read when there is no config, with a warning, and stops being read in v3. `passbox sync --enable` moves it to the config, with the same destination.
 
 **A destination that makes no sense is refused.** passbox checks the config on every read and stops with the reason, instead of copying somewhere new:
 
@@ -725,7 +725,7 @@ passbox restore github/token --index 0  # put the newest one back
 ~/.passbox/
   store/<random-id>.age     one self describing secret per file
   store/<random-id>.tomb    deletion marker
-  store/.versions/<id>/     earlier versions, kept local
+  store/.versions/<id>/     earlier versions, never synced
   wraps/recipient           the store public key, no secret in it
   wraps/recovery.age        the store key under your passphrase, once sync is on or when there is no Enclave
   wraps/yubikey.age         the store key under the YubiKeys, once one is added
@@ -735,11 +735,11 @@ passbox restore github/token --index 0  # put the newest one back
   grants-<host>.age         project approvals, never synced
   config.toml               where sync copies to and the plugin windows, never synced
   windows-<host>.json       the hash of the approved plugin windows, never synced
-  plugins/                  installed plugins
-  ssh-keys.pub              the public halves the SSH agent lists
-  broker.sock               the approval socket
-  ssh-agent.sock            the SSH agent socket
-  host                      on a client, the Mac to ask
+  plugins/                  installed plugins, never synced
+  ssh-keys.pub              the public halves the SSH agent lists, never synced
+  broker.sock               the approval socket, never synced
+  ssh-agent.sock            the SSH agent socket, never synced
+  host                      on a client, the Mac to ask, never synced
 ```
 
 The filename is a random id. Names live inside the ciphertext, so nothing on disk says what a secret is called. What still leaks: how many secrets exist, their sizes, and their modification times.

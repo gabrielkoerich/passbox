@@ -150,14 +150,18 @@ pub fn configured(store: &Store) -> Result<Option<Destination>> {
     }
     let old = legacy(store)?;
     if old.is_some() {
-        eprintln!(
-            "passbox: {} is deprecated and stops being read in v2, run `passbox sync --enable` to \
-             move it to {}",
-            remote_path(store).display(),
-            config_path(store).display()
-        );
+        eprintln!("{}", legacy_warning(store));
     }
     Ok(old)
+}
+
+fn legacy_warning(store: &Store) -> String {
+    format!(
+        "passbox: {} is deprecated and stops being read in v3, run `passbox sync --enable` to \
+         move it to {}",
+        remote_path(store).display(),
+        config_path(store).display()
+    )
 }
 
 fn legacy(store: &Store) -> Result<Option<Destination>> {
@@ -228,26 +232,58 @@ pub fn default_destination(store: &Store) -> Result<Destination> {
     Engine::Icloud { directory: None }.resolve()
 }
 
-/* The socket is a live endpoint and the versions are this machine's own history. Grants stay put
-too, since one that travelled would let a machine you have not touched inherit an approval given
-here. The chosen remote is machine local, because a USB path on one Mac means nothing on another. */
+/* What never syncs, in rclone filter syntax so `sync_via_rclone` excludes the same list. A
+leading `/` anchors the pattern at the store root, without one it matches a file name anywhere.
+Matching ignores case, as macOS and iCloud Drive do. */
+const NEVER_SYNCED: &[&str] = &[
+    // Live endpoints, and the public keys this machine rebuilds whenever the store key opens
+    "/broker.sock",
+    "/ssh-agent.sock",
+    "/ssh-keys.pub",
+    // A client's broker address, which on another Mac would send its reads to this one's host
+    "/host",
+    // A USB path on one Mac means nothing on another
+    "/remote",
+    "/config.toml",
+    "/names",
+    "/plugins/**",
+    // The repo is this machine's history, and the remote is a mirror rather than a clone
+    "/.git/**",
+    "/.gitignore",
+    "/store/.versions/**",
+    // A copy cut off before its rename, never a real file
+    "*.partial",
+    // A grant that travelled would let a machine you have not touched inherit an approval
+    "/grants-*.age",
+    "/windows-*.json",
+];
+
+fn matches(pattern: &str, relative: &str) -> bool {
+    let (pattern, relative) = (pattern.to_lowercase(), relative.to_lowercase());
+    let (pattern, text) = match pattern.strip_prefix('/') {
+        Some(rooted) => (rooted, relative.as_str()),
+        None => (
+            pattern.as_str(),
+            relative.rsplit('/').next().unwrap_or(&relative),
+        ),
+    };
+    if let Some(dir) = pattern.strip_suffix("/**") {
+        return text == dir || text.starts_with(&format!("{dir}/"));
+    }
+    match pattern.split_once('*') {
+        Some((head, tail)) => {
+            text.len() >= head.len() + tail.len()
+                && text.starts_with(head)
+                && text.ends_with(tail)
+                && !text[head.len()..text.len() - tail.len()].contains('/')
+        }
+        None => text == pattern,
+    }
+}
+
 fn skip(relative: &Path) -> bool {
     let text = relative.to_string_lossy();
-    text == "broker.sock"
-        || text == "remote"
-        || text == "config.toml"
-        || text == "names"
-        || text == "plugins"
-        // A repo is this machine's history. Copying it into a shared directory would put two
-        // machines' git internals in one place, and the remote is a mirror, not a clone.
-        || text == ".git"
-        || text.starts_with(".git/")
-        || text == ".gitignore"
-        || text.starts_with("store/.versions")
-        // A copy cut off before its rename, never a real file
-        || text.ends_with(".partial")
-        || (text.starts_with("grants-") && text.ends_with(".age"))
-        || (text.starts_with("windows-") && text.ends_with(".json"))
+    NEVER_SYNCED.iter().any(|p| matches(p, &text))
 }
 
 fn walk(root: &Path, base: &Path, out: &mut BTreeMap<PathBuf, SystemTime>) -> Result<()> {
@@ -260,10 +296,11 @@ fn walk(root: &Path, base: &Path, out: &mut BTreeMap<PathBuf, SystemTime>) -> Re
         if skip(&relative) {
             continue;
         }
-        if path.is_dir() {
+        let meta = fs::metadata(&path)?;
+        if meta.is_dir() {
             walk(root, &path, out)?;
-        } else {
-            out.insert(relative, fs::metadata(&path)?.modified()?);
+        } else if meta.is_file() {
+            out.insert(relative, meta.modified()?);
         }
     }
     Ok(())
@@ -305,7 +342,9 @@ fn check_destination(store: &Store, remote: &Path) -> Result<()> {
     if !remote.is_dir() {
         bail!("{shown} does not exist. Create it, or {again}");
     }
-    let (there, here) = (remote.canonicalize()?, store.dir.canonicalize()?);
+    let unreadable = || format!("could not read {shown}, nothing synced");
+    let there = remote.canonicalize().with_context(unreadable)?;
+    let here = store.dir.canonicalize()?;
     if there.starts_with(&here) || here.starts_with(&there) {
         bail!(
             "{shown} overlaps the store at {}, {again}",
@@ -313,7 +352,8 @@ fn check_destination(store: &Store, remote: &Path) -> Result<()> {
         );
     }
     let mirror = remote.join("store").is_dir() || remote.join("wraps").is_dir();
-    let empty = fs::read_dir(remote)?
+    let empty = fs::read_dir(remote)
+        .with_context(unreadable)?
         .filter_map(|e| e.ok())
         .all(|e| e.file_name() == ".DS_Store");
     if !mirror && !empty {
@@ -335,9 +375,11 @@ pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
     let mut here = BTreeMap::new();
     let mut there = BTreeMap::new();
     walk(&store.dir, &store.dir, &mut here)?;
-    walk(remote, remote, &mut there)?;
+    walk(remote, remote, &mut there)
+        .with_context(|| format!("could not read {}, nothing synced", remote.display()))?;
 
     let mut report = Report::default();
+    let (mut failed, mut first) = (0, None);
     let names: Vec<PathBuf> = here.keys().chain(there.keys()).cloned().collect();
 
     for name in names {
@@ -345,28 +387,32 @@ pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
         let theirs = there.get(&name);
         let from_here = store.dir.join(&name);
         let from_there = remote.join(&name);
+        let push = || copy(&from_here, &from_there);
+        let pull = || {
+            keep_losing_version(store, &name)?;
+            copy(&from_there, &from_here)
+        };
 
-        match (ours, theirs) {
-            (Some(_), None) => {
-                copy(&from_here, &from_there)?;
-                report.pushed += 1;
-            }
-            (None, Some(_)) => {
-                keep_losing_version(store, &name)?;
-                copy(&from_there, &from_here)?;
-                report.pulled += 1;
-            }
-            (Some(ours), Some(theirs)) if ours > theirs => {
-                copy(&from_here, &from_there)?;
-                report.pushed += 1;
-            }
-            (Some(ours), Some(theirs)) if theirs > ours => {
-                keep_losing_version(store, &name)?;
-                copy(&from_there, &from_here)?;
-                report.pulled += 1;
-            }
-            _ => {}
+        let done = match (ours, theirs) {
+            (Some(_), None) => push().map(|()| report.pushed += 1),
+            (None, Some(_)) => pull().map(|()| report.pulled += 1),
+            (Some(ours), Some(theirs)) if ours > theirs => push().map(|()| report.pushed += 1),
+            (Some(ours), Some(theirs)) if theirs > ours => pull().map(|()| report.pulled += 1),
+            _ => Ok(()),
+        };
+        // One summary for the run, since a folder macOS refuses would fail every file the same way
+        if let Err(e) = done {
+            first.get_or_insert_with(|| format!("{}: {e:#}", name.display()));
+            failed += 1;
         }
+    }
+
+    if let Some(first) = first {
+        bail!(
+            "could not sync {failed} {} to {}, the copy there is incomplete: {first}",
+            if failed == 1 { "file" } else { "files" },
+            remote.display()
+        );
     }
     Ok(report)
 }
@@ -389,15 +435,25 @@ fn secret_id(relative: &Path) -> Option<String> {
     Some(relative.file_stem()?.to_str()?.to_string())
 }
 
+fn rclone_args(store: &Store, remote: &str) -> Vec<std::ffi::OsString> {
+    let mut args = vec![
+        "bisync".into(),
+        store.dir.clone().into(),
+        remote.into(),
+        "--ignore-case".into(),
+    ];
+    for pattern in NEVER_SYNCED {
+        args.push("--exclude".into());
+        args.push(pattern.into());
+    }
+    args.push("--resync-mode=newer".into());
+    args
+}
+
 /// rclone covers every backend it supports, and nobody on the default path needs it installed
 pub fn sync_via_rclone(store: &Store, remote: &str) -> Result<()> {
     let status = std::process::Command::new("rclone")
-        .arg("bisync")
-        .arg(&store.dir)
-        .arg(remote)
-        .args(["--filter", "- broker.sock"])
-        .args(["--filter", "- .versions/**"])
-        .arg("--resync-mode=newer")
+        .args(rclone_args(store, remote))
         .status()
         .context("rclone is not on PATH, install it or point PASSBOX_REMOTE at a directory")?;
 
@@ -798,6 +854,148 @@ mod tests {
         sync(&one, remote.path()).unwrap();
         assert!(!remote.path().join("broker.sock").exists());
         assert!(!remote.path().join("store/.versions").exists());
+    }
+
+    #[test]
+    fn a_socket_in_the_store_does_not_stop_the_copy() {
+        let a = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        let (one, key) = store(a.path());
+        for name in ["a/b", "c/d"] {
+            one.put(&new_id(), &secret(name, "v"), &one.recipient().unwrap())
+                .unwrap();
+        }
+        // Both sort before `store/`, and the second is a name no skip rule knows
+        let _agent = std::os::unix::net::UnixListener::bind(one.ssh_agent_path()).unwrap();
+        let _stray = std::os::unix::net::UnixListener::bind(one.dir.join("future.sock")).unwrap();
+        fs::write(one.ssh_keys_path(), "ssh-ed25519 AAAA laptop\n").unwrap();
+
+        sync(&one, remote.path()).unwrap();
+        assert!(!remote.path().join("ssh-agent.sock").exists());
+        assert!(!remote.path().join("future.sock").exists());
+        assert!(!remote.path().join("ssh-keys.pub").exists());
+        let two = Store {
+            dir: remote.path().to_path_buf(),
+        };
+        assert_eq!(two.names(&key).unwrap(), vec!["a/b", "c/d"]);
+    }
+
+    #[test]
+    fn a_failed_copy_warns_and_the_rest_still_copy() {
+        let a = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        let (one, key) = store(a.path());
+        let (blocked, other) = (new_id(), new_id());
+        one.put(&blocked, &secret("a/b", "v"), &one.recipient().unwrap())
+            .unwrap();
+        one.put(&other, &secret("c/d", "v"), &one.recipient().unwrap())
+            .unwrap();
+        // A directory where the copy writes its partial file makes that one copy fail
+        fs::create_dir_all(remote.path().join(format!("store/{blocked}.age.partial"))).unwrap();
+
+        let err = sync(&one, remote.path()).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.starts_with("could not sync 1 file to "), "{text}");
+        assert!(text.contains(&format!("store/{blocked}.age")), "{text}");
+        assert!(!remote.path().join(format!("store/{blocked}.age")).exists());
+        let two = Store {
+            dir: remote.path().to_path_buf(),
+        };
+        assert_eq!(two.names(&key).unwrap(), vec!["c/d"]);
+    }
+
+    #[test]
+    fn an_unwritable_destination_fails_once_with_a_summary() {
+        use std::os::unix::fs::PermissionsExt;
+        let a = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        let (one, _key) = store(a.path());
+        one.put(&new_id(), &secret("a/b", "v"), &one.recipient().unwrap())
+            .unwrap();
+        fs::set_permissions(remote.path(), fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = sync(&one, remote.path());
+        fs::set_permissions(remote.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let text = format!("{:#}", result.unwrap_err());
+        assert!(text.starts_with("could not sync "), "{text}");
+        assert!(text.contains("the copy there is incomplete"), "{text}");
+        assert!(
+            text.contains(&remote.path().display().to_string()),
+            "{text}"
+        );
+        assert!(fs::read_dir(remote.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn rclone_excludes_everything_the_directory_sync_skips() {
+        let one = Store {
+            dir: PathBuf::from("/tmp/store"),
+        };
+        let args = rclone_args(&one, "b2:passbox");
+        for pattern in NEVER_SYNCED {
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "--exclude" && w[1] == *pattern),
+                "{pattern} is not excluded: {args:?}"
+            );
+        }
+        for path in [
+            "ssh-keys.pub",
+            "plugins/x/manifest.toml",
+            "store/.versions/ab/1.age",
+            "store/ab.age.partial",
+            "grants-mac.age",
+            "windows-mac.json",
+        ] {
+            assert!(skip(Path::new(path)), "{path}");
+        }
+        assert!(args.iter().any(|a| a == "--ignore-case"), "{args:?}");
+        assert!(!skip(Path::new("audit-mac.log")));
+        assert!(!skip(Path::new("wraps/se-mac.json")));
+    }
+
+    /* Every file passbox keeps for this machine alone. The audit log and the Enclave wrap are per
+    host too, but they carry the host in the name so every Mac's copy can travel without a clash. */
+    #[test]
+    fn every_machine_local_file_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let one = Store {
+            dir: tmp.path().to_path_buf(),
+        };
+        for path in [
+            one.socket_path(),
+            one.ssh_agent_path(),
+            one.ssh_keys_path(),
+            one.host_path(),
+            one.plugins_dir(),
+            one.dir.join("names"),
+            one.dir.join(".git"),
+            one.dir.join(".gitignore"),
+            remote_path(&one),
+            config_path(&one),
+            crate::project::path(&one),
+            crate::plugin::approval_path(&one),
+        ] {
+            let relative = path.strip_prefix(&one.dir).unwrap();
+            assert!(skip(relative), "{} would sync", relative.display());
+        }
+    }
+
+    #[test]
+    fn the_skip_ignores_case_as_macos_does() {
+        assert!(skip(Path::new("Grants-M4.age")));
+        assert!(skip(Path::new("BROKER.SOCK")));
+        assert!(skip(Path::new("Store/.Versions/ab/1.age")));
+        assert!(!skip(Path::new("Store/ab.age")));
+    }
+
+    #[test]
+    fn the_old_remote_file_warning_names_v3() {
+        let tmp = tempfile::tempdir().unwrap();
+        let one = Store {
+            dir: tmp.path().to_path_buf(),
+        };
+        assert!(legacy_warning(&one).contains("stops being read in v3"));
     }
 
     #[test]

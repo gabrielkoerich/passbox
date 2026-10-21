@@ -498,7 +498,7 @@ fn mirror(store: &Store) {
     match sync::sync(store, std::path::Path::new(&remote)) {
         Ok(report) if report.pushed > 0 => eprintln!("{} copied to {remote}", report.pushed),
         Ok(_) => {}
-        Err(e) => eprintln!("not copied to {remote}: {e:#}"),
+        Err(e) => eprintln!("passbox: {e:#}"),
     }
 }
 

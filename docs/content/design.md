@@ -190,6 +190,8 @@ Cost: a job whose arguments change prompts on every call. One approval opens tha
 
 The store is opaque files with no shared mutable state, so sync is a union copy: every id on either side, newest modification time wins, and the loser goes into `.versions`.
 
+What never syncs, one list in `src/sync.rs` that the directory copy and rclone's `--exclude` rules both use: `broker.sock`, `ssh-agent.sock`, `ssh-keys.pub`, `host`, `config.toml`, the old `remote` and `names`, `plugins/`, `.git/`, `.gitignore`, `store/.versions/`, `*.partial`, `grants-<host>.age` and `windows-<host>.json`, matched without regard to case as macOS and iCloud Drive name files. The copy also skips anything that is not a regular file or a directory, so a new socket cannot stop it. A failed copy does not stop the rest. The run ends with one warning naming the destination, the count and the first error, so a folder macOS refuses to write gives one line, not one per file.
+
 Deletes travel as tombstones. A `rm` writes `<id>.tomb`, which copies like any other file and suppresses its id everywhere. The algorithm only ever copies files and writes markers, so it cannot delete a secret it misunderstood. Tombstones are pruned after 90 days.
 
 `sync --enable` asks two questions: how a copy is opened, and where it goes. They were one question before, which meant a store that already had a passphrase wrap skipped straight past the destination and silently copied to iCloud. A wrap says nothing about where the copy belongs.

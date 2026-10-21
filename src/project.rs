@@ -81,7 +81,7 @@ impl Grant {
     }
 }
 
-fn path(store: &Store) -> PathBuf {
+pub(crate) fn path(store: &Store) -> PathBuf {
     store.dir.join(format!("grants-{}.age", store::hostname()))
 }
 
