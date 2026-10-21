@@ -1,6 +1,6 @@
 name = "mail"
 description = "Apple Mail: read and search"
-version = "2.0.0"
+version = "2.0.1"
 
 [[tool]]
 name = "recent"
@@ -12,6 +12,6 @@ run = ["osascript", "recent.applescript", "{count}"]
 [[tool]]
 name = "search"
 readonly = true
-description = "Search inbox subjects for a query"
+description = "Search subjects and senders in every mailbox for a query, up to 50, each with its mailbox"
 params = ["query"]
 run = ["osascript", "search.applescript", "{query}"]
