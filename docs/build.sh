@@ -18,6 +18,8 @@ rewrite() {
             s|\]\(#if-you-lose-the-mac\)|](/backup-and-sync#if-you-lose-the-mac)|g;
             s|\]\(#on-the-mac\)|](/another-machine#on-the-mac)|g;
             s|\]\(#unattended\)|](/unattended)|g;
+            s|\]\(#approval-windows\)|](/plugins#approval-windows)|g;
+            s|\]\(#ssh-keys\)|](/use#ssh-keys)|g;
             s|\]\((examples[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
             s|\]\((skills[^)]*)\)|](https://github.com/gabrielkoerich/passbox/tree/main/\1)|g;
             s|\]\(SKILL\.md\)|](https://github.com/gabrielkoerich/passbox/blob/main/SKILL.md)|g;

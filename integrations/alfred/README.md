@@ -1,6 +1,6 @@
 # Alfred
 
-Type `pbx` and press `⏎`, touch the sensor, then pick a secret in the box that reopens and press `⏎` to copy its password or `⌘⏎` to copy its username. `passbox copy` writes the value as a concealed, transient clipboard item and clears it after 20 seconds, so it never reaches Alfred or clipboard history. Needs the Alfred Powerpack.
+Type `pbx` and press `⏎`, touch the sensor, then pick a secret in the box that reopens and press `⏎` to copy its password or `⌘⏎` to copy its username. `passbox copy` writes the value as a concealed, transient clipboard item and clears it after 20 seconds, so it never reaches Alfred or clipboard history. It needs the Alfred Powerpack.
 
 ## Install
 

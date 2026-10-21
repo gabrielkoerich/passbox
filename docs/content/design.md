@@ -34,13 +34,13 @@ One age x25519 key encrypts every secret. It is never written unwrapped. Three k
 
 `init` writes only the Enclave wrap. A fresh store holds no file that an attacker could take away and grind at, because the only wrap is bound to one Secure Enclave.
 
-The portable wrap, a YubiKey or a passphrase, is created by `passbox sync --enable`, never before. The passphrase is the weakest link in the design, and only sync needs it: a second machine cannot open the copy any other way. So the passphrase does not exist until the user asks for sync and is told the cost.
+`passbox sync --enable` creates the portable wrap, a YubiKey or a passphrase, and nothing creates it before then. The passphrase is the weakest link in the design, and only sync needs it: a second machine cannot open the copy any other way. So the passphrase does not exist until the user asks for sync and is told the cost.
 
 Rejected: asking for a passphrase at `init`, which is what the first version did. It writes the one attackable file on day one, for a store that may never leave the Mac.
 
 Cost: a default store has no way back. Lose the Mac and the secrets are gone, which `init` says in as many words.
 
-git is kept separate from this. It backs up the encrypted secrets and excludes the Enclave wraps, so a git remote holds nothing that can open anything. That covers deleting a secret by accident. By design, it does not cover losing the machine: sync covers that, at the cost of a passphrase.
+git stays separate from this. It backs up the encrypted secrets and excludes the Enclave wraps, so a git remote holds nothing that can open anything. That covers deleting a secret by accident. By design, it does not cover losing the machine: sync covers that, at the cost of a passphrase.
 
 Rejected: a Secure Enclave recipient per secret. It gives hardware enforcement on every read, prompts on every read, and turns key rotation into a rewrite of the whole store.
 
@@ -72,11 +72,11 @@ Two things hold: no agent gets a secret without a finger on the sensor, and the 
 
 For a request over the tailnet the host part is verified. The PROXY header gives the broker the node's address, `tailscale whois` names it from the control plane, and the prompt reads `<agent> on <host>`. The agent part is still what the client sent.
 
-Per-agent allowlists are therefore not implemented. They need verifiable identity, which means matching the ancestor's code signature.
+So passbox has no per-agent allowlists. They need verifiable identity, which means matching the ancestor's code signature.
 
 ## The broker
 
-A single process serving a unix socket at 0600, a thread per connection. A prompt holds the broker's lock, so only one dialog is ever on screen and the next request that needs one waits for it, as long as it takes, with no timeout and no retry. Tokens sit behind a lock of their own, so a token read is answered while a prompt waits. No async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so a local read needs no install step. `brew services start passbox` keeps it running as a LaunchAgent, which the SSH agent and tailnet clients need.
+The broker is a single process serving a unix socket at 0600, with a thread per connection. A prompt holds the broker's lock, so only one dialog is ever on screen and the next request that needs one waits for it, as long as it takes, with no timeout and no retry. Tokens sit behind a lock of their own, so a token read is answered while a prompt waits. There is no async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so a local read needs no install step. `brew services start passbox` keeps it running as a LaunchAgent, which the SSH agent and tailnet clients need.
 
 It holds the store key for 300 seconds of inactivity and then drops it, and keeps running. Rejected: exiting to drop the key, which it did before the SSH agent. `SSH_AUTH_SOCK` must always reach a live socket, or every `ssh` and `git` call fails until something starts the broker again. Cost: the key is cleared in place, which relies on the wiping allocator below, where exiting handed the memory back to the kernel. It exits when the binary it was started as is replaced, as `brew upgrade` does, between requests, so launchd starts the new version. Rejected: a Homebrew `post_install` that restarts the LaunchAgent, which knows only that one install path. The cost is the same as any restart: live grants end.
 
@@ -88,7 +88,7 @@ A grant that presents a live token mints a child with no prompt when every name 
 
 Rejected: per-secret modes and a per-agent approval window. An earlier version let a secret be marked open, approved for a window after one prompt, or blocked with a never flag. One rule is simpler, and a never flag gave false assurance, because one key opens the whole store and any process running as the user reads around a software flag. Cost: a secret an agent reads often now needs a grant or injection at launch.
 
-While the broker holds the key it is the boundary, so it is hardened to hold it. It refuses a same-user debugger with `PT_DENY_ATTACH`, takes no core dump, and runs under a global allocator that wipes every freed block, so a decrypted secret does not linger in freed memory. The binary and the Enclave helper are signed with the hardened runtime, which needs no developer account. Root still gets past all of this.
+While the broker holds the key it is the boundary, so it is hardened to hold it. It refuses a same-user debugger with `PT_DENY_ATTACH`, takes no core dump, and runs under a global allocator that wipes every freed block, so a decrypted secret does not linger in freed memory. The binary and the Enclave helper are signed with the hardened runtime, which needs no developer account.
 
 Cost: the broker holds the key in memory while it runs, so a grant can release its secrets without asking again. The hardening stops a reader running as the same user. Root still reaches the key.
 
@@ -126,7 +126,7 @@ Rejected: a batch read op in the broker. The grant already approves a list of na
 
 Rejected: removing them only from each child. It covers the commands an agent picks, and misses `ps eww` and every subprocess added later. Startup removal covers both, and the per-child removal stays as a second layer.
 
-`passbox get` prints to stdout for interactive use. It refuses when stdout is not a terminal, because a pipe, a file or an agent's capture is where a printed secret leaks. The test is the terminal, not the caller, so it fails closed, an unknown tool is refused by the same rule that refuses a known one.
+`passbox get` prints to stdout for interactive use. It refuses when stdout is not a terminal, because a pipe, a file or an agent's capture is where a printed secret leaks. The test is the terminal, not the caller, so it fails closed: the rule that refuses a known tool also refuses an unknown one.
 
 Rejected: a blocklist of known agent names. It fails open, because any agent not on the list passes, and the list never catches up. The terminal test needs no list.
 

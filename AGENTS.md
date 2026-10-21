@@ -16,7 +16,7 @@ The value goes broker to child. It is not in your transcript, your logs, or any 
 
 ## Through MCP
 
-Preferred for an agent, because the tools cannot hand you a value at all.
+This is the better path for an agent, because the tools cannot hand you a value at all.
 
 ```bash
 claude mcp add passbox -- passbox mcp          # Claude Code

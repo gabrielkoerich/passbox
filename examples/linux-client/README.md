@@ -1,6 +1,6 @@
 # A Linux client
 
-Proof that a machine with no Secure Enclave can read a secret held by a Mac, with the fingerprint happening on the Mac.
+This shows that a machine with no Secure Enclave can read a secret held by a Mac, with the fingerprint happening on the Mac.
 
 This container holds **no store and no key**. `passbox get` opens a TCP connection to the Mac's broker over the tailnet, a Touch ID prompt appears there naming this machine, and the value comes back. A copy of the container is worth nothing.
 
@@ -13,7 +13,7 @@ tailscale status          # up, and this machine has a 100.x address
 passbox ls                # starts a broker, which then listens on the tailnet too
 ```
 
-The broker binds to the tailnet address only. It does not bind loopback, which has none of the unix socket's `0600` protection, or every interface, which would put a secrets daemon on the LAN. With Tailscale down it opens no port at all and says so.
+The broker listens on `127.0.0.1:8787`, and `tailscale serve --proxy-protocol 1` forwards the tailnet port to it, so the Mac's tailnet peers reach it and the LAN does not. The cost is that any local user on the Mac can reach that loopback port too. With Tailscale down the broker opens no port and says so.
 
 ## Here
 
@@ -43,7 +43,7 @@ passbox plugin things3 today
 passbox plugin mail search --query invoice
 ```
 
-Only the Mac has Mail, Things and the plugin files. The container names the tool and its parameters, so it needs nothing installed here. A tool that acts on the caller's own directory, such as `git` or `gh`, is refused: there is no repo here to act on.
+Only the Mac has Mail, Things and the plugin files. The container names the tool and its parameters, so it needs nothing installed here. A tool that runs in the caller's own directory is refused, because the Mac has no copy of that directory.
 
 Run the opt-in plugin check in the smoke test with `PASSBOX_DEMO_PLUGINS=1 ./smoke.sh <a-secret-name>`.
 

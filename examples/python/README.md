@@ -23,4 +23,4 @@ Run `python3 passbox.py` to check it against a throwaway store. It needs no hard
 
 ## The agent name
 
-`agent` sets `PASSBOX_AGENT`, which is what the prompt shows beside the secret name. The caller declares it, so it proves nothing. The broker records the real process ancestry in the audit log. Set it to make the prompt readable. It is not a security measure.
+`agent` sets `PASSBOX_AGENT`, which is what the prompt shows beside the secret name. The caller declares it, so it proves nothing. The broker records the real process ancestry in the audit log. Set it to make the prompt readable.

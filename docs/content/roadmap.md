@@ -138,7 +138,7 @@ The prompt is the reason to build it: `github.com wants to authenticate as your 
 | Costs | a second protocol to implement, and a key format to parse |
 | Rejected | shelling out to `ssh-add`, which puts the key in another agent's memory where passbox cannot gate it |
 
-Worth pairing with a Secure Enclave key directly: a P-256 key in the Enclave can sign, so an SSH key could be hardware-bound rather than a stored secret. That turns "passbox holds your key" into "your key cannot be copied", which is the stronger claim.
+It is worth pairing with a Secure Enclave key directly: a P-256 key in the Enclave can sign, so an SSH key could be hardware-bound rather than a stored secret. That turns "passbox holds your key" into "your key cannot be copied", which is the stronger claim.
 
 Shipped in v1.7.0 (#10). The broker serves `~/.passbox/ssh-agent.sock`, signs with Ed25519 and P-256 keys held in the store, and prompts per signature. The Secure Enclave key is still open.
 
@@ -178,7 +178,7 @@ The argument was that passbox should not resolve addresses. A client would store
 | a `Host` block in `~/.ssh/config` | wherever it is configured to |
 | Tailscale MagicDNS | anywhere, and it carries node identity |
 
-So the client config is one line naming a destination. Tailscale is worth adding because it makes that name resolve from a datacentre as easily as from the next room, with no port forwarding, and by adding a second verifiable identity beside the ssh key.
+So the client config is one line naming a destination. Tailscale is worth adding because it makes that name resolve from a datacentre as easily as from the next room, with no port forwarding, and it adds a second verifiable identity beside the ssh key.
 
 The destination has to be an `ssh_config` entry rather than a shell alias. An alias such as `alias ssh-host='ssh you@10.0.0.2'` is visible only to an interactive shell, so passbox cannot use it. The same name written as a host block works for passbox, scp, rsync and git at once:
 

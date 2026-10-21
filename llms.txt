@@ -44,7 +44,7 @@ The server needs `passbox` on `PATH` and a store made with `passbox init`. Insta
 
 There is no `get_secret`. A tool result goes into the model's context, where it is logged and sent onward, so the server runs the command for you instead.
 
-Each installed plugin adds its tools to the list as `<plugin>.<tool>`, such as `mail.recent` or `imap.search`. Every argument is a string. Every call raises a prompt, unless the owner opened a window for that tool in `~/.passbox/config.toml`. Every tool is a read: no plugin sends, adds, writes or pushes.
+Each installed plugin adds its tools to the list as `<plugin>.<tool>`, such as `mail.recent` or `imap.search`. All arguments are strings. Each call raises a prompt, unless the owner opened a window for that tool in `~/.passbox/config.toml`. The tools only read: no plugin sends, adds, writes or pushes.
 
 `run_with_secret` arguments:
 
