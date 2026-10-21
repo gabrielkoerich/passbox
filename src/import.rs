@@ -100,6 +100,7 @@ pub fn import(store: &Store, names: &[String], key: Option<&x25519::Identity>) -
         value.zeroize();
 
         store.put(&new_id(), &secret, &recipient)?;
+        crate::ssh::remember(store, &secret.value)?;
         report.imported += 1;
     }
     Ok(report)

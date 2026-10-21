@@ -2255,6 +2255,45 @@ fn agent_round_trip(kind: &str) {
 }
 
 #[test]
+fn rm_and_restore_rebuild_the_offered_ssh_keys() {
+    let cli = Cli::new();
+    let keys = tempfile::tempdir().unwrap();
+    let path = keys.path().join("id");
+    let made = Command::new("ssh-keygen")
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "rm@passbox.dev",
+            "-f",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let private = std::fs::read_to_string(&path).unwrap();
+    let public = std::fs::read_to_string(path.with_extension("pub")).unwrap();
+    let offered = || std::fs::read_to_string(cli.path().join("ssh-keys.pub")).unwrap_or_default();
+
+    cli.run(&["add", "ssh/test"], Some(&private)).unwrap();
+    cli.run(&["add", "plain"], Some("not a key")).unwrap();
+    assert_eq!(offered().trim(), public.trim());
+
+    cli.run(&["rm", "plain"], None).unwrap();
+    assert_eq!(offered().trim(), public.trim());
+
+    cli.run(&["rm", "ssh/test"], None).unwrap();
+    assert_eq!(offered().trim(), "");
+
+    cli.run(&["restore", "ssh/test", "--index", "0"], None)
+        .unwrap();
+    assert_eq!(offered().trim(), public.trim());
+}
+
+#[test]
 #[cfg_attr(
     not(feature = "mock-enclave"),
     ignore = "needs --features mock-enclave"

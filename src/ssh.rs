@@ -52,6 +52,10 @@ pub fn refresh(store: &Store, keys: &[(String, PrivateKey)]) -> Result<()> {
     write(store, keys.iter().map(|(_, k)| k.public_key().clone()))
 }
 
+pub fn rebuild(store: &Store, key: &x25519::Identity) -> Result<()> {
+    refresh(store, &keys(store, key)?)
+}
+
 fn write(store: &Store, keys: impl Iterator<Item = PublicKey>) -> Result<()> {
     let mut text = String::new();
     for key in keys {

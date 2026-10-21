@@ -1544,14 +1544,36 @@ fn rm(store: &Store, name: &str) -> Result<()> {
     store.delete(&id)?;
     store.prune_tombs()?;
     eprintln!("deleted {name}, recoverable with `passbox restore {name}`");
+    offer_ssh_keys(store, &key);
     Ok(())
+}
+
+/// The secret is already written, so a failed rebuild warns rather than fails the command
+fn offer_ssh_keys(store: &Store, key: &age::x25519::Identity) {
+    #[cfg(feature = "host")]
+    if let Err(e) = ssh::rebuild(store, key) {
+        eprintln!("could not refresh the SSH keys: {e:#}");
+    }
+    #[cfg(not(feature = "host"))]
+    let _ = (store, key);
 }
 
 fn restore(store: &Store, name: &str, index: Option<usize>) -> Result<()> {
     let key = unlock(store, &format!("restore {name}"))?;
-    let id = match store.find(name, &key)? {
+    restore_version(store, &key, name, index)?;
+    offer_ssh_keys(store, &key);
+    Ok(())
+}
+
+fn restore_version(
+    store: &Store,
+    key: &age::x25519::Identity,
+    name: &str,
+    index: Option<usize>,
+) -> Result<()> {
+    let id = match store.find(name, key)? {
         Some((id, _)) => id,
-        None => find_deleted(store, name, &key)?,
+        None => find_deleted(store, name, key)?,
     };
 
     // A delete that arrived through a sync left the file behind, so lifting the tombstone is enough
@@ -1571,7 +1593,7 @@ fn restore(store: &Store, name: &str, index: Option<usize>) -> Result<()> {
     let Some(index) = index else {
         for (i, (stamp, path)) in versions.iter().enumerate() {
             let bytes = store
-                .load_path(path, &key)
+                .load_path(path, key)
                 .map(|s| s.value.len())
                 .unwrap_or(0);
             println!("{i}\t{stamp}\t{bytes} bytes");
