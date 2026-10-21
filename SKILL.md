@@ -132,6 +132,7 @@ Every plugin call prompts, and a token does not cover one. A job that calls a re
 - The first call after the window opens or the section changes prompts once. Later calls from the same scope skip the prompt until the window ends, at most 24 hours, and are audited as `by window`.
 - A window covers the exact call its prompt showed. Repeat the same call with the same arguments to stay inside it, such as `imap.recent --count 20` every run. A new query, mailbox or message id prompts again. Omitting an optional and passing it empty are the same call.
 - A value over a manifest limit, such as `count` above 50, is refused before the prompt.
+- With `[plugins.imap.accounts]` set by the owner, pass `account` to an imap tool, such as `imap.search --account work --query invoice`. Name an account, never a secret. With more than one account, omitting it is refused. A window covers one account.
 - A window covers the scope that opened it: one tailnet host, or every caller on the Mac. A broker restart ends it.
 - To send mail, call your own client under `passbox exec`, such as `passbox exec --env SMTP_PASSWORD=mail/smtp -- ./send-report`.
 

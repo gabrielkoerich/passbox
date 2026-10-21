@@ -279,6 +279,29 @@ fn the_headless_path_feeds_the_bundled_imap_script_and_prints_scrubbed_output() 
 }
 
 #[test]
+fn the_headless_path_feeds_the_named_account_and_refuses_an_unknown_one() {
+    let cli = Cli::new();
+    cli.note(&["plugin", "add", "imap"], None);
+    cli.run(
+        &["add", "mail/work"],
+        Some(&tagged_account(WORK_PW, "tls-work")),
+    )
+    .unwrap();
+    std::fs::write(
+        cli.path().join("config.toml"),
+        format!("[plugins.imap.accounts]\n{TWO_ACCOUNTS}\n"),
+    )
+    .unwrap();
+    let err = cli.run(&["plugin", "imap", "recent"], None).unwrap_err();
+    assert!(err.contains("name one: proton, work"), "{err}");
+    let out = cli
+        .run(&["plugin", "imap", "recent", "--account", "work"], None)
+        .unwrap();
+    assert!(out.contains("got tls-work"), "{out}");
+    assert!(!out.contains(WORK_PW), "{out}");
+}
+
+#[test]
 fn a_stdin_plugin_that_is_not_the_bundled_copy_is_refused() {
     let cli = Cli::new();
     cli.run(&["add", "demo/one"], Some("value-one")).unwrap();
@@ -2154,6 +2177,339 @@ fn a_fed_plugin_in_a_window_still_feeds_its_secret_and_returns_none() {
     let err = bound.run(&["plugin", "imap", "recent"], None).unwrap_err();
     assert!(err.contains("reinstall it with"), "{err}");
     assert!(!err.contains(IMAP_PW), "{err}");
+}
+
+const WORK_PW: &str = "hunter2-work-pw";
+const PROTON_PW: &str = "hunter2-proton-pw";
+const TWO_ACCOUNTS: &str = "proton = \"proton/bridge\"\nwork = \"mail/work\"";
+
+/// An entry the script refuses before it connects, and its error names the `tls` value it read
+fn tagged_account(password: &str, tag: &str) -> String {
+    format!("{password}\nhost: 127.0.0.1\nport: 1\nuser: me@example.com\ntls: {tag}\n")
+}
+
+/// The imap store with two more accounts, each telling which entry the script was fed
+fn bound_with_accounts() -> Bound {
+    let bound = bound_with_imap();
+    bound
+        .run(
+            &["add", "mail/work"],
+            Some(&tagged_account(WORK_PW, "tls-work")),
+        )
+        .unwrap();
+    bound
+        .run(
+            &["add", "proton/bridge"],
+            Some(&tagged_account(PROTON_PW, "tls-proton")),
+        )
+        .unwrap();
+    bound.forget_prompts();
+    bound
+}
+
+fn set_config(bound: &Bound, text: &str) {
+    std::fs::write(bound.cli.path().join("config.toml"), text).unwrap();
+}
+
+fn set_accounts(bound: &Bound, section: &str) {
+    set_config(bound, &format!("[plugins.imap.accounts]\n{section}\n"));
+}
+
+/// Runs one imap call and returns which entry the script read, by its `tls` tag
+fn fed_with(bound: &Bound, args: &[&str]) -> Result<&'static str, String> {
+    let out = bound.run(&[&["plugin", "imap"], args].concat(), None)?;
+    for pw in [IMAP_PW, WORK_PW, PROTON_PW] {
+        assert!(!out.contains(pw), "{out}");
+    }
+    Ok(match () {
+        _ if out.contains("got tls-work") => "mail/work",
+        _ if out.contains("got tls-proton") => "proton/bridge",
+        _ if out.contains("ConnectionRefusedError") => "mail/imap",
+        _ => panic!("no account was fed: {out}"),
+    })
+}
+
+const ALLOW_TWO: &str =
+    "allow imap accounts proton=proton/bridge, work=mail/work for test-agent, then ";
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn two_accounts_each_feed_their_own_secret_and_are_named_in_the_prompt_and_audit() {
+    let bound = bound_with_accounts();
+    set_accounts(&bound, TWO_ACCOUNTS);
+    let work = ["search", "--account", "work", "--query", "invoice"];
+    assert_eq!(fed_with(&bound, &work).unwrap(), "mail/work");
+    assert_eq!(
+        fed_with(&bound, &["recent", "--account", "proton"]).unwrap(),
+        "proton/bridge"
+    );
+    assert_eq!(
+        bound.prompts(),
+        [
+            format!(
+                "{ALLOW_TWO}run plugin:imap.search account=\"work\" query=\"invoice\" \
+                 for test-agent, releasing mail/work"
+            ),
+            "run plugin:imap.recent account=\"proton\" for test-agent, releasing proton/bridge"
+                .to_string(),
+        ]
+    );
+    let log = bound.audit();
+    assert_eq!(
+        count_args(
+            &log,
+            "mail/work",
+            "released",
+            "account=\"work\" query=\"invoice\""
+        ),
+        1,
+        "{log}"
+    );
+    assert_eq!(
+        count_args(&log, "proton/bridge", "released", "account=\"proton\""),
+        1,
+        "{log}"
+    );
+    assert_eq!(count(&log, "mail/imap", "released"), 0, "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn an_unknown_or_omitted_account_among_two_is_refused_before_the_prompt() {
+    let bound = bound_with_accounts();
+    set_accounts(&bound, TWO_ACCOUNTS);
+    let long = "a".repeat(65);
+    for (args, why) in [
+        (
+            &["recent", "--account", "other"][..],
+            "no account \"other\", its accounts are proton, work",
+        ),
+        (&["recent", "--account", "mail/work"][..], "no account"),
+        (
+            &["recent"][..],
+            "has several accounts, name one: proton, work",
+        ),
+        (
+            &["recent", "--account", ""][..],
+            "has several accounts, name one",
+        ),
+        (
+            &["recent", "--account", long.as_str()][..],
+            "account must be at most 64",
+        ),
+    ] {
+        let err = fed_with(&bound, args).unwrap_err();
+        assert!(err.contains(why), "{args:?}: {err}");
+    }
+    // The caller cannot name a secret on the raw socket either
+    let raw = r#"{"name":"imap","agent":"raw","op":"plugin","action":"recent","params":[["account","demo/one"]],"run":true}"#;
+    let reply = ask_socket(&bound, raw);
+    assert!(reply.contains("no account"), "{reply}");
+    assert!(!reply.contains("value-one"), "{reply}");
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn with_one_account_the_account_can_be_omitted() {
+    let bound = bound_with_accounts();
+    set_accounts(&bound, "work = \"mail/work\"");
+    assert_eq!(fed_with(&bound, &["recent"]).unwrap(), "mail/work");
+    assert_eq!(
+        fed_with(&bound, &["recent", "--account", "work"]).unwrap(),
+        "mail/work"
+    );
+    assert_eq!(
+        bound.prompts(),
+        [
+            "allow imap accounts work=mail/work for test-agent, then \
+             run plugin:imap.recent for test-agent, releasing mail/work",
+            "run plugin:imap.recent account=\"work\" for test-agent, releasing mail/work",
+        ]
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn with_no_section_the_bundled_secret_applies_and_an_account_is_refused() {
+    let bound = bound_with_accounts();
+    let err = fed_with(&bound, &["recent", "--account", "work"]).unwrap_err();
+    assert!(err.contains("has no accounts in config.toml"), "{err}");
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+    assert_eq!(
+        fed_with(&bound, &["recent", "--account", ""]).unwrap(),
+        "mail/imap"
+    );
+    assert_eq!(
+        bound.prompts(),
+        ["run plugin:imap.recent for test-agent, releasing mail/imap"]
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn an_edited_accounts_section_waits_for_its_approval_and_a_refusal_keeps_the_old_one() {
+    let bound = bound_with_accounts();
+    let first = "work = \"mail/work\"";
+    let repointed = "work = \"proton/bridge\"";
+    let run = "run plugin:imap.recent for test-agent, releasing";
+    set_accounts(&bound, first);
+    assert_eq!(fed_with(&bound, &["recent"]).unwrap(), "mail/work");
+    assert_eq!(fed_with(&bound, &["recent"]).unwrap(), "mail/work");
+    assert_eq!(
+        bound.prompts()[1],
+        format!("{run} mail/work"),
+        "{:?}",
+        bound.prompts()
+    );
+
+    // The edit points work at another secret, and the prompt says so
+    bound.forget_prompts();
+    set_accounts(&bound, repointed);
+    bound.deny("1");
+    assert!(fed_with(&bound, &["recent"]).is_err());
+    assert_eq!(
+        bound.prompts(),
+        [format!(
+            "allow imap accounts work=proton/bridge for test-agent, then {run} proton/bridge"
+        )]
+    );
+
+    // Refused, so the old section is still the approved one
+    bound.forget_prompts();
+    set_accounts(&bound, first);
+    assert_eq!(fed_with(&bound, &["recent"]).unwrap(), "mail/work");
+    assert_eq!(bound.prompts(), [format!("{run} mail/work")]);
+
+    // Approved, so the edit applies from then on
+    bound.forget_prompts();
+    set_accounts(&bound, repointed);
+    assert_eq!(fed_with(&bound, &["recent"]).unwrap(), "proton/bridge");
+    assert_eq!(fed_with(&bound, &["recent"]).unwrap(), "proton/bridge");
+    assert_eq!(
+        bound.prompts(),
+        [
+            format!(
+                "allow imap accounts work=proton/bridge for test-agent, then {run} proton/bridge"
+            ),
+            format!("{run} proton/bridge"),
+        ]
+    );
+    let log = bound.audit();
+    assert_eq!(count(&log, "proton/bridge", "denied"), 1, "{log}");
+    assert_eq!(count(&log, "proton/bridge", "released"), 2, "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn the_approved_accounts_survive_a_broker_restart() {
+    let bound = bound_with_accounts();
+    set_accounts(&bound, TWO_ACCOUNTS);
+    fed_with(&bound, &["recent", "--account", "work"]).unwrap();
+    assert!(
+        bound.prompts()[0].starts_with(ALLOW_TWO),
+        "{:?}",
+        bound.prompts()
+    );
+
+    // A request that finds no socket starts a new broker, which reads the record from disk
+    std::fs::remove_file(bound.cli.path().join("broker.sock")).unwrap();
+    bound.forget_prompts();
+    assert_eq!(
+        fed_with(&bound, &["recent", "--account", "work"]).unwrap(),
+        "mail/work"
+    );
+    assert_eq!(
+        bound.prompts(),
+        ["run plugin:imap.recent account=\"work\" for test-agent, releasing mail/work"]
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_window_on_one_account_does_not_cover_the_other() {
+    let bound = bound_with_accounts();
+    set_config(
+        &bound,
+        &format!(
+            "[plugins.windows]\n\"imap.recent\" = \"1h\"\n\n[plugins.imap.accounts]\n{TWO_ACCOUNTS}\n"
+        ),
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            fed_with(&bound, &["recent", "--account", "work"]).unwrap(),
+            "mail/work"
+        );
+    }
+    assert_eq!(
+        bound.prompts(),
+        [format!(
+            "allow plugin windows imap.recent 1h for test-agent, then {ALLOW_TWO}\
+             run plugin:imap.recent account=\"work\" for test-agent, releasing mail/work"
+        )]
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            fed_with(&bound, &["recent", "--account", "proton"]).unwrap(),
+            "proton/bridge"
+        );
+    }
+    assert_eq!(bound.prompts().len(), 2, "{:?}", bound.prompts());
+    assert_eq!(
+        bound.prompts()[1],
+        "run plugin:imap.recent account=\"proton\" for test-agent, releasing proton/bridge"
+    );
+    let log = bound.audit();
+    assert_eq!(count(&log, "plugin:imap.recent", "by window"), 2, "{log}");
+    assert_eq!(count(&log, "mail/work", "released"), 2, "{log}");
+    assert_eq!(count(&log, "proton/bridge", "released"), 2, "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_bad_accounts_section_is_refused_before_any_prompt() {
+    let bound = bound_with_accounts();
+    for (section, why) in [
+        (
+            "[plugins.imap.accounts]\n\"my work\" = \"mail/work\"",
+            "not an account name",
+        ),
+        ("[plugins.imap.accounts]\nwork = \"\"", "must name a secret"),
+        (
+            "[plugins.things3.accounts]\nwork = \"mail/work\"",
+            "not a bundled plugin that reads a secret",
+        ),
+    ] {
+        set_config(&bound, section);
+        let err = fed_with(&bound, &["recent"]).unwrap_err();
+        assert!(err.contains(why), "{section}: {err}");
+        assert!(err.contains("config.toml is not valid"), "{section}: {err}");
+    }
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
 }
 
 /// Runs an OpenSSH tool against the broker's agent socket, and never the developer's own agent

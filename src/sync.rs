@@ -256,6 +256,7 @@ const NEVER_SYNCED: &[&str] = &[
     // A grant that travelled would let a machine you have not touched inherit an approval
     "/grants-*.age",
     "/windows-*.json",
+    "/accounts-*.json",
 ];
 
 fn matches(pattern: &str, relative: &str) -> bool {
@@ -974,7 +975,8 @@ mod tests {
             remote_path(&one),
             config_path(&one),
             crate::project::path(&one),
-            crate::plugin::approval_path(&one),
+            crate::plugin::approval_path(&one, "windows"),
+            crate::plugin::approval_path(&one, "accounts-imap"),
         ] {
             let relative = path.strip_prefix(&one.dir).unwrap();
             assert!(skip(relative), "{} would sync", relative.display());

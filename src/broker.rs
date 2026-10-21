@@ -267,6 +267,14 @@ const MAX_WINDOWS_PER_SCOPE: usize = 256;
 struct Window {
     opened: u64,
     secret: Option<String>,
+    // The secret the value was read from, so a remapped account never gets the old value
+    name: Option<String>,
+}
+
+/// A window hands out its held value only to a call that resolves to the same secret
+#[cfg(feature = "host")]
+fn serves(window: &Window, secret: Option<&str>) -> bool {
+    window.name.as_deref() == secret
 }
 
 /* A window covers a later call of the same tool with the same arguments from the same scope while
@@ -442,9 +450,14 @@ impl Broker {
         scope: &str,
         manifest: &crate::plugin::Manifest,
         bound: &HashMap<String, String>,
+        accounts: Option<&crate::plugin::Accounts>,
     ) -> Result<Option<String>> {
         let secret = manifest.stdin.as_deref();
-        let reason = manifest.approval(&request.action, &request.agent, bound);
+        let mut reason = manifest.approval(&request.action, &request.agent, bound);
+        let pending = accounts.is_some_and(|a| a.pending(&self.store));
+        if let Some(accounts) = accounts.filter(|_| pending) {
+            reason = format!("{}, then {reason}", accounts.prompt(&request.agent));
+        }
         let (args, call) = manifest
             .tool(&request.action)
             .map(|t| (t.shown(bound), t.call(bound)))
@@ -452,6 +465,7 @@ impl Broker {
         let tool = format!("{}.{}", request.name, request.action);
         let slot = format!("plugin:{tool}");
         let policy = crate::plugin::windows(&self.store)?;
+        // An unapproved accounts section prompts, so no window opened under the old one covers it
         if let Some(window) = window_open(
             &self.windows,
             &policy,
@@ -460,13 +474,15 @@ impl Broker {
             &tool,
             &call,
             store::now(),
-        ) {
+        )
+        .filter(|w| !pending && serves(w, secret))
+        {
             let held = window.secret.clone();
             self.audit_by(&request.agent, &slot, "by window", caller, &args)?;
             return Ok(held);
         }
 
-        let stored = crate::plugin::approved(&self.store);
+        let stored = crate::plugin::approved(&self.store, "windows");
         let changed =
             !policy.tools.is_empty() && stored.as_ref().map(|a| &a.hash) != Some(&policy.hash);
         let reason = if changed {
@@ -483,13 +499,19 @@ impl Broker {
         self.ask(&reason)
             .map_err(|e| self.refused(&request.agent, &asked, e, caller))?;
         let key = self.key.clone().expect("just unlocked");
+        if let Some(accounts) = accounts {
+            accounts.settle(&self.store, &key, pending)?;
+        }
         // Windows opened under the old section do not carry over to the new one
-        if changed {
-            crate::plugin::approve(&self.store, &key, &policy.hash)?;
+        if changed || pending {
             self.windows.clear();
         }
+        if changed {
+            crate::plugin::approve(&self.store, &key, "windows", &policy.hash)?;
+        }
         // A record this broker did not sign is ignored, so a forged one opens nothing
-        let trusted = changed || stored.is_some_and(|a| a.hash == policy.hash && a.verify(&key));
+        let trusted =
+            changed || stored.is_some_and(|a| a.hash == policy.hash && a.verify(&key, "windows"));
         self.approved = trusted.then(|| policy.hash.clone());
         self.audit_by(&request.agent, &slot, "approved", caller, &args)?;
 
@@ -507,6 +529,7 @@ impl Broker {
                 Window {
                     opened: store::now(),
                     secret: value.clone(),
+                    name: secret.map(str::to_string),
                 },
             );
         }
@@ -529,7 +552,7 @@ impl Broker {
         // Built before the prompt, so a missing or unknown parameter is refused without one
         let bound: HashMap<String, String> = request.params.iter().cloned().collect();
         let mut command = tool.command(&bound)?;
-        self.plugin_approval(request, caller, scope, &manifest, &bound)?;
+        self.plugin_approval(request, caller, scope, &manifest, &bound, None)?;
         if !request.run {
             return Ok("ok".to_string());
         }
@@ -560,20 +583,18 @@ impl Broker {
         }
 
         let bound: HashMap<String, String> = request.params.iter().cloned().collect();
-        let (manifest, command) =
+        let (mut manifest, command) =
             crate::plugin::fed_command(&self.store, &request.name, &request.action, &bound)?;
-        let secret = manifest
-            .stdin
-            .as_deref()
-            .ok_or_else(|| anyhow!("{} reads no secret in its bundled copy", request.name))?;
+        let accounts = crate::plugin::feed(&self.store, &mut manifest, &bound)?;
+        let secret = manifest.stdin.clone().unwrap_or_default();
         let value = self
-            .plugin_approval(request, caller, scope, &manifest, &bound)?
+            .plugin_approval(request, caller, scope, &manifest, &bound, Some(&accounts))?
             .ok_or_else(|| anyhow!("no secret for {}, approve it again", request.name))?;
         let args = manifest
             .tool(&request.action)
             .map(|t| t.shown(&bound))
             .unwrap_or_default();
-        self.audit_by(&request.agent, secret, "released", caller, &args)?;
+        self.audit_by(&request.agent, &secret, "released", caller, &args)?;
         // The output crosses the socket or the tailnet, so it is scrubbed on the way out
         crate::plugin::run_fed(command, &value)
     }
@@ -1834,6 +1855,7 @@ mod tests {
             Window {
                 opened: at,
                 secret: None,
+                name: None,
             },
         )])
     }
@@ -1916,12 +1938,25 @@ mod tests {
     }
 
     #[test]
+    fn a_window_serves_only_the_secret_it_was_read_from() {
+        let held = Window {
+            opened: 1,
+            secret: Some("pw".into()),
+            name: Some("mail/work".into()),
+        };
+        assert!(serves(&held, Some("mail/work")));
+        assert!(!serves(&held, Some("mail/other")));
+        assert!(!serves(&held, None));
+    }
+
+    #[test]
     fn a_full_scope_drops_its_oldest_window_and_leaves_other_scopes() {
         let key =
             |scope: &str, n: usize| (scope.to_string(), "imap.read".to_string(), n.to_string());
         let window = |opened| Window {
             opened,
             secret: None,
+            name: None,
         };
         let mut windows = HashMap::new();
         open_window(&mut windows, key("other", 0), window(1));

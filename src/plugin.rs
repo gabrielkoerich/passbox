@@ -161,6 +161,8 @@ impl Manifest {
 const SHOWN_VALUE: usize = 64;
 /// Longest argument list a prompt shows, so the agent and the secret after it stay in view
 const SHOWN_ARGS: usize = 256;
+const MAX_ACCOUNTS: usize = 16;
+const SECRET_LEN: usize = 128;
 
 fn cut(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -443,12 +445,42 @@ impl Windows {
 }
 
 pub fn windows(store: &Store) -> Result<Windows> {
+    Ok(config(store)?.0)
+}
+
+/// `[plugins.<plugin>.accounts]` from config.toml, empty when there is no section
+pub fn accounts(store: &Store, plugin: &str) -> Result<Accounts> {
+    let mut all = config(store)?.1;
+    Ok(all.remove(plugin).unwrap_or_else(|| Accounts {
+        plugin: plugin.to_string(),
+        ..Accounts::default()
+    }))
+}
+
+fn config(store: &Store) -> Result<(Windows, BTreeMap<String, Accounts>)> {
     let path = crate::sync::config_path(store);
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(Windows::default());
+        return Ok(Default::default());
     };
-    parse_windows(&text, |name| load(store, name))
+    parse(&text, |name| load(store, name))
         .with_context(|| format!("{} is not valid", path.display()))
+}
+
+/* Resolve which secret a fed call releases, before any prompt, and name it in the manifest so
+the prompt and the audit show it. The caller picks an account name and never a secret */
+pub fn feed(
+    store: &Store,
+    manifest: &mut Manifest,
+    params: &HashMap<String, String>,
+) -> Result<Accounts> {
+    let default = manifest
+        .stdin
+        .clone()
+        .with_context(|| format!("{} reads no secret in its bundled copy", manifest.name))?;
+    let accounts = accounts(store, &manifest.name)?;
+    let account = params.get("account").map_or("", String::as_str);
+    manifest.stdin = Some(accounts.secret(&default, account)?);
+    Ok(accounts)
 }
 
 /// `90s`, `30m` or `24h`
@@ -468,28 +500,49 @@ fn duration(text: &str) -> Result<u64> {
     Ok(count.saturating_mul(unit))
 }
 
-// One plugin and one tool, so a window never covers a tool added later
+#[cfg(test)]
 fn parse_windows(text: &str, manifest: impl Fn(&str) -> Result<Manifest>) -> Result<Windows> {
+    Ok(parse(text, manifest)?.0)
+}
+
+fn identifier(p: &str) -> bool {
+    !p.is_empty()
+        && p.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+fn parse(
+    text: &str,
+    manifest: impl Fn(&str) -> Result<Manifest>,
+) -> Result<(Windows, BTreeMap<String, Accounts>)> {
     let config: toml::Table = toml::from_str(text)?;
     let Some(plugins) = config.get("plugins") else {
-        return Ok(Windows::default());
+        return Ok(Default::default());
     };
     let plugins = plugins.as_table().context("plugins must be a table")?;
-    if let Some(other) = plugins.keys().find(|k| *k != "windows") {
-        bail!("unknown key plugins.{other}, the only one is plugins.windows");
+    let mut accounts = BTreeMap::new();
+    for (key, value) in plugins.iter().filter(|(k, _)| *k != "windows") {
+        let table = value.as_table().with_context(|| {
+            format!(
+                "unknown key plugins.{key}, the keys are plugins.windows and plugins.<name>.accounts"
+            )
+        })?;
+        if let Some(other) = table.keys().find(|k| *k != "accounts") {
+            bail!("unknown key plugins.{key}.{other}, the only one is plugins.{key}.accounts");
+        }
+        if let Some(section) = table.get("accounts") {
+            accounts.insert(key.clone(), parse_accounts(key, section)?);
+        }
     }
     let Some(section) = plugins.get("windows") else {
-        return Ok(Windows::default());
+        return Ok((Windows::default(), accounts));
     };
     let section = section
         .as_table()
         .context("plugins.windows must be a table")?;
 
-    let part_ok = |p: &str| {
-        !p.is_empty()
-            && p.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-    };
+    // One plugin and one tool, so a window never covers a tool added later
+    let part_ok = identifier;
     let mut out = Windows::default();
     let mut hashed = String::new();
     for (key, value) in section {
@@ -519,7 +572,139 @@ fn parse_windows(text: &str, manifest: impl Fn(&str) -> Result<Manifest>) -> Res
         out.tools.insert(key.clone(), secs);
     }
     out.hash = crate::project::hash(hashed.as_bytes());
-    Ok(out)
+    Ok((out, accounts))
+}
+
+/// Longest account name, the same as the `account` limit in the manifest
+const ACCOUNT_LEN: usize = 64;
+
+// Only a plugin whose bundled manifest reads a secret has accounts, since the section picks that secret
+fn parse_accounts(plugin: &str, section: &toml::Value) -> Result<Accounts> {
+    let at = format!("plugins.{plugin}.accounts");
+    let fed = crate::first_party(plugin)
+        .and_then(|files| files.iter().find(|(file, _)| *file == "plugin.toml"))
+        .and_then(|(_, toml)| toml::from_str::<Manifest>(toml).ok())
+        .is_some_and(|m| m.stdin.is_some());
+    if !fed {
+        bail!("{at}: {plugin} is not a bundled plugin that reads a secret, so it has no accounts");
+    }
+    let section = section
+        .as_table()
+        .with_context(|| format!("{at} must be a table"))?;
+    // A long list could push the mapping this call uses out of the prompt
+    if section.len() > MAX_ACCOUNTS {
+        bail!("{at}: at most {MAX_ACCOUNTS} accounts");
+    }
+    let mut names = BTreeMap::new();
+    for (name, secret) in section {
+        if !identifier(name) || name.len() > ACCOUNT_LEN {
+            bail!(
+                "{at}: {name:?} is not an account name, use at most {ACCOUNT_LEN} letters, digits, dash and underscore"
+            );
+        }
+        let secret = secret
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .with_context(|| format!("{at}.{name} must name a secret, such as \"mail/work\""))?;
+        // The name is shown in a prompt, so it holds nothing that could pass for prompt text
+        if secret.len() > SECRET_LEN || !secret.chars().all(|c| c.is_ascii_graphic()) {
+            bail!(
+                "{at}.{name}: a secret name is at most {SECRET_LEN} printable characters with no spaces"
+            );
+        }
+        names.insert(name.clone(), secret.to_string());
+    }
+    let hash = crate::project::hash(&serde_json::to_vec(&(plugin, &names))?);
+    Ok(Accounts {
+        plugin: plugin.to_string(),
+        names,
+        hash,
+    })
+}
+
+/// The `[plugins.<plugin>.accounts]` section, each account name mapped to the secret it feeds
+#[derive(Default)]
+pub struct Accounts {
+    pub plugin: String,
+    pub names: BTreeMap<String, String>,
+    /// Covers every name and secret, so editing either one asks again
+    pub hash: String,
+}
+
+impl Accounts {
+    /// As the approval prompt lists them, such as `proton=proton/bridge, work=mail/work`
+    pub fn shown(&self) -> String {
+        let list = self
+            .names
+            .iter()
+            .map(|(name, secret)| format!("{name}={secret}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        cut(&list, SHOWN_ARGS)
+    }
+
+    /// The secret `account` feeds, refused before any prompt when it is unknown or ambiguous
+    pub fn secret(&self, default: &str, account: &str) -> Result<String> {
+        let plugin = &self.plugin;
+        if self.names.is_empty() {
+            if !account.is_empty() {
+                bail!(
+                    "{plugin} has no accounts in config.toml, so omit account and it reads {default}"
+                );
+            }
+            return Ok(default.to_string());
+        }
+        let listed = || self.names.keys().cloned().collect::<Vec<_>>().join(", ");
+        if account.is_empty() {
+            if let [secret] = self.names.values().collect::<Vec<_>>()[..] {
+                return Ok(secret.clone());
+            }
+            bail!("{plugin} has several accounts, name one: {}", listed());
+        }
+        self.names.get(account).cloned().with_context(|| {
+            format!(
+                "{plugin} has no account {account:?}, its accounts are {}",
+                listed()
+            )
+        })
+    }
+
+    fn kind(&self) -> String {
+        format!("accounts-{}", self.plugin)
+    }
+
+    /// Whether this section is not the approved one, so the next prompt must name it
+    pub fn pending(&self, store: &Store) -> bool {
+        !self.names.is_empty()
+            && approved(store, &self.kind()).map(|a| a.hash).as_ref() != Some(&self.hash)
+    }
+
+    pub fn prompt(&self, agent: &str) -> String {
+        format!(
+            "allow {} accounts {} for {agent}",
+            self.plugin,
+            self.shown()
+        )
+    }
+
+    /// After the unlock: record a section the prompt named, or check the record of one it did not
+    pub fn settle(&self, store: &Store, key: &age::x25519::Identity, pending: bool) -> Result<()> {
+        let kind = self.kind();
+        if pending {
+            return approve(store, key, &kind, &self.hash);
+        }
+        if self.names.is_empty()
+            || approved(store, &kind).is_some_and(|a| a.hash == self.hash && a.verify(key, &kind))
+        {
+            return Ok(());
+        }
+        // A record this broker did not sign is dropped, so the next call names the section
+        let _ = std::fs::remove_file(approval_path(store, &kind));
+        bail!(
+            "the record of approved {} accounts was not made by passbox, the next call asks for them again",
+            self.plugin
+        )
+    }
 }
 
 // Plain text like the section, so a MAC under the store key stops a process forging its own
@@ -529,16 +714,17 @@ pub struct Approval {
     mac: String,
 }
 
-pub(crate) fn approval_path(store: &Store) -> std::path::PathBuf {
+// `windows` for `[plugins.windows]`, `accounts-<plugin>` for a plugin's accounts
+pub(crate) fn approval_path(store: &Store, kind: &str) -> std::path::PathBuf {
     store
         .dir
-        .join(format!("windows-{}.json", crate::store::hostname()))
+        .join(format!("{kind}-{}.json", crate::store::hostname()))
 }
 
-fn mac(key: &age::x25519::Identity, hash: &str) -> String {
+fn mac(key: &age::x25519::Identity, kind: &str, hash: &str) -> String {
     use age::secrecy::ExposeSecret;
     let mut digest = Sha256::new();
-    digest.update(b"passbox plugin windows\n");
+    digest.update(format!("passbox plugin {kind}\n").as_bytes());
     digest.update(key.to_string().expose_secret().as_bytes());
     digest.update(b"\n");
     digest.update(hash.as_bytes());
@@ -546,21 +732,21 @@ fn mac(key: &age::x25519::Identity, hash: &str) -> String {
 }
 
 /// Read before the prompt to word it, and trusted only once `verify` passes
-pub fn approved(store: &Store) -> Option<Approval> {
-    serde_json::from_slice(&std::fs::read(approval_path(store)).ok()?).ok()
+pub fn approved(store: &Store, kind: &str) -> Option<Approval> {
+    serde_json::from_slice(&std::fs::read(approval_path(store, kind)).ok()?).ok()
 }
 
-pub fn approve(store: &Store, key: &age::x25519::Identity, hash: &str) -> Result<()> {
+pub fn approve(store: &Store, key: &age::x25519::Identity, kind: &str, hash: &str) -> Result<()> {
     let record = Approval {
         hash: hash.to_string(),
-        mac: mac(key, hash),
+        mac: mac(key, kind, hash),
     };
-    crate::store::write_private(&approval_path(store), &serde_json::to_vec(&record)?)
+    crate::store::write_private(&approval_path(store, kind), &serde_json::to_vec(&record)?)
 }
 
 impl Approval {
-    pub fn verify(&self, key: &age::x25519::Identity) -> bool {
-        self.mac == mac(key, &self.hash)
+    pub fn verify(&self, key: &age::x25519::Identity, kind: &str) -> bool {
+        self.mac == mac(key, kind, &self.hash)
     }
 }
 
@@ -1168,16 +1354,190 @@ mod tests {
             dir: tmp.path().to_path_buf(),
         };
         let key = age::x25519::Identity::generate();
-        approve(&store, &key, "h1").unwrap();
-        let record = approved(&store).unwrap();
+        approve(&store, &key, "windows", "h1").unwrap();
+        let record = approved(&store, "windows").unwrap();
         assert_eq!(record.hash, "h1");
-        assert!(record.verify(&key));
-        assert!(!record.verify(&age::x25519::Identity::generate()));
+        assert!(record.verify(&key, "windows"));
+        assert!(!record.verify(&age::x25519::Identity::generate(), "windows"));
+        // A windows record cannot stand in for an accounts one
+        assert!(!record.verify(&key, "accounts-imap"));
         let forged = Approval {
             hash: "h2".into(),
             mac: record.mac.clone(),
         };
-        assert!(!forged.verify(&key));
+        assert!(!forged.verify(&key, "windows"));
+    }
+
+    fn parsed_accounts(text: &str) -> Result<BTreeMap<String, Accounts>> {
+        Ok(parse(text, installed_demo)?.1)
+    }
+
+    fn two_accounts() -> Accounts {
+        parsed_accounts(
+            "[plugins.imap.accounts]\nproton = \"proton/bridge\"\nwork = \"mail/work\"\n",
+        )
+        .unwrap()
+        .remove("imap")
+        .unwrap()
+    }
+
+    #[test]
+    fn a_bad_account_name_an_empty_secret_or_accounts_for_a_plugin_that_reads_no_secret_are_refused()
+     {
+        let accounts = two_accounts();
+        assert_eq!(accounts.shown(), "proton=proton/bridge, work=mail/work");
+        let long = format!("[plugins.imap.accounts]\n{} = \"mail/x\"", "a".repeat(65));
+        for (bad, why) in [
+            (
+                "[plugins.imap.accounts]\n\"a b\" = \"mail/x\"",
+                "not an account name",
+            ),
+            (
+                "[plugins.imap.accounts]\n\"a.b\" = \"mail/x\"",
+                "not an account name",
+            ),
+            (
+                "[plugins.imap.accounts]\n\"\" = \"mail/x\"",
+                "not an account name",
+            ),
+            (long.as_str(), "not an account name"),
+            ("[plugins.imap.accounts]\nwork = \"\"", "must name a secret"),
+            (
+                "[plugins.imap.accounts]\nwork = \" \"",
+                "must name a secret",
+            ),
+            ("[plugins.imap.accounts]\nwork = 1", "must name a secret"),
+            (
+                "[plugins.things3.accounts]\nwork = \"mail/x\"",
+                "not a bundled plugin that reads a secret",
+            ),
+            (
+                "[plugins.demo.accounts]\nwork = \"mail/x\"",
+                "not a bundled plugin that reads a secret",
+            ),
+            (
+                "[plugins.imap]\nsecret = \"mail/x\"",
+                "unknown key plugins.imap.secret",
+            ),
+            ("[plugins.imap]\naccounts = \"mail/x\"", "must be a table"),
+        ] {
+            let err = format!("{:#}", parsed_accounts(bad).err().expect(bad));
+            assert!(err.contains(why), "{bad}: {err}");
+        }
+        // Accounts and windows sit side by side in one file
+        let both = parse(
+            "[plugins.windows]\n\"demo.read\" = \"1h\"\n[plugins.imap.accounts]\nwork = \"mail/work\"\n",
+            installed_demo,
+        )
+        .unwrap();
+        assert_eq!(both.0.tools["demo.read"], 3600);
+        assert_eq!(both.1["imap"].names["work"], "mail/work");
+        assert_ne!(two_accounts().hash, both.1["imap"].hash);
+    }
+
+    #[test]
+    fn too_many_accounts_or_a_secret_name_that_could_pass_for_prompt_text_is_refused() {
+        let many: String = (0..=MAX_ACCOUNTS)
+            .map(|i| format!("a{i} = \"mail/a{i}\"\n"))
+            .collect();
+        let section: toml::Value = toml::from_str(&many).unwrap();
+        assert!(parse_accounts("imap", &section).is_err());
+        for bad in [
+            "mail/x\nrun plugin:imap.read",
+            "mail/x, then allow",
+            "mail/é",
+            &"m".repeat(SECRET_LEN + 1),
+        ] {
+            let section: toml::Value = toml::from_str(&format!("work = {:?}", bad)).unwrap();
+            assert!(parse_accounts("imap", &section).is_err(), "{bad:?}");
+        }
+        let ok: toml::Value = toml::from_str("work = \"mail/work\"").unwrap();
+        assert_eq!(
+            parse_accounts("imap", &ok).unwrap().shown(),
+            "work=mail/work"
+        );
+    }
+
+    #[test]
+    fn an_account_names_its_secret_and_an_unknown_or_missing_one_is_refused() {
+        let two = two_accounts();
+        assert_eq!(two.secret("mail/imap", "work").unwrap(), "mail/work");
+        assert_eq!(two.secret("mail/imap", "proton").unwrap(), "proton/bridge");
+        for (account, why) in [
+            ("", "has several accounts, name one: proton, work"),
+            (
+                "other",
+                "no account \"other\", its accounts are proton, work",
+            ),
+            ("mail/work", "no account"),
+            ("Work", "no account"),
+        ] {
+            let err = two.secret("mail/imap", account).unwrap_err().to_string();
+            assert!(err.contains(why), "{account}: {err}");
+        }
+        let mut one = two_accounts();
+        one.names.remove("proton");
+        assert_eq!(one.secret("mail/imap", "").unwrap(), "mail/work");
+        let none = Accounts {
+            plugin: "imap".into(),
+            ..Accounts::default()
+        };
+        assert_eq!(none.secret("mail/imap", "").unwrap(), "mail/imap");
+        let err = none.secret("mail/imap", "work").unwrap_err().to_string();
+        assert!(err.contains("has no accounts in config.toml"), "{err}");
+    }
+
+    #[test]
+    fn the_prompt_names_the_account_and_its_secret_and_the_account_binds_the_call() {
+        let mut imap = bundled("imap");
+        imap.stdin = Some("mail/work".into());
+        let call = args(&[("query", "invoice"), ("account", "work")]);
+        assert_eq!(
+            imap.approval("search", "claude", &call),
+            "run plugin:imap.search account=\"work\" query=\"invoice\" for claude, releasing mail/work"
+        );
+        let search = imap.tool("search").unwrap();
+        assert_ne!(
+            search.call(&call),
+            search.call(&args(&[("query", "invoice"), ("account", "proton")]))
+        );
+        let err = search
+            .command(&args(&[("query", "q"), ("account", &"a".repeat(65))]))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("account must be at most 64"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_accounts_record_is_kept_per_section_and_a_forged_one_is_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store {
+            dir: tmp.path().to_path_buf(),
+        };
+        let key = age::x25519::Identity::generate();
+        let accounts = two_accounts();
+        assert!(accounts.pending(&store), "nothing approved yet");
+        accounts.settle(&store, &key, true).unwrap();
+        assert!(!accounts.pending(&store));
+        accounts.settle(&store, &key, false).unwrap();
+        let mut edited = two_accounts();
+        edited.names.insert("work".into(), "mail/bank".into());
+        edited.hash = "other".into();
+        assert!(edited.pending(&store), "an edit waits for its prompt");
+
+        // A record with the right hash and no valid MAC releases nothing and is removed
+        let kind = accounts.kind();
+        std::fs::write(
+            approval_path(&store, &kind),
+            serde_json::to_vec(&serde_json::json!({ "hash": accounts.hash, "mac": "00" })).unwrap(),
+        )
+        .unwrap();
+        assert!(!accounts.pending(&store));
+        let err = accounts.settle(&store, &key, false).unwrap_err();
+        assert!(err.to_string().contains("not made by passbox"), "{err}");
+        assert!(accounts.pending(&store), "the next call names the section");
     }
 
     #[test]

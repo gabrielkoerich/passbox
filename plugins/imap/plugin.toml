@@ -1,37 +1,38 @@
 name = "imap"
 description = "IMAP mail, such as Proton Mail through Bridge: read, search and save attachments"
-version = "1.2.1"
+version = "1.3.0"
 requires = "/usr/bin/python3"
 
-# The account entry, written to the script's stdin by the broker: password first, then fields
+# The account entry, written to the script's stdin by the broker: password first, then fields.
+# `[plugins.imap.accounts]` in config.toml maps account names to other entries, see the README
 stdin = "mail/imap"
 
 # passbox swaps the `imap.py` after -c for the bundled script bytes, so nothing on disk runs
 
 [[tool]]
 name = "recent"
-description = "Most recent messages: id, date, sender, subject"
-params = ["count?", "mailbox?"]
-limits = { count = { max = 50 }, mailbox = { max_len = 100 } }
+description = "Most recent messages: id, date, sender, subject. account picks one of the accounts set in config.toml"
+params = ["account?", "count?", "mailbox?"]
+limits = { account = { max_len = 64 }, count = { max = 50 }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "recent", "{count}", "{mailbox}"]
 
 [[tool]]
 name = "search"
-description = "Search messages for text in headers or body, newest 50"
-params = ["query", "mailbox?"]
-limits = { query = { max_len = 200 }, mailbox = { max_len = 100 } }
+description = "Search messages for text in headers or body, newest 50. account picks one of the accounts set in config.toml"
+params = ["account?", "query", "mailbox?"]
+limits = { account = { max_len = 64 }, query = { max_len = 200 }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "search", "{query}", "{mailbox}"]
 
 [[tool]]
 name = "read"
-description = "Headers, attachment names and the text body of one message, by id"
-params = ["id", "mailbox?"]
-limits = { id = { digits = true }, mailbox = { max_len = 100 } }
+description = "Headers, attachment names and the text body of one message, by id. account picks one of the accounts set in config.toml"
+params = ["account?", "id", "mailbox?"]
+limits = { account = { max_len = 64 }, id = { digits = true }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "read", "{id}", "{mailbox}"]
 
 [[tool]]
 name = "attachments"
-description = "The attachments of one message, by id, as JSON with name, type, size and base64"
-params = ["id", "mailbox?"]
-limits = { id = { digits = true }, mailbox = { max_len = 100 } }
+description = "The attachments of one message, by id, as JSON with name, type, size and base64. account picks one of the accounts set in config.toml"
+params = ["account?", "id", "mailbox?"]
+limits = { account = { max_len = 64 }, id = { digits = true }, mailbox = { max_len = 100 } }
 run = ["/usr/bin/python3", "-I", "-c", "imap.py", "attachments", "{id}", "{mailbox}"]

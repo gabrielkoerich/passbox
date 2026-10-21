@@ -302,6 +302,23 @@ openssl s_client -starttls imap -connect 127.0.0.1:1143 </dev/null 2>/dev/null \
 
 Put those values in the `mail/imap` entry as above, the fingerprint as openssl prints it or as bare hex. The prompt for each run names `mail/imap`, and the audit log records it as `released`. Every run, from the CLI, MCP or a client on the tailnet, happens inside the broker on the Mac, and only the mail comes back. A headless store with `PASSBOX_PASSPHRASE` has no broker, so there the CLI runs it the same way. The broker runs only the copy bundled in the binary: if the installed `imap.py` or `plugin.toml` differs from it, the run is refused before the prompt until you run `passbox plugin update imap`.
 
+To read more than one account, store one entry per account and name them in `~/.passbox/config.toml`:
+
+```toml
+[plugins.imap.accounts]
+proton = "proton/bridge"
+work = "mail/work"
+```
+
+```bash
+passbox plugin imap search --account work --query invoice
+passbox plugin imap recent --account proton --count 5
+```
+
+Every imap tool takes an optional `account`, over MCP too. The caller names an account and never a secret, and the section maps it to the entry. An account name is letters, digits, dash and underscore, at most 64 characters. With one account listed, `account` can be omitted. With more than one, a call that omits it or names one not listed is refused before the prompt, with the accounts named. With no section, the tools read `mail/imap` and refuse any `account`. The prompt names the account and the entry, such as `run plugin:imap.search account="work" query="invoice" for claude, releasing mail/work`, and the audit log records that entry as `released`. A window covers one account, since the account is one of the call's arguments.
+
+The file is plain text that any process of yours can edit, so the broker keeps the hash of the section you approved, as it does for [windows](#approval-windows). The first call after you add or edit the section prompts once with the new accounts, such as `allow imap accounts proton=proton/bridge, work=mail/work for claude, then run plugin:imap.recent account="work" for claude, releasing mail/work`. A refused prompt keeps the section you approved before, and no account from an unapproved section is ever read. A bad account name, an empty secret name or an accounts section for a plugin that reads no secret is refused before any prompt.
+
 There is no plugin for sending mail, adding a todo, git or gh. A job that sends mail uses its own client and gets the SMTP password from `passbox exec`, for example `passbox exec --env SMTP_PASSWORD=mail/smtp -- ./send-report`. An agent runs git and gh itself, so a plugin for them gated nothing. Gate git through the [SSH agent](#ssh-keys), which prompts for every signature, and give gh its token for one command with `passbox exec --env GH_TOKEN=github/token -- gh pr create`.
 
 A tool whose command is missing is refused before it prompts, with the install line above.
@@ -732,8 +749,9 @@ passbox restore github/token --index 0  # put the newest one back
   wraps/se-<host>.json      the store key under that Mac's Secure Enclave
   audit-<host>.log          one encrypted record per line
   grants-<host>.age         project approvals, never synced
-  config.toml               where sync copies to and the plugin windows, never synced
+  config.toml               where sync copies to, the plugin windows and accounts, never synced
   windows-<host>.json       the hash of the approved plugin windows, never synced
+  accounts-<plugin>-<host>.json  the hash of a plugin's approved accounts, never synced
   plugins/                  installed plugins, never synced
   ssh-keys.pub              the public halves the SSH agent lists, never synced
   broker.sock               the approval socket, never synced

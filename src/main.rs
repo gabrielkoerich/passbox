@@ -379,7 +379,7 @@ fn ensure_store_gitignore(store: &Store) -> Result<()> {
     if !path.exists() {
         std::fs::write(
             &path,
-            "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\nwindows-*.json\n",
+            "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\ngrants-*.age\nwindows-*.json\naccounts-*.json\n",
         )?;
     }
     Ok(())
@@ -1403,12 +1403,16 @@ fn plugin_run_fed(
         return Ok(());
     }
 
-    let (manifest, command) = plugin::fed_command(store, name, action, &params)?;
-    let secret = manifest
-        .stdin
-        .as_deref()
-        .with_context(|| format!("{name} reads no secret in its bundled copy"))?;
-    let key = unlock(store, &manifest.approval(action, &agent(), &params))?;
+    let (mut manifest, command) = plugin::fed_command(store, name, action, &params)?;
+    let accounts = plugin::feed(store, &mut manifest, &params)?;
+    let secret = manifest.stdin.as_deref().unwrap_or_default();
+    let mut reason = manifest.approval(action, &agent(), &params);
+    let pending = accounts.pending(store);
+    if pending {
+        reason = format!("{}, then {reason}", accounts.prompt(&agent()));
+    }
+    let key = unlock(store, &reason)?;
+    accounts.settle(store, &key, pending)?;
     let Some((_, entry)) = store.find(secret, &key)? else {
         return Err(plugin::missing(name, secret));
     };
