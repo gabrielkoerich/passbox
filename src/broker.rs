@@ -587,9 +587,7 @@ impl Broker {
         self.audit(&key, &request.agent, "<list>", "approved", caller)?;
         let names = self.store.names(&key)?;
         // A key synced from another Mac is offered once something here has opened the store
-        if let Err(e) =
-            crate::ssh::keys(&self.store, &key).and_then(|k| crate::ssh::refresh(&self.store, &k))
-        {
+        if let Err(e) = crate::ssh::rebuild(&self.store, &key) {
             eprintln!("{} could not refresh the SSH keys: {e:#}", clock());
         }
         Ok(names.join("\n"))
