@@ -393,7 +393,14 @@ pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
             copy(&from_there, &from_here)
         };
 
+        // A tombstone loses to its secret written after it, so rm then add of one name sticks
         let done = match (ours, theirs) {
+            (None, Some(theirs)) if outlived(&here, &name, *theirs) => {
+                fs::remove_file(&from_there).map_err(Into::into)
+            }
+            (Some(ours), None) if outlived(&there, &name, *ours) => {
+                fs::remove_file(&from_here).map_err(Into::into)
+            }
             (Some(_), None) => push().map(|()| report.pushed += 1),
             (None, Some(_)) => pull().map(|()| report.pulled += 1),
             (Some(ours), Some(theirs)) if ours > theirs => push().map(|()| report.pushed += 1),
@@ -415,6 +422,19 @@ pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
         );
     }
     Ok(report)
+}
+
+/* A tombstone on one side and a secret with the same id written after it on the other side is a
+delete undone by `add`, which reuses the id so `restore` still reaches the old versions. Copying
+the tombstone over would hide the new value again */
+fn outlived(side: &BTreeMap<PathBuf, SystemTime>, tomb: &Path, deleted: SystemTime) -> bool {
+    if tomb.parent() != Some(Path::new("store"))
+        || tomb.extension().and_then(|e| e.to_str()) != Some("tomb")
+    {
+        return false;
+    }
+    side.get(&tomb.with_extension("age"))
+        .is_some_and(|written| *written > deleted)
 }
 
 /// A secret about to be overwritten from the far side goes into the versions first
@@ -751,6 +771,48 @@ mod tests {
         sync(&one, remote.path()).unwrap();
         assert!(one.names(&key).unwrap().is_empty());
         assert!(two.names(&key).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rm_then_add_of_one_name_survives_the_sync() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+
+        let (one, key) = store(a.path());
+        let id = new_id();
+        let recipient = one.recipient().unwrap();
+        one.put(&id, &secret("db/token", "old"), &recipient)
+            .unwrap();
+        sync(&one, remote.path()).unwrap();
+        let two = Store {
+            dir: b.path().to_path_buf(),
+        };
+        sync(&two, remote.path()).unwrap();
+
+        one.delete(&id).unwrap();
+        sync(&one, remote.path()).unwrap();
+        // add reuses the id of a deleted name, as `passbox add` does
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        one.put(&id, &secret("db/token", "new"), &recipient)
+            .unwrap();
+        sync(&one, remote.path()).unwrap();
+        sync(&one, remote.path()).unwrap();
+        assert_eq!(one.names(&key).unwrap(), vec!["db/token"]);
+        assert_eq!(one.load(&id, &key).unwrap().value, "new");
+        assert!(!remote.path().join(format!("store/{id}.tomb")).exists());
+        assert!(
+            !one.versions(&id).unwrap().is_empty(),
+            "the old value stays restorable"
+        );
+
+        // The other machine still holds the tombstone it pulled, and the new value outlives it
+        sync(&two, remote.path()).unwrap();
+        sync(&two, remote.path()).unwrap();
+        assert_eq!(two.names(&key).unwrap(), vec!["db/token"]);
+        assert_eq!(two.load(&id, &key).unwrap().value, "new");
+        sync(&one, remote.path()).unwrap();
+        assert_eq!(one.names(&key).unwrap(), vec!["db/token"]);
     }
 
     /* A repo in the store used to be copied into the mirror, which swamped the sync and left
