@@ -317,6 +317,8 @@ jobs:
   binaries:
     needs: [lint, gitleaks, clippy, test, examples, app, version]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
+    # The signing secrets live in this environment, which only main can use
+    environment: macos-signing
     strategy:
       matrix:
         include:
