@@ -379,15 +379,8 @@ jobs:
           rustup target add "$TARGET"
           # shellcheck disable=SC2086
           cargo build --release --locked --target "$TARGET" $FEATURES
-          # The hardened runtime stops a same-user debugger reading the broker's memory
+          # Without the calendar key EventKit denies the broker with no prompt (#36)
           if [[ "$TARGET" == *apple-darwin ]]; then
-            codesign -s - --force --options runtime "target/$TARGET/release/passbox"
-            codesign -dv "target/$TARGET/release/passbox" 2>&1 | tee sig.txt
-            grep -q "runtime" sig.txt
-            # Ad hoc, so the binary needs no developer identity
-            grep -q "Signature=adhoc" sig.txt
-            # Without the bound calendar key EventKit denies the broker with no prompt (#36)
-            grep -q "Info.plist entries=" sig.txt
             launchctl plist __TEXT,__info_plist "target/$TARGET/release/passbox" | grep -q NSCalendarsFullAccessUsageDescription
           fi
           # The mock enclave must never ship, whatever this build was configured with. Only the
@@ -397,7 +390,57 @@ jobs:
             echo "::error::the mock enclave is in a release binary"
             exit 1
           fi
-          outside=$(mktemp -d) && cp "$bin" "$outside/" && "$outside/passbox" --version
+
+      # One stable signature keeps the Keychain's trust in the binary across upgrades, and
+      # notarization lets Gatekeeper open it on any Mac. A bare binary cannot be stapled, so Gatekeeper checks online
+      - name: Sign and notarize
+        if: runner.os == 'macOS'
+        env:
+          P12: ${{ secrets.MACOS_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          BIN: target/${{ matrix.target }}/release/passbox
+        run: |
+          for name in P12 P12_PASSWORD NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER_ID; do
+            if [ -z "$(printenv "$name")" ]; then
+              echo "::error::secret for $name is not set, a macOS release must be signed"
+              exit 1
+            fi
+          done
+
+          keychain="$RUNNER_TEMP/sign.keychain-db"
+          pass="$(uuidgen)"
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security import "$RUNNER_TEMP/id.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain"
+
+          # The hardened runtime stops a same-user debugger reading the broker's memory
+          codesign --force --options runtime --timestamp --identifier com.gabrielkoerich.passbox \
+            --sign "Developer ID Application: Gabriel Koerich (ZEY9Z684DK)" --keychain "$keychain" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+          codesign -dv "$BIN" 2>&1 | tee sig.txt
+          grep -q "runtime" sig.txt
+          grep -q "TeamIdentifier=ZEY9Z684DK" sig.txt
+          # The calendar key must stay bound to the signature (#36)
+          grep -q "Info.plist entries=" sig.txt
+
+          printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent "$BIN" "$RUNNER_TEMP/notary.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notary.zip" --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait --timeout 30m
+          security delete-keychain "$keychain"
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          outside=$(mktemp -d) && cp "target/$TARGET/release/passbox" "$outside/" && "$outside/passbox" --version
           tar -czf "passbox-$TARGET.tar.gz" -C "target/$TARGET/release" passbox
 
       - uses: actions/upload-artifact@v7

@@ -267,7 +267,7 @@ brew install ossianhempel/tap/things3-cli        # things3
 
 `calendar` uses icalBuddy rather than raw AppleScript, because AppleScript reports a recurring event's series start instead of the occurrence date.
 
-A remote calendar call runs icalBuddy inside the broker, so the first one shows a one-time macOS prompt asking to allow passbox to access your calendars. Allow it, or the call returns "No calendars". The grant is tied to the binary's signature, and the release binary is ad hoc signed, so macOS may ask again after an upgrade.
+A remote calendar call runs icalBuddy inside the broker, so the first one shows a one-time macOS prompt asking to allow passbox to access your calendars. Allow it, or the call returns "No calendars". The grant is tied to the binary's signature. The release binary is signed with a Developer ID, so macOS keeps the grant across upgrades, and asks once more on the first signed release. A source build is ad hoc signed and may ask again after every rebuild.
 
 `imap` reads any IMAP server, such as Proton Mail through Bridge. It is one Python 3 script that uses only the standard library. Its account is one store entry, `mail/imap`. The broker writes it to the script's stdin, so the password is never a parameter, an argument, an environment variable or a file, and it never leaves the broker:
 
