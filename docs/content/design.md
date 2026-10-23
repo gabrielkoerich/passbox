@@ -88,7 +88,7 @@ A grant that presents a live token mints a child with no prompt when every name 
 
 Rejected: per-secret modes and a per-agent approval window. An earlier version let a secret be marked open, approved for a window after one prompt, or blocked with a never flag. One rule is simpler, and a never flag gave false assurance, because one key opens the whole store and any process running as the user reads around a software flag. Cost: a secret an agent reads often now needs a grant or injection at launch.
 
-While the broker holds the key it is the boundary, so it is hardened to hold it. It refuses a same-user debugger with `PT_DENY_ATTACH`, takes no core dump, and runs under a global allocator that wipes every freed block, so a decrypted secret does not linger in freed memory. The binary and the Enclave helper are signed with the hardened runtime, which needs no developer account.
+While the broker holds the key it is the boundary, so it is hardened to hold it. It refuses a same-user debugger with `PT_DENY_ATTACH`, takes no core dump, and runs under a global allocator that wipes every freed block, so a decrypted secret does not linger in freed memory. The binary and the Enclave helper are signed with the hardened runtime. The release binary carries a Developer ID signature, the helper and source builds are ad hoc.
 
 Cost: the broker holds the key in memory while it runs, so a grant can release its secrets without asking again. The hardening stops a reader running as the same user. Root still reaches the key.
 
@@ -160,7 +160,9 @@ Rejected: keeping the acting tools behind a prompt on every call. A prompt then 
 
 A remote plugin call runs inside the broker, a LaunchAgent, so EventKit checks Calendar access against passbox itself. A process with no `NSCalendarsFullAccessUsageDescription` is denied without a prompt, and icalBuddy then sees no calendars. The macOS host build embeds an Info.plist in the binary's `__TEXT,__info_plist` section at link time, with the identifier `com.gabrielkoerich.passbox` and the two calendar usage keys and nothing else, so the first remote calendar call raises the macOS prompt. The release job checks that the signed binary has the section bound. Rejected: an app bundle around the CLI, which Homebrew and `cargo install` do not install. Rejected: running icalBuddy on the caller's side, which a tailnet client cannot do.
 
-Cost: the binary is ad hoc signed, and TCC ties the grant to the signature, so macOS may forget it after an upgrade and prompt again. A stable signing identity would fix that, and it needs a paid developer account.
+The release binary is signed with a Developer ID and notarized, so TCC keeps the grant across upgrades. Its designated requirement is the identifier and team `ZEY9Z684DK`, which every release shares. Cost: the first signed release asks once more, since the grant made for the ad hoc binary does not match, and a source build is still ad hoc and may ask after every rebuild.
+
+The Secure Enclave key does not depend on this signature. It is a CryptoKit `dataRepresentation` blob that only the Enclave can open, with no keychain item, access group or team prefix, and the embedded helper that opens it stays ad hoc. A store made by an ad hoc binary opens under the signed one. Rejected: a keychain item for the key, which would tie it to the team and need the `keychain-access-groups` entitlement.
 
 ## Plugin windows
 
@@ -250,7 +252,7 @@ Rejected: a Rust trait with the Swift helper and a fake behind it. It adds an ab
 
 Rejected: gating on `debug_assertions` alone. Every debug build would honour the override, including a `target/debug/passbox` someone uses for real.
 
-CI runs clippy and the tests on Linux, where the host build compiles with an empty Enclave helper and the fake in its place. The caller lookup has a Linux version, `SO_PEERCRED` and `/proc/<pid>/cwd`, beside the macOS one. macOS runs only the release build, which also cross-checks the ECIES and checks the ad hoc signature. The cost: the macOS caller lookup, `LOCAL_PEERPID` and `lsof`, is compiled by the release build but never tested, so a bug in which directory a project grant matches would ship.
+CI runs clippy and the tests on Linux, where the host build compiles with an empty Enclave helper and the fake in its place. The caller lookup has a Linux version, `SO_PEERCRED` and `/proc/<pid>/cwd`, beside the macOS one. macOS runs only the release build, which also cross-checks the ECIES and signs, checks and notarizes the binary. The cost: the macOS caller lookup, `LOCAL_PEERPID` and `lsof`, is compiled by the release build but never tested, so a bug in which directory a project grant matches would ship.
 
 Rejected: tests on a macOS runner. They cover the shipped caller lookup, but a macOS runner is slower to start and slower to run, and CI waited on it every push.
 
