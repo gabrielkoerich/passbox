@@ -410,31 +410,35 @@ jobs:
             fi
           done
 
-          keychain="$RUNNER_TEMP/sign.keychain-db"
-          pass="$(uuidgen)"
-          security create-keychain -p "$pass" "$keychain"
-          security set-keychain-settings -lut 3600 "$keychain"
-          security unlock-keychain -p "$pass" "$keychain"
-          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
-          security import "$RUNNER_TEMP/id.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain" > /dev/null
-          security list-keychains -d user -s "$keychain"
+          # Absolute paths, since an earlier step can prepend to PATH through $GITHUB_PATH
+          umask 077
+          dir="$(/usr/bin/mktemp -d)"
+          keychain="$dir/sign.keychain-db"
+          trap '/usr/bin/security delete-keychain "$keychain" 2>/dev/null; /bin/rm -rf "$dir"' EXIT
+          pass="$(/usr/bin/uuidgen)"
+          /usr/bin/security create-keychain -p "$pass" "$keychain"
+          /usr/bin/security set-keychain-settings -lut 900 "$keychain"
+          /usr/bin/security unlock-keychain -p "$pass" "$keychain"
+          printf '%s' "$P12" | /usr/bin/base64 --decode > "$dir/id.p12"
+          /usr/bin/security import "$dir/id.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          /bin/rm -f "$dir/id.p12"
+          /usr/bin/security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain" > /dev/null
+          /usr/bin/security list-keychains -d user -s "$keychain"
 
           # The hardened runtime stops a same-user debugger reading the broker's memory
-          codesign --force --options runtime --timestamp --identifier com.gabrielkoerich.passbox \
+          /usr/bin/codesign --force --options runtime --timestamp --identifier com.gabrielkoerich.passbox \
             --sign "Developer ID Application: Gabriel Koerich (ZEY9Z684DK)" --keychain "$keychain" "$BIN"
-          codesign --verify --strict --verbose=2 "$BIN"
-          codesign -dv "$BIN" 2>&1 | tee sig.txt
-          grep -q "runtime" sig.txt
-          grep -q "TeamIdentifier=ZEY9Z684DK" sig.txt
+          /usr/bin/codesign --verify --strict --verbose=2 "$BIN"
+          /usr/bin/codesign -dv "$BIN" 2>&1 | /usr/bin/tee "$dir/sig.txt"
+          /usr/bin/grep -q "runtime" "$dir/sig.txt"
+          /usr/bin/grep -q "TeamIdentifier=ZEY9Z684DK" "$dir/sig.txt"
           # The calendar key must stay bound to the signature (#36)
-          grep -q "Info.plist entries=" sig.txt
+          /usr/bin/grep -q "Info.plist entries=" "$dir/sig.txt"
 
-          printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
-          ditto -c -k --keepParent "$BIN" "$RUNNER_TEMP/notary.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notary.zip" --key "$RUNNER_TEMP/notary.p8" \
+          printf '%s' "$NOTARY_KEY" > "$dir/notary.p8"
+          /usr/bin/ditto -c -k --keepParent "$BIN" "$dir/notary.zip"
+          /usr/bin/xcrun notarytool submit "$dir/notary.zip" --key "$dir/notary.p8" \
             --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait --timeout 30m
-          security delete-keychain "$keychain"
 
       - name: Package
         env:
