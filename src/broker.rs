@@ -787,6 +787,26 @@ const SERVE: &str = "tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://12
 #[cfg(feature = "host")]
 const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "fish", "dash", "ksh"];
 
+// Programs that only run another one, so the prompt names whoever ran them, never `timeout`
+#[cfg(feature = "host")]
+const WRAPPERS: [&str; 15] = [
+    "timeout",
+    "gtimeout",
+    "nohup",
+    "env",
+    "nice",
+    "time",
+    "caffeinate",
+    "stdbuf",
+    "xargs",
+    "sudo",
+    "flock",
+    "script",
+    "setsid",
+    "taskpolicy",
+    "arch",
+];
+
 /* The client names the agent and the control plane names the host, so a remote prompt shows both.
 The client's part loses control characters and is capped, so it cannot start a new line or pass a
 second host off as the real one, which always comes last */
@@ -810,10 +830,15 @@ fn programs(chain: &str) -> impl Iterator<Item = &str> {
 
 #[cfg(feature = "host")]
 /// The caller's process chain names the agent when none was given: the first ancestor that is
-/// not passbox and not a shell, such as claude or codex, or passbox when the chain has none
+/// not passbox, a shell or a wrapper, such as claude or codex, or passbox when the chain has none
 fn prompt_agent(chain: &str) -> String {
     for name in programs(chain) {
-        if name.is_empty() || name == "unknown" || name == "passbox" || SHELLS.contains(&name) {
+        if name.is_empty()
+            || name == "unknown"
+            || name == "passbox"
+            || SHELLS.contains(&name)
+            || WRAPPERS.contains(&name)
+        {
             continue;
         }
         return name.to_string();
@@ -1566,6 +1591,13 @@ mod tests {
         // Only passbox and a shell means there is no better name than passbox
         assert_eq!(prompt_agent("passbox < zsh"), "passbox");
         assert_eq!(prompt_agent("unknown"), "passbox");
+        // A wrapper only ran the command, so the name goes to whoever ran the wrapper
+        assert_eq!(prompt_agent("passbox < timeout < zsh < claude"), "claude");
+        assert_eq!(
+            prompt_agent("passbox < /usr/bin/timeout < nohup < env < codex"),
+            "codex"
+        );
+        assert_eq!(prompt_agent("passbox < timeout < zsh"), "passbox");
     }
 
     #[test]
