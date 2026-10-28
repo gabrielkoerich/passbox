@@ -378,6 +378,8 @@ jobs:
           TARGET: ${{ matrix.target }}
           FEATURES: ${{ matrix.features }}
         run: |
+          # A self-hosted runner has rustup with no default toolchain, the hosted images set stable
+          rustup default stable
           rustup target add "$TARGET"
           # shellcheck disable=SC2086
           cargo build --release --locked --target "$TARGET" $FEATURES
