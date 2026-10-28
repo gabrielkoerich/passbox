@@ -333,6 +333,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: true
@@ -378,9 +381,6 @@ jobs:
           TARGET: ${{ matrix.target }}
           FEATURES: ${{ matrix.features }}
         run: |
-          # A self-hosted runner has rustup with no default toolchain, the hosted images set stable
-          rustup default stable
-          rustup target add "$TARGET"
           # shellcheck disable=SC2086
           cargo build --release --locked --target "$TARGET" $FEATURES
           # Without the calendar key EventKit denies the broker with no prompt (#36)
