@@ -195,7 +195,7 @@ jobs:
 
   # Launching the menu-bar app would ask for a listing, so CI checks its filter and that it bundles
   app:
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, ARM64, m1]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
@@ -322,7 +322,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-latest
+          - os: [self-hosted, macOS, ARM64, m1]
             target: aarch64-apple-darwin
             features: ""
           # musl, statically linked. A gnu build inherits the runner's glibc floor, which
