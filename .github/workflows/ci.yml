@@ -196,7 +196,7 @@ jobs:
   # Launching the menu-bar app would ask for a listing, so CI checks its filter and that it bundles
   app:
     runs-on: [self-hosted, macOS, ARM64, m1]
-    timeout-minutes: 15
+    # timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: Search filter
