@@ -1,6 +1,6 @@
 [package]
 name = "passbox"
-version = "2.0.7"
+version = "2.0.8"
 edition = "2024"
 description = "A password store for agents, where a fingerprint releases one secret into one process"
 license = "MIT"
