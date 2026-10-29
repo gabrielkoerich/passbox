@@ -10,8 +10,9 @@ on:
     #   - '*.txt'
   workflow_dispatch: {}
 
+# Only the release job writes, and it asks for that itself
 permissions:
-  contents: write
+  contents: read
 
 # A newer push replaces the run in progress, so two runs never wait on a runner together
 concurrency:
@@ -201,6 +202,8 @@ jobs:
 
   # Launching the menu-bar app would ask for a listing, so CI checks its filter and that it bundles
   app:
+    # main only, so a branch push, a dependency bump included, never runs on the M1
+    if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS, ARM64, m1]
     # timeout-minutes: 15
     steps:
@@ -378,10 +381,10 @@ jobs:
       - name: Cross-check the Secure Enclave ECIES against an independent implementation
         if: runner.os == 'macOS'
         run: |
-          swiftc -O -o /tmp/passbox-se swift/passbox-se.swift
-          python3 -m venv /tmp/venv
-          /tmp/venv/bin/pip install --quiet cryptography
-          /tmp/venv/bin/python tests/ecies.py /tmp/passbox-se
+          swiftc -O -o "$RUNNER_TEMP/passbox-se" swift/passbox-se.swift
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv"/bin/pip install --quiet cryptography
+          "$RUNNER_TEMP/venv"/bin/python tests/ecies.py "$RUNNER_TEMP/passbox-se"
 
       - name: Build
         env:
