@@ -378,10 +378,10 @@ jobs:
       - name: Cross-check the Secure Enclave ECIES against an independent implementation
         if: runner.os == 'macOS'
         run: |
-          swiftc -O -o /tmp/passbox-se swift/passbox-se.swift
-          python3 -m venv /tmp/venv
-          /tmp/venv/bin/pip install --quiet cryptography
-          /tmp/venv/bin/python tests/ecies.py /tmp/passbox-se
+          swiftc -O -o "$RUNNER_TEMP/passbox-se" swift/passbox-se.swift
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet cryptography
+          "$RUNNER_TEMP/venv/bin/python" tests/ecies.py "$RUNNER_TEMP/passbox-se"
 
       - name: Build
         env:
