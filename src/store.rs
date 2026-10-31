@@ -571,6 +571,7 @@ mod tests {
             value: v.into(),
             created: 0,
             updated: 0,
+            blob: false,
         };
         store.put("id1", &secret("one"), &key.to_public()).unwrap();
         let stamp = store.stamp("id1").unwrap();
