@@ -483,6 +483,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # Kept out of .git/config, so each push names its token and cargo publish build scripts see none
+          persist-credentials: false
 
       - name: Generate changelog
         if: needs.version.outputs.skip == 'false'
@@ -535,10 +537,12 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # Pushes only the tag, with GITHUB_TOKEN so it starts no run, the bump reaches main in the last step
       - name: Create tag
         id: tag
         if: needs.version.outputs.skip == 'false'
         env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
@@ -551,10 +555,12 @@ jobs:
           sed -i "/^name = \"passbox\"$/{n;s/^version = .*/version = \"${VERSION#v}\"/}" Cargo.lock
           git add Cargo.toml Cargo.lock
           # The first release computes the version the manifest already carries
-          git diff --cached --quiet || git commit -m "chore: bump version to ${VERSION}"
+          if [ -n "$TAP_TOKEN" ]; then
+            git diff --cached --quiet || git commit -m "chore: bump version to ${VERSION} [skip ci]"
+          fi
 
           git tag -a "$VERSION" -m "$VERSION"
-          git push origin main "$VERSION"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$VERSION"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       # releases/latest/download/passbox.alfredworkflow then always installs the newest one
@@ -634,6 +640,7 @@ jobs:
       # later run computes a version already taken and the release line stalls until it is cut
       # away by hand. That happened once, so failing now takes the tag back with it.
       - name: Take the tag back if the release did not finish
+        id: untag
         if: failure() && steps.tag.outputs.pushed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -641,7 +648,7 @@ jobs:
         run: |
           echo "release failed after tagging, removing $VERSION"
           gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
-          git push origin ":refs/tags/$VERSION" 2>/dev/null || true
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ":refs/tags/$VERSION" 2>/dev/null || true
           git tag -d "$VERSION" 2>/dev/null || true
 
       # Last, so a failed publish cannot take back a release that already shipped
@@ -656,3 +663,22 @@ jobs:
           fi
           # The default build needs swiftc, which this Linux runner lacks
           cargo publish --locked --no-default-features
+
+      # Last, a push to main starts a run that cancels this one, [skip ci] stops it and the step order covers a miss
+      # Runs after a failed publish too, a tag missing from main makes the next run reuse its version
+      - name: Push the version bump to main
+        if: ${{ !cancelled() && steps.tag.outcome == 'success' && steps.untag.outcome == 'skipped' }}
+        env:
+          # The owner's token, main requires checks that the bump commit has not run
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            exit 0
+          fi
+
+          # The tag must sit on main, the version job finds the last version with git describe
+          if ! git push "https://x-access-token:${TAP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main; then
+            echo "::error::main moved during the release, merge ${VERSION} into main by hand"
+            exit 1
+          fi
