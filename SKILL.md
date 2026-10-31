@@ -28,7 +28,8 @@ codex mcp add passbox -- passbox mcp         # Codex
 Install this skill where the agent looks for it:
 
 ```bash
-mkdir -p ~/.claude/skills/passbox && cp SKILL.md ~/.claude/skills/passbox/
+passbox skill install      # writes the copy that matches this binary
+passbox skill check        # exits 1 if the installed copy is older or differs
 ```
 
 ## Reading a secret

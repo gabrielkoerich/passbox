@@ -851,7 +851,7 @@ There is no in-process read. `passbox get` refuses a pipe, and the `passbox` cra
 
 [`examples/`](examples) also holds [Python](examples/python) and [TypeScript](examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
 
-For agents, see [AGENTS.md](AGENTS.md), and the [`SKILL.md`](SKILL.md) that teaches a coding agent to use passbox.
+For agents, see [AGENTS.md](AGENTS.md), and the [`SKILL.md`](SKILL.md) that teaches a coding agent to use passbox. Install the copy that matches your binary with `passbox skill install`, and run `passbox skill check` after an upgrade, since it exits 1 when the installed copy is older or differs.
 
 ## Comparisons
 
