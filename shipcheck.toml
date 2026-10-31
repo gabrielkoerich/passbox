@@ -1,17 +1,20 @@
 runner = "host"
 on = ["push", "commit"]
 
+# Only checks that read the tree run on this Mac. Anything that builds or runs passbox, build.rs included, runs in a
+# Colima VM, since a test or a build script on the host would touch the real store, keychain and Secure Enclave
 [host]
-versions = ["cargo --version", "rustc --version", "swiftc --version", "gitleaks version"]
+versions = ["cargo --version", "gitleaks version"]
 
 [host.checks]
 fmt = "cargo fmt --check"
 gitleaks = "d=$(mktemp -d \"$HOME/scan.XXXXXX\") && git archive HEAD | tar -x -C \"$d\" && gitleaks dir --redact --no-banner \"$d\""
-# build.rs compiles the Swift Secure Enclave helper, its module cache goes to the sandbox's TMPDIR
-clippy = "CLANG_MODULE_CACHE_PATH=\"$TMPDIR/clang-module-cache\" cargo clippy --all-targets -- -D warnings"
-test-macos = "CLANG_MODULE_CACHE_PATH=\"$TMPDIR/clang-module-cache\" cargo test --features mock-enclave"
 
-# the Linux test as on GitHub, with age installed, and examples, which starts Docker, both in a Colima VM
+# ci.yml's Linux jobs as on GitHub: clippy, the test with age installed, and examples, which starts Docker
+[jobs."ci.yml/clippy"]
+runner = "act"
+engine = "colima"
+
 [jobs."ci.yml/test"]
 runner = "act"
 engine = "colima"
