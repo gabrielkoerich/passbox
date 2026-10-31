@@ -51,6 +51,9 @@ struct Config {
     // Checked by the broker against the plugin manifests, see `plugin::windows`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plugins: Option<toml::Table>,
+    // Checked by the broker, see `ssh::windows`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ssh: Option<toml::Table>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq, Clone)]
@@ -207,14 +210,15 @@ pub fn migrate(store: &Store) -> Result<Option<Destination>> {
 /// Written by `--enable`, and it replaces the old `remote` file
 pub fn choose(store: &Store, engine: Engine) -> Result<Destination> {
     let destination = engine.resolve()?;
-    // The plugin windows in the same file are the owner's, so choosing a destination keeps them
-    let plugins = fs::read_to_string(config_path(store))
+    // The windows in the same file are the owner's, so choosing a destination keeps them
+    let old = fs::read_to_string(config_path(store))
         .ok()
-        .and_then(|text| toml::from_str::<Config>(&text).ok())
-        .and_then(|c| c.plugins);
+        .and_then(|text| toml::from_str::<Config>(&text).ok());
+    let (plugins, ssh) = old.map_or((None, None), |c| (c.plugins, c.ssh));
     let text = toml::to_string(&Config {
         sync: Some(engine),
         plugins,
+        ssh,
     })?;
     crate::store::write_private(&config_path(store), text.as_bytes())?;
     let _ = fs::remove_file(remote_path(store));
@@ -551,7 +555,7 @@ mod tests {
         };
         fs::write(
             config_path(&one),
-            "[plugins.windows]\n\"things3.logbook\" = \"1h\"\n",
+            "[plugins.windows]\n\"things3.logbook\" = \"1h\"\n[ssh.windows]\nlegion = \"12h\"\n",
         )
         .unwrap();
         // Windows alone name no destination, so the old file still answers
@@ -561,6 +565,7 @@ mod tests {
         let text = fs::read_to_string(config_path(&one)).unwrap();
         assert!(text.contains("engine = \"directory\""), "{text}");
         assert!(text.contains("\"things3.logbook\" = \"1h\""), "{text}");
+        assert!(text.contains("legion = \"12h\""), "{text}");
         assert_eq!(
             configured(&one).unwrap().unwrap().target,
             "/Volumes/stick/passbox"
@@ -1038,6 +1043,7 @@ mod tests {
             config_path(&one),
             crate::project::path(&one),
             crate::plugin::approval_path(&one),
+            crate::ssh::approval_path(&one),
         ] {
             let relative = path.strip_prefix(&one.dir).unwrap();
             assert!(skip(relative), "{} would sync", relative.display());

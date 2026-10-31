@@ -4,13 +4,20 @@ use crate::store::{self, Store};
 use age::x25519;
 use anyhow::{Context, Result, bail};
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey, PublicKey, Signature};
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 const FAILURE: u8 = 5;
+const SUCCESS: u8 = 6;
 const REQUEST_IDENTITIES: u8 = 11;
 const IDENTITIES_ANSWER: u8 = 12;
 const SIGN_REQUEST: u8 = 13;
 const SIGN_RESPONSE: u8 = 14;
+const EXTENSION: u8 = 27;
+const USERAUTH_REQUEST: u8 = 50;
+const SESSION_BIND: &[u8] = b"session-bind@openssh.com";
+/// A forwarded agent rarely chains more than a few hops, so this bounds what one connection holds
+const MAX_BINDS: usize = 16;
 /// Far above any real request, so a bad length cannot make the broker allocate gigabytes
 const MAX_MESSAGE: usize = 256 * 1024;
 const HEADER: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
@@ -109,7 +116,6 @@ pub fn label(key: &PublicKey) -> String {
  * so anything that is not short printable text reads as unrecognised
  **/
 pub fn purpose(data: &[u8]) -> String {
-    const USERAUTH_REQUEST: u8 = 50;
     if let Some(mut rest) = data.strip_prefix(b"SSHSIG") {
         return match take(&mut rest).ok().and_then(printable) {
             Some(namespace) => format!("a {namespace} signature"),
@@ -137,6 +143,138 @@ fn printable(bytes: &[u8]) -> Option<String> {
     fits.then(|| text.to_string())
 }
 
+/// The `[ssh.windows]` section of config.toml: hosts a key may sign logins to without a prompt
+#[derive(Default, Debug)]
+pub struct Windows {
+    /// Seconds a key stays open for one host key after an approved login to it
+    pub hosts: BTreeMap<String, u64>,
+    /// Covers every host and length, so editing either one asks again
+    pub hash: String,
+}
+
+impl Windows {
+    /// As the approval prompt lists them, such as `legion 12h, m1 12h`
+    pub fn shown(&self) -> String {
+        self.hosts
+            .iter()
+            .map(|(host, secs)| format!("{host} {}", crate::plugin::span(*secs)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The listed name a host key goes by, read from known_hosts or given as its own fingerprint
+    pub fn listed(&self, host: &PublicKey, known_hosts: &str) -> Option<(String, u64)> {
+        std::iter::once(host.fingerprint(HashAlg::Sha256).to_string())
+            .chain(known_names(known_hosts, host))
+            .find_map(|name| self.hosts.get(&name).map(|secs| (name, *secs)))
+    }
+}
+
+pub fn windows(store: &Store) -> Result<Windows> {
+    let path = crate::sync::config_path(store);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(Windows::default());
+    };
+    parse_windows(&text).with_context(|| format!("{} is not valid", path.display()))
+}
+
+pub(crate) fn parse_windows(text: &str) -> Result<Windows> {
+    let config: toml::Table = toml::from_str(text)?;
+    let Some(ssh) = config.get("ssh") else {
+        return Ok(Windows::default());
+    };
+    let ssh = ssh.as_table().context("ssh must be a table")?;
+    if let Some(other) = ssh.keys().find(|k| *k != "windows") {
+        bail!("unknown key ssh.{other}, the only one is ssh.windows");
+    }
+    let Some(section) = ssh.get("windows") else {
+        return Ok(Windows::default());
+    };
+    let section = section.as_table().context("ssh.windows must be a table")?;
+
+    let mut out = Windows::default();
+    let mut hashed = String::new();
+    for (host, value) in section {
+        // A pattern is an "any host" window, refused for the reason a namespace grant is
+        let pattern = host.is_empty()
+            || host
+                .chars()
+                .any(|c| matches!(c, '*' | '?' | '!' | ',') || c.is_whitespace() || c.is_control());
+        if pattern {
+            bail!("{host:?} must name one host as known_hosts lists it, or its SHA256 fingerprint");
+        }
+
+        let span = value
+            .as_str()
+            .with_context(|| format!("{host} must be a duration such as \"12h\""))?;
+        let secs = crate::plugin::duration(span)
+            .with_context(|| host.clone())?
+            .min(crate::broker::MAX_GRANT_SECS);
+        hashed.push_str(&format!("{host}={secs}\n"));
+        out.hosts.insert(host.clone(), secs);
+    }
+    out.hash = crate::project::hash(hashed.as_bytes());
+    Ok(out)
+}
+
+/// Plain text like the section, signed under the store key as the plugin record is
+pub(crate) fn approval_path(store: &Store) -> std::path::PathBuf {
+    store
+        .dir
+        .join(format!("windows-ssh-{}.json", crate::store::hostname()))
+}
+
+pub fn approved(store: &Store) -> Option<crate::plugin::Approval> {
+    crate::plugin::approved_at(&approval_path(store))
+}
+
+pub fn approve(store: &Store, key: &x25519::Identity, hash: &str) -> Result<()> {
+    crate::plugin::approve_at(&approval_path(store), "ssh", key, hash)
+}
+
+pub fn known_hosts() -> String {
+    std::env::var_os("HOME")
+        .map(|home| std::path::Path::new(&home).join(".ssh/known_hosts"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default()
+}
+
+/// The names known_hosts gives a host key. A hashed name cannot be read back, so it is skipped
+pub fn known_names(known_hosts: &str, host: &PublicKey) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in known_hosts.lines().map(str::trim) {
+        // `@cert-authority` and `@revoked` lines vouch for other keys, they name no host
+        if line.is_empty() || line.starts_with('#') || line.starts_with('@') {
+            continue;
+        }
+
+        let mut fields = line.split_whitespace();
+        let (Some(names), Some(kind), Some(blob)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let matches = PublicKey::from_openssh(&format!("{kind} {blob}"))
+            .is_ok_and(|k| k.key_data() == host.key_data());
+        if !matches {
+            continue;
+        }
+
+        for name in names.split(',') {
+            if name.starts_with('|') || name.starts_with('!') {
+                continue;
+            }
+
+            // `[host]:2222` is the same host on another port
+            let bare = name
+                .strip_prefix('[')
+                .and_then(|n| n.split_once("]:"))
+                .map_or(name, |(n, _)| n);
+            out.push(bare.to_string());
+        }
+    }
+    out
+}
+
 /// One length-prefixed message, or None once the client hangs up
 pub fn read_message(stream: &mut impl Read) -> Result<Option<Vec<u8>>> {
     let mut len = [0u8; 4];
@@ -158,13 +296,71 @@ pub fn write_message(stream: &mut impl Write, body: &[u8]) -> Result<()> {
     Ok(stream.flush()?)
 }
 
-/// The reply to one request. `sign` raises the prompt, and runs only for a key on offer
+/// A host one connection proved it reached, from `session-bind@openssh.com`
+struct Binding {
+    host: PublicKey,
+    session: Vec<u8>,
+    forwarding: bool,
+}
+
+/// What one agent connection has proved so far. ssh binds it before it asks for a signature
+#[derive(Default)]
+pub struct Connection {
+    binds: Vec<Binding>,
+}
+
+impl Connection {
+    /**
+     * The host key a login signature goes to, when the connection proves it. ssh binds the
+     * connection to the host key that signed the session id, and a login signs that same id, so the
+     * signature is no use to any other server. A forwarded agent or a second bind proves nothing
+     * about the last hop, so neither names a host
+     **/
+    pub fn destination(&self, data: &[u8]) -> Option<&PublicKey> {
+        let [bind] = self.binds.as_slice() else {
+            return None;
+        };
+        if bind.forwarding {
+            return None;
+        }
+
+        let mut rest = data;
+        let session = take(&mut rest).ok()?;
+        let login = session == bind.session.as_slice() && rest.first() == Some(&USERAUTH_REQUEST);
+        login.then_some(&bind.host)
+    }
+
+    fn bind(&mut self, mut rest: &[u8]) -> Result<()> {
+        let host = PublicKey::from_bytes(take(&mut rest)?)?;
+        let session = take(&mut rest)?;
+        let signature = Signature::try_from(take(&mut rest)?)?;
+        let forwarding = *rest.first().context("a truncated request")? != 0;
+        signature::Verifier::verify(&host, session, &signature)
+            .map_err(|_| anyhow::anyhow!("the host key did not sign this session"))?;
+        if self.binds.len() >= MAX_BINDS || self.binds.iter().any(|b| b.session == session) {
+            bail!("a session bound twice, or too many binds on one connection");
+        }
+
+        self.binds.push(Binding {
+            host,
+            session: session.to_vec(),
+            forwarding,
+        });
+        Ok(())
+    }
+}
+
+/**
+ * The reply to one request. `sign` raises the prompt, and runs only for a key on offer. It gets the
+ * host key the signature goes to when the connection proves one, see `Connection::destination`
+ **/
 pub fn answer(
     request: &[u8],
     offered: &[PublicKey],
-    sign: impl FnOnce(&PublicKey, &[u8]) -> Result<Signature>,
+    connection: &mut Connection,
+    sign: impl FnOnce(&PublicKey, &[u8], Option<&PublicKey>) -> Result<Signature>,
 ) -> Vec<u8> {
-    reply(request, offered, sign).unwrap_or_else(|e| {
+    reply(request, offered, connection, sign).unwrap_or_else(|e| {
         eprintln!("ssh agent: {e:#}");
         vec![FAILURE]
     })
@@ -174,7 +370,8 @@ pub fn answer(
 fn reply(
     request: &[u8],
     offered: &[PublicKey],
-    sign: impl FnOnce(&PublicKey, &[u8]) -> Result<Signature>,
+    connection: &mut Connection,
+    sign: impl FnOnce(&PublicKey, &[u8], Option<&PublicKey>) -> Result<Signature>,
 ) -> Result<Vec<u8>> {
     let (&kind, mut rest) = request.split_first().context("an empty request")?;
     let mut out = Vec::new();
@@ -194,9 +391,13 @@ fn reply(
                 .iter()
                 .find(|k| k.to_bytes().is_ok_and(|b| b == blob))
                 .context("a sign request for a key this agent does not offer")?;
-            let signature = sign(wanted, data)?;
+            let signature = sign(wanted, data, connection.destination(data))?;
             out.push(SIGN_RESPONSE);
             put(&mut out, &Vec::<u8>::try_from(signature)?)?;
+        }
+        EXTENSION if take(&mut rest)? == SESSION_BIND => {
+            connection.bind(rest)?;
+            out.push(SUCCESS);
         }
         _ => out.push(FAILURE),
     }
@@ -226,8 +427,49 @@ mod tests {
 
     /// A fixed seed, so the key is the same on every run and never touches disk
     fn key() -> PrivateKey {
-        let pair = Ed25519Keypair::from_seed(&[7; 32]);
-        PrivateKey::new(KeypairData::from(pair), "test@passbox.dev").unwrap()
+        seeded(7, "test@passbox.dev")
+    }
+
+    fn seeded(seed: u8, comment: &str) -> PrivateKey {
+        let pair = Ed25519Keypair::from_seed(&[seed; 32]);
+        PrivateKey::new(KeypairData::from(pair), comment).unwrap()
+    }
+
+    /// A `session-bind@openssh.com` request as ssh sends it, signed by `signer`
+    fn bind(host: &PrivateKey, signer: &PrivateKey, session: &[u8], forwarding: bool) -> Vec<u8> {
+        let signature: Signature = signature::Signer::try_sign(signer, session).unwrap();
+        let mut out = vec![EXTENSION];
+        put(&mut out, SESSION_BIND).unwrap();
+        put(&mut out, &host.public_key().to_bytes().unwrap()).unwrap();
+        put(&mut out, session).unwrap();
+        put(&mut out, &Vec::<u8>::try_from(signature).unwrap()).unwrap();
+        out.push(forwarding as u8);
+        out
+    }
+
+    fn login(session: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        put(&mut out, session).unwrap();
+        out.push(USERAUTH_REQUEST);
+        put(&mut out, b"gb").unwrap();
+        out
+    }
+
+    /// The host key `sign` was handed for one request on this connection
+    fn destination(connection: &mut Connection, data: &[u8]) -> Option<PublicKey> {
+        let private = key();
+        let blob = private.public_key().to_bytes().unwrap();
+        let mut seen = None;
+        answer(
+            &request(SIGN_REQUEST, &[&blob, data], 0),
+            &[private.public_key().clone()],
+            connection,
+            |_, data, host| {
+                seen = host.cloned();
+                Ok(signature::Signer::try_sign(&private, data)?)
+            },
+        );
+        seen
     }
 
     fn request(kind: u8, fields: &[&[u8]], flags: u32) -> Vec<u8> {
@@ -256,7 +498,8 @@ mod tests {
         let out = answer(
             &[REQUEST_IDENTITIES],
             std::slice::from_ref(&public),
-            |_, _| unreachable!(),
+            &mut Connection::default(),
+            |_, _, _| unreachable!(),
         );
         let (&kind, rest) = out.split_first().unwrap();
         assert_eq!(kind, IDENTITIES_ANSWER);
@@ -275,8 +518,10 @@ mod tests {
         let out = answer(
             &request(SIGN_REQUEST, &[&blob, b"challenge"], 0),
             std::slice::from_ref(&public),
-            |wanted, data| {
+            &mut Connection::default(),
+            |wanted, data, host| {
                 assert_eq!(wanted, &public);
+                assert!(host.is_none(), "an unbound connection names no host");
                 Ok(signature::Signer::try_sign(&private, data)?)
             },
         );
@@ -293,13 +538,15 @@ mod tests {
         let unknown = answer(
             &request(SIGN_REQUEST, &[&blob, b"x"], 0),
             &[],
-            |_, _| unreachable!(),
+            &mut Connection::default(),
+            |_, _, _| unreachable!(),
         );
         assert_eq!(unknown, [FAILURE]);
         let refused = answer(
             &request(SIGN_REQUEST, &[&blob, b"x"], 0),
             &[public],
-            |_, _| bail!("denied"),
+            &mut Connection::default(),
+            |_, _, _| bail!("denied"),
         );
         assert_eq!(refused, [FAILURE]);
     }
@@ -326,12 +573,189 @@ mod tests {
 
     #[test]
     fn unsupported_and_malformed_requests_fail() {
-        assert_eq!(answer(&[17], &[], |_, _| unreachable!()), [FAILURE]);
-        assert_eq!(answer(&[], &[], |_, _| unreachable!()), [FAILURE]);
+        let mut c = Connection::default();
         assert_eq!(
-            answer(&[SIGN_REQUEST, 0, 0, 0, 9, 1], &[], |_, _| unreachable!()),
+            answer(&[17], &[], &mut c, |_, _, _| unreachable!()),
             [FAILURE]
         );
+        assert_eq!(
+            answer(&[], &[], &mut c, |_, _, _| unreachable!()),
+            [FAILURE]
+        );
+        assert_eq!(
+            answer(
+                &[SIGN_REQUEST, 0, 0, 0, 9, 1],
+                &[],
+                &mut c,
+                |_, _, _| unreachable!()
+            ),
+            [FAILURE]
+        );
+        let mut other = vec![EXTENSION];
+        put(&mut other, b"query").unwrap();
+        assert_eq!(
+            answer(&other, &[], &mut c, |_, _, _| unreachable!()),
+            [FAILURE]
+        );
+    }
+
+    #[test]
+    fn a_bound_connection_names_the_host_only_for_a_login_to_that_session() {
+        let host = seeded(1, "legion");
+        let mut c = Connection::default();
+        assert_eq!(
+            answer(
+                &bind(&host, &host, b"sid", false),
+                &[],
+                &mut c,
+                |_, _, _| unreachable!()
+            ),
+            [SUCCESS]
+        );
+        assert_eq!(
+            destination(&mut c, &login(b"sid")).map(|k| k.key_data().clone()),
+            Some(host.public_key().key_data().clone())
+        );
+        // Another session's login, or a commit signature, goes to no host this connection proved
+        assert!(destination(&mut c, &login(b"other")).is_none());
+        let mut sshsig = b"SSHSIG".to_vec();
+        put(&mut sshsig, b"git").unwrap();
+        assert!(destination(&mut c, &sshsig).is_none());
+    }
+
+    #[test]
+    fn a_forged_forwarded_or_second_bind_names_no_host() {
+        let host = seeded(1, "legion");
+        let liar = seeded(2, "evil");
+        let mut forged = Connection::default();
+        let out = answer(
+            &bind(&host, &liar, b"sid", false),
+            &[],
+            &mut forged,
+            |_, _, _| unreachable!(),
+        );
+        assert_eq!(out, [FAILURE]);
+        assert!(destination(&mut forged, &login(b"sid")).is_none());
+
+        let mut forwarded = Connection::default();
+        answer(
+            &bind(&host, &host, b"sid", true),
+            &[],
+            &mut forwarded,
+            |_, _, _| unreachable!(),
+        );
+        assert!(destination(&mut forwarded, &login(b"sid")).is_none());
+
+        let mut chained = Connection::default();
+        answer(
+            &bind(&host, &host, b"sid", false),
+            &[],
+            &mut chained,
+            |_, _, _| unreachable!(),
+        );
+        answer(
+            &bind(&liar, &liar, b"sid2", false),
+            &[],
+            &mut chained,
+            |_, _, _| unreachable!(),
+        );
+        assert!(destination(&mut chained, &login(b"sid")).is_none());
+    }
+
+    #[test]
+    fn a_window_names_one_host_and_lasts_at_most_a_day() {
+        let parsed = parse_windows("[ssh.windows]\nlegion = \"12h\"\nm1 = \"48h\"\n").unwrap();
+        assert_eq!(parsed.hosts["legion"], 12 * 3600);
+        assert_eq!(parsed.hosts["m1"], crate::broker::MAX_GRANT_SECS);
+        assert_eq!(parsed.shown(), "legion 12h, m1 24h");
+        for host in ["\"*\"", "\"*.ts.net\"", "\"a,b\"", "\"!legion\"", "\"\""] {
+            let err = parse_windows(&format!("[ssh.windows]\n{host} = \"1h\"\n")).unwrap_err();
+            assert!(
+                err.to_string().contains("must name one host"),
+                "{host}: {err}"
+            );
+        }
+        let err = parse_windows("[ssh]\nany = true\n").unwrap_err();
+        assert!(err.to_string().contains("unknown key ssh.any"), "{err}");
+        assert!(parse_windows("[ssh.windows]\nlegion = \"soon\"\n").is_err());
+    }
+
+    #[test]
+    fn no_section_opens_no_window_and_an_edit_changes_the_hash() {
+        assert!(parse_windows("").unwrap().hosts.is_empty());
+        assert!(
+            parse_windows("[plugins.windows]\n\"a.b\" = \"1h\"\n")
+                .unwrap()
+                .hosts
+                .is_empty()
+        );
+        let a = parse_windows("[ssh.windows]\nlegion = \"1h\"\n")
+            .unwrap()
+            .hash;
+        assert_eq!(
+            a,
+            parse_windows("[ssh.windows]\nlegion = \"60m\"\n")
+                .unwrap()
+                .hash
+        );
+        assert_ne!(
+            a,
+            parse_windows("[ssh.windows]\nlegion = \"2h\"\n")
+                .unwrap()
+                .hash
+        );
+        assert_ne!(
+            a,
+            parse_windows("[ssh.windows]\nm1 = \"1h\"\n").unwrap().hash
+        );
+    }
+
+    #[test]
+    fn known_hosts_names_a_host_key_and_a_window_lists_it_by_name_or_fingerprint() {
+        let legion = seeded(1, "");
+        let other = seeded(2, "");
+        let line = |names: &str, k: &PrivateKey| {
+            format!("{names} {}\n", k.public_key().to_openssh().unwrap())
+        };
+        let text = [
+            "# a comment\n".to_string(),
+            line("legion,100.64.0.2", &legion),
+            line("[legion.ts.net]:2222", &legion),
+            line("|1|c2FsdA==|aGFzaA==", &legion),
+            line("@cert-authority *", &legion),
+            line("m1", &other),
+        ]
+        .concat();
+        assert_eq!(
+            known_names(&text, legion.public_key()),
+            ["legion", "100.64.0.2", "legion.ts.net"]
+        );
+
+        let windows = parse_windows("[ssh.windows]\nlegion = \"1h\"\n").unwrap();
+        assert_eq!(
+            windows.listed(legion.public_key(), &text),
+            Some(("legion".into(), 3600))
+        );
+        assert!(windows.listed(other.public_key(), &text).is_none());
+        // Without a known_hosts line, a fingerprint names the host key itself
+        let print = other.public_key().fingerprint(HashAlg::Sha256).to_string();
+        let windows = parse_windows(&format!("[ssh.windows]\n\"{print}\" = \"1h\"\n")).unwrap();
+        assert_eq!(windows.listed(other.public_key(), ""), Some((print, 3600)));
+    }
+
+    #[test]
+    fn a_plugin_record_does_not_pass_as_an_ssh_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store {
+            dir: tmp.path().to_path_buf(),
+        };
+        let key = x25519::Identity::generate();
+        crate::plugin::approve(&store, &key, "h").unwrap();
+        std::fs::copy(crate::plugin::approval_path(&store), approval_path(&store)).unwrap();
+        let copied = approved(&store).unwrap();
+        assert!(!copied.verify_for("ssh", &key));
+        approve(&store, &key, "h").unwrap();
+        assert!(approved(&store).unwrap().verify_for("ssh", &key));
     }
 
     #[test]

@@ -273,6 +273,51 @@ struct Broker {
     windows: HashMap<WindowKey, Window>,
     /// The `[plugins.windows]` hash this run verified, set by an approval or a checked record
     approved: Option<String>,
+    // In memory only, so a restart ends every signing window too
+    ssh_windows: HashMap<SshWindowKey, SshWindow>,
+    /// The `[ssh.windows]` hash this run verified, as `approved` is for plugins
+    ssh_approved: Option<String>,
+}
+
+/// The SHA256 fingerprints of the signing key and of the host key it signs logins to
+#[cfg(feature = "host")]
+type SshWindowKey = (String, String);
+
+/// One key opened for one host key. It holds the private key as a token holds its values, so a
+/// signature under it needs no prompt and no store key, which is what a locked screen needs
+#[cfg(feature = "host")]
+struct SshWindow {
+    opened: u64,
+    /// The `[ssh.windows]` name it was opened under, which sets its length on every call
+    host: String,
+    /// The secret the key is stored under, for the audit
+    name: String,
+    private: Box<ssh_key::PrivateKey>,
+}
+
+/* A signing window covers a later login with the same key to the same host key while the approved
+section still lists the name it opened under. Pinned to the host key, so another server that
+claims the name in known_hosts gets a prompt. Split out so it can be tested without a prompt */
+#[cfg(feature = "host")]
+fn ssh_window_open<'a>(
+    windows: &'a HashMap<SshWindowKey, SshWindow>,
+    policy: &crate::ssh::Windows,
+    approved: Option<&str>,
+    key: &SshWindowKey,
+    now: u64,
+) -> Option<&'a SshWindow> {
+    if approved != Some(policy.hash.as_str()) {
+        return None;
+    }
+
+    let window = windows.get(key)?;
+    let secs = policy.hosts.get(&window.host)?;
+    (now < window.opened.saturating_add(*secs)).then_some(window)
+}
+
+#[cfg(feature = "host")]
+fn fingerprint(key: &ssh_key::PublicKey) -> String {
+    key.fingerprint(ssh_key::HashAlg::Sha256).to_string()
 }
 
 /// Caller scope, tool, and the exact call from `Tool::call`
@@ -341,6 +386,8 @@ impl Broker {
             grants: Vec::new(),
             windows: HashMap::new(),
             approved: None,
+            ssh_windows: HashMap::new(),
+            ssh_approved: None,
         }
     }
 
@@ -614,21 +661,82 @@ impl Broker {
         Ok(names.join("\n"))
     }
 
-    // Every signature prompts. The prompt names the key by its comment, since its secret name is
-    // inside the ciphertext the prompt opens, and the store decides which key signs, not the list
+    /* A signature prompts unless a window from `[ssh.windows]` covers this key and host key. The
+    prompt names the key by its comment, since its secret name is inside the ciphertext the prompt
+    opens, and the store decides which key signs, not the list */
     fn sign(
         &mut self,
         wanted: &ssh_key::PublicKey,
         data: &[u8],
+        host: Option<&ssh_key::PublicKey>,
         agent: &str,
         caller: &str,
     ) -> Result<ssh_key::Signature> {
         let label = crate::ssh::label(wanted);
         let slot = format!("ssh:{label}");
         let purpose = crate::ssh::purpose(data);
-        self.ask(&format!("sign {purpose} with SSH key {label} for {agent}"))
+        // A bad section opens no window, it never stops a login
+        let policy = crate::ssh::windows(&self.store).unwrap_or_else(|e| {
+            eprintln!("{} {e:#}", clock());
+            crate::ssh::Windows::default()
+        });
+        let window_key = host.map(|h| (fingerprint(wanted), fingerprint(h)));
+        if let Some(window_key) = &window_key
+            && let Some(window) = ssh_window_open(
+                &self.ssh_windows,
+                &policy,
+                self.ssh_approved.as_deref(),
+                window_key,
+                store::now(),
+            )
+        {
+            let to = format!("to {} {}", window.host, window_key.1);
+            let signed = signature::Signer::try_sign(&*window.private, data);
+            self.audit_by(agent, &window.name, "by window", caller, &to)?;
+            return signed.map_err(|e| anyhow!("could not sign: {e}"));
+        }
+
+        let known = host.map(|_| crate::ssh::known_hosts()).unwrap_or_default();
+        let listed = host.and_then(|h| policy.listed(h, &known));
+        let shown = match (&listed, host) {
+            (Some((name, _)), _) => Some(name.clone()),
+            (None, Some(h)) => crate::ssh::known_names(&known, h).into_iter().next(),
+            (None, None) => None,
+        };
+        let to = shown
+            .as_ref()
+            .map(|n| format!(" to {n}"))
+            .unwrap_or_default();
+        let mut reason = format!("sign {purpose}{to} with SSH key {label} for {agent}");
+        if let Some((name, secs)) = &listed {
+            let span = crate::plugin::span(*secs);
+            reason.push_str(&format!(
+                ", and its logins to {name} for {span} without asking"
+            ));
+        }
+
+        let stored = crate::ssh::approved(&self.store);
+        let changed = listed.is_some() && stored.as_ref().map(|a| &a.hash) != Some(&policy.hash);
+        if changed {
+            reason = format!(
+                "allow SSH windows {} for {agent}, then {reason}",
+                policy.shown()
+            );
+        }
+
+        self.ask(&reason)
             .map_err(|e| self.refused(agent, &[&slot], e, caller))?;
         let key = self.key.clone().expect("just unlocked");
+        // Windows opened under the old section do not carry over to the new one
+        if changed {
+            crate::ssh::approve(&self.store, &key, &policy.hash)?;
+            self.ssh_windows.clear();
+        }
+
+        // A record this broker did not sign is ignored, so a forged one opens nothing
+        let trusted =
+            changed || stored.is_some_and(|a| a.hash == policy.hash && a.verify_for("ssh", &key));
+        self.ssh_approved = trusted.then(|| policy.hash.clone());
         let keys = crate::ssh::keys(&self.store, &key)?;
         crate::ssh::refresh(&self.store, &keys)?;
         let Some((name, private)) = keys
@@ -638,7 +746,26 @@ impl Broker {
             self.audit(&key, agent, &slot, "unknown", caller)?;
             bail!("no SSH key in the store matches {label}");
         };
-        self.audit(&key, agent, name, "signed", caller)?;
+
+        let mut args = match (&shown, &window_key) {
+            (Some(n), Some((_, h))) => format!("to {n} {h}"),
+            (None, Some((_, h))) => format!("to {h}"),
+            _ => String::new(),
+        };
+        if let (true, Some((host_name, secs)), Some(window_key)) = (trusted, &listed, window_key) {
+            args.push_str(&format!(", window {}", crate::plugin::span(*secs)));
+            self.ssh_windows.insert(
+                window_key,
+                SshWindow {
+                    opened: store::now(),
+                    host: host_name.clone(),
+                    name: name.clone(),
+                    private: Box::new(private.clone()),
+                },
+            );
+        }
+        let to = key.to_public();
+        append_audit_to(&self.store, &to, agent, name, "signed", caller, "", &args)?;
         signature::Signer::try_sign(private, data).map_err(|e| anyhow!("could not sign: {e}"))
     }
 
@@ -891,18 +1018,20 @@ fn serve_ssh(listener: UnixListener, shared: std::sync::Arc<Shared>) {
         let shared = std::sync::Arc::clone(&shared);
         std::thread::spawn(move || {
             let pid = peer_pid(&stream);
+            let mut connection = crate::ssh::Connection::default();
             while let Ok(Some(request)) = crate::ssh::read_message(&mut stream) {
                 IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
                 let offered = crate::ssh::offered(&shared.store);
-                let reply = crate::ssh::answer(&request, &offered, |key, data| {
-                    let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
-                    let agent = ssh_requester(&caller);
-                    shared
-                        .broker
-                        .lock()
-                        .expect("broker")
-                        .sign(key, data, &agent, &caller)
-                });
+                let reply =
+                    crate::ssh::answer(&request, &offered, &mut connection, |key, data, host| {
+                        let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
+                        let agent = ssh_requester(&caller);
+                        shared
+                            .broker
+                            .lock()
+                            .expect("broker")
+                            .sign(key, data, host, &agent, &caller)
+                    });
                 LAST_SEEN.store(store::now(), Ordering::Relaxed);
                 IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
                 if crate::ssh::write_message(&mut stream, &reply).is_err() {
@@ -1228,6 +1357,8 @@ impl Broker {
             .expect("tokens")
             .retain(|_, g| now < g.expires);
         self.windows
+            .retain(|_, w| now < w.opened.saturating_add(MAX_GRANT_SECS));
+        self.ssh_windows
             .retain(|_, w| now < w.opened.saturating_add(MAX_GRANT_SECS));
         if self.key.take().is_some() {
             eprintln!("{} idle {idle}s, dropped the key", clock());
@@ -1662,6 +1793,40 @@ mod tests {
         assert_eq!(ssh_requester("unknown"), "ssh");
         // A peer that speaks the protocol itself is named, never hidden behind its parent
         assert_eq!(ssh_requester("evil < node < zsh"), "evil");
+    }
+
+    #[test]
+    fn a_signing_window_covers_its_host_key_until_it_lapses_or_the_section_changes() {
+        let policy = crate::ssh::parse_windows("[ssh.windows]\nlegion = \"1h\"\n").unwrap();
+        let pair = ssh_key::private::Ed25519Keypair::from_seed(&[3; 32]);
+        let private = ssh_key::PrivateKey::new(pair.into(), "").unwrap();
+        let mut windows = HashMap::new();
+        let key = ("key".to_string(), "SHA256:legion".to_string());
+        windows.insert(
+            key.clone(),
+            SshWindow {
+                opened: 1_000,
+                host: "legion".into(),
+                name: "ssh/legion".into(),
+                private: Box::new(private),
+            },
+        );
+        let hash = Some(policy.hash.as_str());
+        let open = |k: &SshWindowKey, approved, now| {
+            ssh_window_open(&windows, &policy, approved, k, now).is_some()
+        };
+        assert!(open(&key, hash, 1_000 + 3_599));
+        assert!(!open(&key, hash, 1_000 + 3_600));
+        // Another host key that claims the name has no window of its own
+        assert!(!open(&("key".into(), "SHA256:evil".into()), hash, 1_001));
+        assert!(!open(&key, None, 1_001));
+        assert!(!open(&key, Some("an older section"), 1_001));
+
+        let dropped = crate::ssh::parse_windows("[ssh.windows]\nm1 = \"1h\"\n").unwrap();
+        assert!(ssh_window_open(&windows, &dropped, Some(&dropped.hash), &key, 1_001).is_none());
+        let shorter = crate::ssh::parse_windows("[ssh.windows]\nlegion = \"10m\"\n").unwrap();
+        assert!(ssh_window_open(&windows, &shorter, Some(&shorter.hash), &key, 1_599).is_some());
+        assert!(ssh_window_open(&windows, &shorter, Some(&shorter.hash), &key, 1_600).is_none());
     }
 
     #[test]

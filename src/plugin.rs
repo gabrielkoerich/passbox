@@ -429,16 +429,20 @@ pub struct Windows {
 impl Windows {
     /// As the approval prompt lists them, such as `things3.logbook 24h, imap.search 1h`
     pub fn shown(&self) -> String {
-        let span = |secs: u64| match secs {
-            s if s % 3600 == 0 => format!("{}h", s / 3600),
-            s if s % 60 == 0 => format!("{}m", s / 60),
-            s => format!("{s}s"),
-        };
         self.tools
             .iter()
             .map(|(tool, secs)| format!("{tool} {}", span(*secs)))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+/// Seconds as config.toml writes them, such as `24h` or `90s`
+pub(crate) fn span(secs: u64) -> String {
+    match secs {
+        s if s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
     }
 }
 
@@ -452,7 +456,7 @@ pub fn windows(store: &Store) -> Result<Windows> {
 }
 
 /// `90s`, `30m` or `24h`
-fn duration(text: &str) -> Result<u64> {
+pub(crate) fn duration(text: &str) -> Result<u64> {
     let refuse = || anyhow!("{text:?} is not a duration such as \"90s\", \"30m\" or \"24h\"");
     let unit = match text.chars().last() {
         Some('s') => 1,
@@ -535,10 +539,11 @@ pub(crate) fn approval_path(store: &Store) -> std::path::PathBuf {
         .join(format!("windows-{}.json", crate::store::hostname()))
 }
 
-fn mac(key: &age::x25519::Identity, hash: &str) -> String {
+/// The domain keeps a record for one section from passing as a record for the other
+fn mac(key: &age::x25519::Identity, domain: &str, hash: &str) -> String {
     use age::secrecy::ExposeSecret;
     let mut digest = Sha256::new();
-    digest.update(b"passbox plugin windows\n");
+    digest.update(format!("passbox {domain} windows\n").as_bytes());
     digest.update(key.to_string().expose_secret().as_bytes());
     digest.update(b"\n");
     digest.update(hash.as_bytes());
@@ -547,20 +552,37 @@ fn mac(key: &age::x25519::Identity, hash: &str) -> String {
 
 /// Read before the prompt to word it, and trusted only once `verify` passes
 pub fn approved(store: &Store) -> Option<Approval> {
-    serde_json::from_slice(&std::fs::read(approval_path(store)).ok()?).ok()
+    approved_at(&approval_path(store))
 }
 
 pub fn approve(store: &Store, key: &age::x25519::Identity, hash: &str) -> Result<()> {
+    approve_at(&approval_path(store), "plugin", key, hash)
+}
+
+pub(crate) fn approved_at(path: &std::path::Path) -> Option<Approval> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+pub(crate) fn approve_at(
+    path: &std::path::Path,
+    domain: &str,
+    key: &age::x25519::Identity,
+    hash: &str,
+) -> Result<()> {
     let record = Approval {
         hash: hash.to_string(),
-        mac: mac(key, hash),
+        mac: mac(key, domain, hash),
     };
-    crate::store::write_private(&approval_path(store), &serde_json::to_vec(&record)?)
+    crate::store::write_private(path, &serde_json::to_vec(&record)?)
 }
 
 impl Approval {
     pub fn verify(&self, key: &age::x25519::Identity) -> bool {
-        self.mac == mac(key, &self.hash)
+        self.verify_for("plugin", key)
+    }
+
+    pub(crate) fn verify_for(&self, domain: &str, key: &age::x25519::Identity) -> bool {
+        self.mac == mac(key, domain, &self.hash)
     }
 }
 
