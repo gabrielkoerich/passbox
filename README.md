@@ -116,19 +116,20 @@ The first login to a listed host prompts, such as "sign an SSH login as gb to le
 ### Coming from pass
 
 ```bash
-passbox import-pass              # everything
-passbox import-pass acme        # one namespace
-passbox import-pass acme/token  # one entry
+passbox import pass                        # everything
+passbox import pass acme                   # one namespace
+passbox import pass acme/token             # one entry
+passbox import pass acme --prefix old --dry-run
 ```
 
-passbox decrypts each entry through GPG and re-encrypts it to the store key. It keeps the whole body, so the `key: value` lines many pass entries carry under the password survive. It skips entries already in the store, and it changes or removes nothing in `pass`.
+passbox decrypts each entry through GPG and re-encrypts it to the store key. It keeps the whole body, so the `key: value` lines many pass entries carry under the password survive. It refuses entries already in the store, and it changes or removes nothing in `pass`. `--prefix` puts every name under one namespace, and `--dry-run` lists what each entry would become and writes nothing.
 
 ### Coming from 1Password
 
 ```bash
-passbox import-1password --dry-run           # what each item becomes, no values
-passbox import-1password                     # every vault
-passbox import-1password --vault Work --prefix 1p
+passbox import 1password --dry-run          # what each item becomes, no values
+passbox import 1password                    # every vault
+passbox import 1password Work --prefix 1p   # one vault
 ```
 
 It reads through the `op` CLI, so sign in with `op signin` first and passbox never sees the 1Password account password. Each item becomes `<vault>/<title>`, lowercased with spaces and punctuation made `-`, and `--prefix` puts every name under one namespace. Values go from `op` to the store inside the passbox process and are never printed or written to a file. One approval covers the whole import.
@@ -405,7 +406,7 @@ passbox git init
 passbox git remote add origin git@github.com:you/passbox-store.git
 ```
 
-After that every write commits on its own, the way `pass` does: `add`, `rm`, `restore`, `import-pass` and `yubikey-add`. Once the repo has a remote, every write also pushes, so no change lives on this Mac alone. A failed push warns and the write still succeeds. Nothing happens until you run `git init`.
+After that every write commits on its own, the way `pass` does: `add`, `rm`, `restore`, `import` and `yubikey-add`. Once the repo has a remote, every write also pushes, so no change lives on this Mac alone. A failed push warns and the write still succeeds. Nothing happens until you run `git init`.
 
 A second Mac clones instead of running `git init`, so both share one history: `git clone <remote> ~/.passbox`, then `passbox machine add`. `passbox git pull` fetches the other Mac's writes.
 
@@ -812,7 +813,7 @@ cargo test secure_enclave_round_trip -- --ignored   # the real Enclave, needs a 
 
 ### Fields in one entry
 
-An entry can hold more than a password. The first line is the secret, later `key: value` lines are fields, which is the layout `pass` uses and `import-pass` keeps.
+An entry can hold more than a password. The first line is the secret, later `key: value` lines are fields, which is the layout `pass` uses and `import pass` keeps.
 
 ```bash
 passbox get db/prod                   # the whole thing

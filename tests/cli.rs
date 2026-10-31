@@ -739,40 +739,16 @@ the import has to keep the whole body rather than the first line. */
 #[test]
 fn importing_from_pass_keeps_the_whole_entry() {
     let cli = Cli::new();
-    let fake = tempfile::tempdir().unwrap();
-    let store = tempfile::tempdir().unwrap();
+    let pass = FakePass::new(
+        &["bean/hl-mainnet-pk", "bean/fred-api-key", "beanstalk/other"],
+        "topsecret\\nlogin: gb\\nurl: https://example.com",
+    );
 
-    for name in ["bean/hl-mainnet-pk", "bean/fred-api-key", "beanstalk/other"] {
-        let path = store.path().join(format!("{name}.gpg"));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"x").unwrap();
-    }
-
-    let shim = fake.path().join("pass");
-    std::fs::write(
-        &shim,
-        "#!/bin/sh\nprintf 'topsecret\\nlogin: gb\\nurl: https://example.com'\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-
-    let out = cli
-        .cmd(PASSPHRASE)
-        .env("PASSWORD_STORE_DIR", store.path())
-        .env(
-            "PATH",
-            format!(
-                "{}:{}",
-                fake.path().display(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        )
-        .args(["import-pass", "bean"])
-        .output()
-        .unwrap();
-    let note = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{note}");
-    assert!(note.contains("importing 2 of 3"), "{note}");
+    let note = pass.import(&cli, &["bean"]);
+    assert!(
+        note.contains("imported 2, skipped 0, refused 0 already there"),
+        "{note}"
+    );
 
     // The namespace filter must not have dragged in beanstalk
     assert_eq!(
@@ -787,35 +763,87 @@ fn importing_from_pass_keeps_the_whole_entry() {
 #[test]
 fn importing_twice_skips_what_is_already_there() {
     let cli = Cli::new();
-    let fake = tempfile::tempdir().unwrap();
-    let store = tempfile::tempdir().unwrap();
-    std::fs::write(store.path().join("solo.gpg"), b"x").unwrap();
+    let pass = FakePass::new(&["solo"], "value");
 
-    let shim = fake.path().join("pass");
-    std::fs::write(&shim, "#!/bin/sh\nprintf 'value'\n").unwrap();
-    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let first = pass.import(&cli, &[]);
+    assert!(
+        first.contains("imported 1, skipped 0, refused 0 already there"),
+        "{first}"
+    );
+    let second = pass.import(&cli, &[]);
+    assert!(
+        second.contains("refused solo, already in the store"),
+        "{second}"
+    );
+    assert!(
+        second.contains("imported 0, skipped 0, refused 1 already there"),
+        "{second}"
+    );
+}
 
-    let run = || {
+/// A dry run names what each entry would become and writes nothing, and a prefix moves every name
+#[test]
+fn importing_from_pass_takes_a_prefix_and_a_dry_run() {
+    let cli = Cli::new();
+    let pass = FakePass::new(&["bean/key", "other"], "v");
+
+    let dry = pass.import(&cli, &["bean", "--prefix", "old/", "--dry-run"]);
+    assert!(dry.contains("bean/key -> old/bean/key"), "{dry}");
+    assert!(
+        dry.contains("would import 1, skipped 0, refused 0 already there"),
+        "{dry}"
+    );
+    assert_eq!(cli.run(&["ls"], None).unwrap(), "");
+
+    pass.import(&cli, &["--prefix", "old"]);
+    assert_eq!(cli.run(&["ls"], None).unwrap(), "old/bean/key\nold/other\n");
+}
+
+/// A pass store with these entries, and a `pass` on PATH that shows `body` for any of them
+struct FakePass {
+    store: tempfile::TempDir,
+    bin: tempfile::TempDir,
+}
+
+impl FakePass {
+    fn new(names: &[&str], body: &str) -> Self {
+        let pass = FakePass {
+            store: tempfile::tempdir().unwrap(),
+            bin: tempfile::tempdir().unwrap(),
+        };
+        for name in names {
+            let path = pass.store.path().join(format!("{name}.gpg"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"x").unwrap();
+        }
+        let shim = pass.bin.path().join("pass");
+        std::fs::write(&shim, format!("#!/bin/sh\nprintf '{body}'\n")).unwrap();
+        std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        pass
+    }
+
+    /// `passbox import pass` with these arguments, which must succeed, and what it printed
+    fn import(&self, cli: &Cli, args: &[&str]) -> String {
         let out = cli
             .cmd(PASSPHRASE)
-            .env("PASSWORD_STORE_DIR", store.path())
+            .env("PASSWORD_STORE_DIR", self.store.path())
             .env(
                 "PATH",
                 format!(
                     "{}:{}",
-                    fake.path().display(),
+                    self.bin.path().display(),
                     std::env::var("PATH").unwrap_or_default()
                 ),
             )
-            .arg("import-pass")
+            .args(["import", "pass"])
+            .args(args)
             .output()
             .unwrap();
-        String::from_utf8_lossy(&out.stderr).to_string()
-    };
-
-    assert!(run().contains("imported 1, skipped 0"));
-    let second = run();
-    assert!(second.contains("imported 0, skipped 1"), "{second}");
+        let note = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{note}");
+        note
+    }
 }
 
 #[test]
@@ -3041,7 +3069,7 @@ fn import_1password(cli: &Cli, fake: &tempfile::TempDir, args: &[&str]) -> Strin
                 std::env::var("PATH").unwrap_or_default()
             ),
         )
-        .arg("import-1password")
+        .args(["import", "1password"])
         .args(args)
         .output()
         .unwrap();
@@ -3073,7 +3101,7 @@ fn importing_from_1password_maps_each_item_and_says_why_it_skipped() {
     assert!(!dry.contains("hunter2"), "a dry run printed a value: {dry}");
     assert_eq!(cli.run(&["ls"], None).unwrap(), "");
 
-    let out = import_1password(&cli, &fake, &["--vault", "personal"]);
+    let out = import_1password(&cli, &fake, &["personal"]);
     assert!(
         out.contains("TOTP seed, passbox has no TOTP support"),
         "{out}"

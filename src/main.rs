@@ -13,8 +13,6 @@ mod crypto;
 mod import;
 mod mcp;
 #[cfg(feature = "host")]
-mod onepassword;
-#[cfg(feature = "host")]
 mod plugin;
 #[cfg(feature = "host")]
 mod project;
@@ -43,7 +41,7 @@ use clap::{Parser, Subcommand};
 use cmd::exec::exec;
 use cmd::git::{git, written};
 #[cfg(feature = "host")]
-use cmd::imports::{import_1password, import_pass};
+use cmd::imports::{Manager, import};
 use cmd::plugins::plugin_cmd;
 #[cfg(feature = "host")]
 use cmd::secrets::audit;
@@ -52,6 +50,8 @@ use cmd::setup::init;
 #[cfg(feature = "host")]
 use cmd::setup::{enable_sync, machine_add, run_sync, yubikey_add};
 use credentials::{held_passphrase, take_credentials, take_stdin_token};
+#[cfg(feature = "host")]
+use import::Mode;
 use secrecy::SecretString;
 use std::alloc::{GlobalAlloc, Layout, System};
 use store::Store;
@@ -183,22 +183,17 @@ enum Command {
         enable: bool,
     },
     #[cfg(feature = "host")]
-    /// Copy entries across from `pass`, all of them or one namespace
-    ImportPass {
-        /// A namespace such as `acme`, or one entry. Everything, if omitted.
-        prefix: Option<String>,
-    },
-    #[cfg(feature = "host")]
-    /// Copy items across from 1Password through the signed-in `op` CLI, as `<vault>/<title>`
-    #[command(name = "import-1password")]
-    Import1password {
-        /// One vault, by name or id. Every vault, if omitted.
-        #[arg(long)]
-        vault: Option<String>,
+    /// Copy secrets across from pass, or from 1Password through its signed-in `op` CLI
+    Import {
+        /// Where the secrets come from
+        manager: Manager,
+        /// For pass a namespace such as `acme` or one entry, for 1password one vault by name or
+        /// id. Everything, if omitted
+        from: Option<String>,
         /// Put every name under this namespace, such as `1p`
         #[arg(long)]
         prefix: Option<String>,
-        /// List each item, its new name and why it would be skipped, with no values, and write nothing
+        /// List each entry, its new name and why it would be skipped, with no values, and write nothing
         #[arg(long)]
         dry_run: bool,
     },
@@ -376,23 +371,16 @@ fn run() -> Result<()> {
             run_sync(&store, remote.as_deref())
         }
         #[cfg(feature = "host")]
-        Command::ImportPass { prefix } => {
-            import_pass(&store, prefix.as_deref()).inspect(|()| written(&store, "import from pass"))
-        }
-        #[cfg(feature = "host")]
-        Command::Import1password {
-            vault,
+        Command::Import {
+            manager,
+            from,
             prefix,
             dry_run,
         } => {
-            let options = onepassword::Options {
-                vault: vault.as_deref(),
-                prefix: prefix.as_deref(),
-                dry_run,
-            };
-            import_1password(&store, &options).inspect(|()| {
-                if !dry_run {
-                    written(&store, "import from 1Password");
+            let mode = if dry_run { Mode::DryRun } else { Mode::Write };
+            import(&store, manager, from.as_deref(), prefix.as_deref(), mode).inspect(|()| {
+                if mode == Mode::Write {
+                    written(&store, "import from another password manager");
                 }
             })
         }
