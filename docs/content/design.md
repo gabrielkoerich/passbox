@@ -234,6 +234,14 @@ An entry holds a first line and then `key: value` lines, which is what `pass` us
 
 Rejected: a structured payload with typed fields. It would change the file format, need a migration for every entry already imported, and buy nothing the convention does not already carry. The parse is fifteen lines and works on stores written before it existed.
 
+## 1Password import goes through `op`
+
+`import-1password` runs the user's signed-in `op` CLI and maps each item into the first-line and `key: value` layout above. A secure note, a document and an SSH key go in as blobs, so their text is never parsed as fields. The values stay in the passbox process, and the name check needs one unlock for the whole run.
+
+Rejected: reading a 1Password export file (`.1pux`). It is an unencrypted archive of every secret, written to disk by the user, which is the file this import exists to avoid.
+
+Cost: one `op item get` per item, so a large account takes a while. TOTP seeds and multi-line fields are not imported, and the report names each one.
+
 ## Testing the broker
 
 Every read on an Enclave store needs a finger, so the broker path was untested end to end. The `mock-enclave` feature swaps the Swift helper for `src/bin/fake-enclave.rs`, which speaks the same commands over the same JSON, prompts nobody, and logs each prompt a person would have seen. The tests run a real broker against it and count the prompts. `PASSBOX_NO_ENCLAVE`, which the tests and CI always set, refuses the real helper, so no test can reach a developer's fingerprint.

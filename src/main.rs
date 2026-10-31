@@ -4,6 +4,8 @@ mod crypto;
 mod import;
 mod mcp;
 #[cfg(feature = "host")]
+mod onepassword;
+#[cfg(feature = "host")]
 mod plugin;
 #[cfg(feature = "host")]
 mod project;
@@ -275,6 +277,20 @@ enum Command {
         /// A namespace such as `acme`, or one entry. Everything, if omitted.
         prefix: Option<String>,
     },
+    #[cfg(feature = "host")]
+    /// Copy items across from 1Password through the signed-in `op` CLI, as `<vault>/<title>`
+    #[command(name = "import-1password")]
+    Import1password {
+        /// One vault, by name or id. Every vault, if omitted.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Put every name under this namespace, such as `1p`
+        #[arg(long)]
+        prefix: Option<String>,
+        /// List each item, its new name and why it would be skipped, with no values, and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Install, list, remove and run plugins, such as mail and things3
     Plugin {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
@@ -389,6 +405,23 @@ fn run() -> Result<()> {
         #[cfg(feature = "host")]
         Command::ImportPass { prefix } => {
             import_pass(&store, prefix.as_deref()).inspect(|()| written(&store, "import from pass"))
+        }
+        #[cfg(feature = "host")]
+        Command::Import1password {
+            vault,
+            prefix,
+            dry_run,
+        } => {
+            let options = onepassword::Options {
+                vault: vault.as_deref(),
+                prefix: prefix.as_deref(),
+                dry_run,
+            };
+            import_1password(&store, &options).inspect(|()| {
+                if !dry_run {
+                    written(&store, "import from 1Password")
+                }
+            })
         }
         Command::Plugin { args } => plugin_cmd(&store, &args),
         Command::Mcp => mcp::serve(store),
@@ -1210,6 +1243,50 @@ fn import_pass(store: &Store, prefix: Option<&str>) -> Result<()> {
 
     let report = import::import(store, &picked, key.as_ref())?;
     eprintln!("imported {}, skipped {}", report.imported, report.skipped);
+    Ok(())
+}
+
+#[cfg(feature = "host")]
+fn import_1password(store: &Store, options: &onepassword::Options) -> Result<()> {
+    // One approval covers the whole import, it only reads the names to refuse a duplicate
+    let key = if store.ids()?.is_empty() {
+        None
+    } else {
+        Some(unlock(store, "import items from 1Password")?)
+    };
+    let report = onepassword::import(store, options, key.as_ref())?;
+
+    let (mut imported, mut exists, mut skipped) = (0, Vec::new(), 0);
+    for line in &report {
+        match &line.outcome {
+            onepassword::Outcome::Imported(notes) => {
+                imported += 1;
+                if options.dry_run {
+                    eprintln!("{} -> {}", line.item, line.name);
+                }
+                for note in notes {
+                    eprintln!("  {}: {note}", line.name);
+                }
+            }
+            onepassword::Outcome::Skipped(why) => {
+                skipped += 1;
+                eprintln!("skipped {}, {why}", line.item);
+            }
+            onepassword::Outcome::Exists => exists.push(&line.name),
+        }
+    }
+    for name in &exists {
+        eprintln!("refused {name}, already in the store");
+    }
+    let verb = if options.dry_run {
+        "would import"
+    } else {
+        "imported"
+    };
+    eprintln!(
+        "{verb} {imported}, skipped {skipped}, refused {} already there",
+        exists.len()
+    );
     Ok(())
 }
 
