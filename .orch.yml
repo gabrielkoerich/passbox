@@ -1,0 +1,3 @@
+# Project-specific orch config
+gh:
+  repo: "gabrielkoerich/passbox"
