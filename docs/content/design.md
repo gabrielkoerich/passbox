@@ -236,7 +236,7 @@ Rejected: a structured payload with typed fields. It would change the file forma
 
 ## 1Password import goes through `op`
 
-`import-1password` runs the user's signed-in `op` CLI and maps each item into the first-line and `key: value` layout above. The values stay in the passbox process, and the name check needs one unlock for the whole run.
+`import-1password` runs the user's signed-in `op` CLI and maps each item into the first-line and `key: value` layout above. A secure note, a document and an SSH key go in as blobs, so their text is never parsed as fields. The values stay in the passbox process, and the name check needs one unlock for the whole run.
 
 Rejected: reading a 1Password export file (`.1pux`). It is an unencrypted archive of every secret, written to disk by the user, which is the file this import exists to avoid.
 

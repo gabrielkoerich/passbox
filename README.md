@@ -117,9 +117,9 @@ It reads through the `op` CLI, so sign in with `op signin` first and passbox nev
 | 1Password | passbox |
 |---|---|
 | Login, password, and any item with a concealed field | the password on the first line, the username, URLs and other fields as `key: value` lines, then the notes |
-| Secure note | its text, kept whole |
-| Document | its text, or skipped when it is binary |
-| SSH key | the OpenSSH key, which the agent offers when it is unencrypted Ed25519 or P-256, otherwise skipped |
+| Secure note | its text, as a blob |
+| Document | its text as a blob, or skipped when it is binary |
+| SSH key | the OpenSSH key as a blob, which the agent offers when it is unencrypted Ed25519 or P-256, otherwise skipped |
 | One-time password | skipped, passbox has no TOTP support |
 | A field with more than one line | skipped |
 
