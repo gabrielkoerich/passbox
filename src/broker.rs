@@ -1,7 +1,11 @@
 //! Decides who may open a secret, holds the approval windows, and writes the audit log.
 
 #[cfg(feature = "host")]
+use crate::plugin;
+#[cfg(feature = "host")]
 use crate::project::{self, Grant};
+#[cfg(feature = "host")]
+use crate::ssh;
 #[cfg(feature = "host")]
 use crate::store;
 use crate::store::Store;
@@ -301,7 +305,7 @@ claims the name in known_hosts gets a prompt. Split out so it can be tested with
 #[cfg(feature = "host")]
 fn ssh_window_open<'a>(
     windows: &'a HashMap<SshWindowKey, SshWindow>,
-    policy: &crate::ssh::Windows,
+    policy: &ssh::Windows,
     approved: Option<&str>,
     key: &SshWindowKey,
     now: u64,
@@ -341,7 +345,7 @@ shortened window ends sooner. Split out so scope and expiry can be tested withou
 #[cfg(feature = "host")]
 fn window_open<'a>(
     windows: &'a HashMap<WindowKey, Window>,
-    policy: &crate::plugin::Windows,
+    policy: &plugin::Windows,
     approved: Option<&str>,
     scope: &str,
     tool: &str,
@@ -508,7 +512,7 @@ impl Broker {
         request: &Request,
         caller: &str,
         scope: &str,
-        manifest: &crate::plugin::Manifest,
+        manifest: &plugin::Manifest,
         bound: &HashMap<String, String>,
     ) -> Result<Option<String>> {
         let secret = manifest.stdin.as_deref();
@@ -519,7 +523,7 @@ impl Broker {
             .ok_or_else(|| anyhow!("{} has no action {}", request.name, request.action))?;
         let tool = format!("{}.{}", request.name, request.action);
         let slot = format!("plugin:{tool}");
-        let policy = crate::plugin::windows(&self.store)?;
+        let policy = plugin::windows(&self.store)?;
         if let Some(window) = window_open(
             &self.windows,
             &policy,
@@ -534,7 +538,7 @@ impl Broker {
             return Ok(held);
         }
 
-        let stored = crate::plugin::approved(&self.store);
+        let stored = plugin::approved(&self.store);
         let changed =
             !policy.tools.is_empty() && stored.as_ref().map(|a| &a.hash) != Some(&policy.hash);
         let reason = if changed {
@@ -553,7 +557,7 @@ impl Broker {
         let key = self.key.clone().expect("just unlocked");
         // Windows opened under the old section do not carry over to the new one
         if changed {
-            crate::plugin::approve(&self.store, &key, &policy.hash)?;
+            plugin::approve(&self.store, &key, &policy.hash)?;
             self.windows.clear();
         }
         // A record this broker did not sign is ignored, so a forged one opens nothing
@@ -564,7 +568,7 @@ impl Broker {
         let value = match secret {
             Some(name) => match self.store.find(name, &key)? {
                 Some((_, entry)) => Some(entry.value.clone()),
-                None => return Err(crate::plugin::missing(&request.name, name)),
+                None => return Err(plugin::missing(&request.name, name)),
             },
             None => None,
         };
@@ -586,7 +590,7 @@ impl Broker {
     does not. */
     #[cfg(feature = "host")]
     fn handle_plugin(&mut self, request: &Request, caller: &str, scope: &str) -> Result<String> {
-        let manifest = crate::plugin::load(&self.store, &request.name)?;
+        let manifest = plugin::load(&self.store, &request.name)?;
         if manifest.stdin.is_some() {
             return self.handle_fed_plugin(request, caller, scope);
         }
@@ -629,7 +633,7 @@ impl Broker {
 
         let bound: HashMap<String, String> = request.params.iter().cloned().collect();
         let (manifest, command) =
-            crate::plugin::fed_command(&self.store, &request.name, &request.action, &bound)?;
+            plugin::fed_command(&self.store, &request.name, &request.action, &bound)?;
         let secret = manifest
             .stdin
             .as_deref()
@@ -643,7 +647,7 @@ impl Broker {
             .unwrap_or_default();
         self.audit_by(&request.agent, secret, "released", caller, &args)?;
         // The output crosses the socket or the tailnet, so it is scrubbed on the way out
-        crate::plugin::run_fed(command, &value)
+        plugin::run_fed(command, &value)
     }
 
     /// Names are inside the ciphertext, so listing needs the key and therefore a prompt.
@@ -655,7 +659,7 @@ impl Broker {
         self.audit(&key, &request.agent, "<list>", "approved", caller)?;
         let names = self.store.names(&key)?;
         // A key synced from another Mac is offered once something here has opened the store
-        if let Err(e) = crate::ssh::rebuild(&self.store, &key) {
+        if let Err(e) = ssh::rebuild(&self.store, &key) {
             eprintln!("{} could not refresh the SSH keys: {e:#}", clock());
         }
         Ok(names.join("\n"))
@@ -672,13 +676,13 @@ impl Broker {
         agent: &str,
         caller: &str,
     ) -> Result<ssh_key::Signature> {
-        let label = crate::ssh::label(wanted);
+        let label = ssh::label(wanted);
         let slot = format!("ssh:{label}");
-        let purpose = crate::ssh::purpose(data);
+        let purpose = ssh::purpose(data);
         // A bad section opens no window, it never stops a login
-        let policy = crate::ssh::windows(&self.store).unwrap_or_else(|e| {
+        let policy = ssh::windows(&self.store).unwrap_or_else(|e| {
             eprintln!("{} {e:#}", clock());
-            crate::ssh::Windows::default()
+            ssh::Windows::default()
         });
         let window_key = host.map(|h| (fingerprint(wanted), fingerprint(h)));
         if let Some(window_key) = &window_key
@@ -696,11 +700,11 @@ impl Broker {
             return signed.map_err(|e| anyhow!("could not sign: {e}"));
         }
 
-        let known = host.map(|_| crate::ssh::known_hosts()).unwrap_or_default();
+        let known = host.map(|_| ssh::known_hosts()).unwrap_or_default();
         let listed = host.and_then(|h| policy.listed(h, &known));
         let shown = match (&listed, host) {
             (Some((name, _)), _) => Some(name.clone()),
-            (None, Some(h)) => crate::ssh::known_names(&known, h).into_iter().next(),
+            (None, Some(h)) => ssh::known_names(&known, h).into_iter().next(),
             (None, None) => None,
         };
         let to = shown
@@ -709,14 +713,21 @@ impl Broker {
             .unwrap_or_default();
         let mut reason = format!("sign {purpose}{to} with SSH key {label} for {agent}");
         if let Some((name, secs)) = &listed {
-            let span = crate::plugin::span(*secs);
+            let span = plugin::span(*secs);
             reason.push_str(&format!(
                 ", and its logins to {name} for {span} without asking"
             ));
         }
 
-        let stored = crate::ssh::approved(&self.store);
-        let changed = listed.is_some() && stored.as_ref().map(|a| &a.hash) != Some(&policy.hash);
+        let stored = ssh::approved(&self.store);
+        // The prompt promises a window, so a record not yet checked against the store key is asked for again
+        let verified = self.ssh_approved.as_deref() == Some(policy.hash.as_str())
+            || self.key.as_deref().is_some_and(|k| {
+                stored
+                    .as_ref()
+                    .is_some_and(|a| a.hash == policy.hash && a.verify_for("ssh", k))
+            });
+        let changed = listed.is_some() && !verified;
         if changed {
             reason = format!(
                 "allow SSH windows {} for {agent}, then {reason}",
@@ -729,16 +740,17 @@ impl Broker {
         let key = self.key.clone().expect("just unlocked");
         // Windows opened under the old section do not carry over to the new one
         if changed {
-            crate::ssh::approve(&self.store, &key, &policy.hash)?;
+            ssh::approve(&self.store, &key, &policy.hash)?;
             self.ssh_windows.clear();
         }
 
         // A record this broker did not sign is ignored, so a forged one opens nothing
-        let trusted =
-            changed || stored.is_some_and(|a| a.hash == policy.hash && a.verify_for("ssh", &key));
+        let trusted = changed
+            || verified
+            || stored.is_some_and(|a| a.hash == policy.hash && a.verify_for("ssh", &key));
         self.ssh_approved = trusted.then(|| policy.hash.clone());
-        let keys = crate::ssh::keys(&self.store, &key)?;
-        crate::ssh::refresh(&self.store, &keys)?;
+        let keys = ssh::keys(&self.store, &key)?;
+        ssh::refresh(&self.store, &keys)?;
         let Some((name, private)) = keys
             .iter()
             .find(|(_, k)| k.public_key().key_data() == wanted.key_data())
@@ -753,7 +765,7 @@ impl Broker {
             _ => String::new(),
         };
         if let (true, Some((host_name, secs)), Some(window_key)) = (trusted, &listed, window_key) {
-            args.push_str(&format!(", window {}", crate::plugin::span(*secs)));
+            args.push_str(&format!(", window {}", plugin::span(*secs)));
             self.ssh_windows.insert(
                 window_key,
                 SshWindow {
@@ -1018,23 +1030,22 @@ fn serve_ssh(listener: UnixListener, shared: std::sync::Arc<Shared>) {
         let shared = std::sync::Arc::clone(&shared);
         std::thread::spawn(move || {
             let pid = peer_pid(&stream);
-            let mut connection = crate::ssh::Connection::default();
-            while let Ok(Some(request)) = crate::ssh::read_message(&mut stream) {
+            let mut connection = ssh::Connection::default();
+            while let Ok(Some(request)) = ssh::read_message(&mut stream) {
                 IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
-                let offered = crate::ssh::offered(&shared.store);
-                let reply =
-                    crate::ssh::answer(&request, &offered, &mut connection, |key, data, host| {
-                        let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
-                        let agent = ssh_requester(&caller);
-                        shared
-                            .broker
-                            .lock()
-                            .expect("broker")
-                            .sign(key, data, host, &agent, &caller)
-                    });
+                let offered = ssh::offered(&shared.store);
+                let reply = ssh::answer(&request, &offered, &mut connection, |key, data, host| {
+                    let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
+                    let agent = ssh_requester(&caller);
+                    shared
+                        .broker
+                        .lock()
+                        .expect("broker")
+                        .sign(key, data, host, &agent, &caller)
+                });
                 LAST_SEEN.store(store::now(), Ordering::Relaxed);
                 IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
-                if crate::ssh::write_message(&mut stream, &reply).is_err() {
+                if ssh::write_message(&mut stream, &reply).is_err() {
                     break;
                 }
             }
@@ -1720,7 +1731,7 @@ fn run_plugin_command(mut command: std::process::Command) -> Result<String> {
     let out = command
         .output()
         .context("could not run the plugin command")?;
-    Ok(crate::plugin::render(&out))
+    Ok(plugin::render(&out))
 }
 
 #[cfg(all(test, feature = "host"))]
@@ -1797,7 +1808,7 @@ mod tests {
 
     #[test]
     fn a_signing_window_covers_its_host_key_until_it_lapses_or_the_section_changes() {
-        let policy = crate::ssh::parse_windows("[ssh.windows]\nlegion = \"1h\"\n").unwrap();
+        let policy = ssh::parse_windows("[ssh.windows]\nlegion = \"1h\"\n").unwrap();
         let pair = ssh_key::private::Ed25519Keypair::from_seed(&[3; 32]);
         let private = ssh_key::PrivateKey::new(pair.into(), "").unwrap();
         let mut windows = HashMap::new();
@@ -1822,9 +1833,9 @@ mod tests {
         assert!(!open(&key, None, 1_001));
         assert!(!open(&key, Some("an older section"), 1_001));
 
-        let dropped = crate::ssh::parse_windows("[ssh.windows]\nm1 = \"1h\"\n").unwrap();
+        let dropped = ssh::parse_windows("[ssh.windows]\nm1 = \"1h\"\n").unwrap();
         assert!(ssh_window_open(&windows, &dropped, Some(&dropped.hash), &key, 1_001).is_none());
-        let shorter = crate::ssh::parse_windows("[ssh.windows]\nlegion = \"10m\"\n").unwrap();
+        let shorter = ssh::parse_windows("[ssh.windows]\nlegion = \"10m\"\n").unwrap();
         assert!(ssh_window_open(&windows, &shorter, Some(&shorter.hash), &key, 1_599).is_some());
         assert!(ssh_window_open(&windows, &shorter, Some(&shorter.hash), &key, 1_600).is_none());
     }
@@ -2044,8 +2055,8 @@ mod tests {
         );
     }
 
-    fn policy(tool: &str, secs: u64) -> crate::plugin::Windows {
-        crate::plugin::Windows {
+    fn policy(tool: &str, secs: u64) -> plugin::Windows {
+        plugin::Windows {
             tools: [(tool.to_string(), secs)].into(),
             hash: "approved".into(),
         }
@@ -2065,7 +2076,7 @@ mod tests {
     fn a_window_covers_its_tool_until_it_ends() {
         let windows = opened("local", "things3.logbook", 1_000);
         let full = policy("things3.logbook", 60);
-        let open = |policy: &crate::plugin::Windows, tool: &str, now| {
+        let open = |policy: &plugin::Windows, tool: &str, now| {
             window_open(
                 &windows,
                 policy,
@@ -2184,7 +2195,7 @@ mod tests {
             );
             assert!(found.is_none(), "{approved:?}");
         }
-        let emptied = crate::plugin::Windows {
+        let emptied = plugin::Windows {
             tools: Default::default(),
             hash: "approved".into(),
         };

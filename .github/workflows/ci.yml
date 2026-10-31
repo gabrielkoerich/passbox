@@ -1,9 +1,7 @@
 name: CI
 
 on:
-  # PRs and branches are checked by shipcheck on the author's machine (shipcheck.toml), GitHub runs main only
   push:
-    branches: [main]
     # paths-ignore:
     #   - 'docs/**'
     #   - '**/*.md'
