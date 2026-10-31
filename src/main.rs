@@ -622,9 +622,14 @@ struct SecretFiles {
 
 impl SecretFiles {
     fn new() -> Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
         let dir = std::env::temp_dir().join(format!("passbox-{}", store::new_id()));
-        store::private_dir(&dir)?;
+        std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
         Ok(SecretFiles { dir })
+    }
+
+    fn is_empty(&self) -> bool {
+        std::fs::read_dir(&self.dir).is_ok_and(|mut d| d.next().is_none())
     }
 
     fn write(&self, index: usize, value: &str) -> Result<std::path::PathBuf> {
@@ -710,6 +715,20 @@ fn exec(
     } else {
         std::process::Stdio::inherit()
     });
+
+    // A handler, not SIG_IGN, because an ignored signal stays ignored in the child. Ctrl-C then
+    // reaches the child alone and this process lives to remove the files
+    if !secret_files.is_empty() {
+        extern "C" fn nothing(_: libc::c_int) {}
+        for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGTERM] {
+            unsafe {
+                libc::signal(
+                    signal,
+                    nothing as extern "C" fn(libc::c_int) as libc::sighandler_t,
+                )
+            };
+        }
+    }
 
     let mut running = child
         .spawn()
