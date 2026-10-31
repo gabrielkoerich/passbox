@@ -7,7 +7,7 @@ broker instead listens on loopback and `tailscale serve` forwards tailnet connec
 caller identity that is verified, so the prompt can say who is really asking. */
 
 /// This machine's tailnet address, or None when Tailscale is not up
-pub fn address() -> Option<std::net::IpAddr> {
+pub(crate) fn address() -> Option<std::net::IpAddr> {
     let out = std::process::Command::new("tailscale")
         .args(["ip", "-4"])
         .output()
@@ -27,7 +27,7 @@ pub fn address() -> Option<std::net::IpAddr> {
 
 `tailscale whois` prints `Machine:` and `User:` as headers with the values on indented lines
 beneath, so the name is the first `Name:` under each header rather than the header's own text. */
-pub fn whois(peer: std::net::IpAddr) -> Option<String> {
+pub(crate) fn whois(peer: std::net::IpAddr) -> Option<String> {
     let out = std::process::Command::new("tailscale")
         .args(["whois", &peer.to_string()])
         .output()
@@ -83,7 +83,7 @@ fn parse(text: &str) -> Option<(String, Option<String>)> {
 `--proxy-protocol 1` it opens every connection with `PROXY TCP4 <src> <dst> <sport> <dport>`,
 and the source is the tailnet node. The header is required: if it were optional, a client could
 send its own and name any host. Read a byte at a time so nothing past the header is consumed */
-pub fn proxied_peer(stream: &mut impl std::io::Read) -> Option<std::net::IpAddr> {
+pub(crate) fn proxied_peer(stream: &mut impl std::io::Read) -> Option<std::net::IpAddr> {
     // A v1 header is at most 107 bytes with its CRLF
     let mut line = Vec::with_capacity(107);
     let mut byte = [0u8];

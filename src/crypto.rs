@@ -1,5 +1,6 @@
 //! age encryption, including plugin identities such as Secure Enclave and YubiKey.
 
+use age::x25519;
 use age::{Decryptor, Encryptor, Identity, Recipient};
 use anyhow::{Result, anyhow};
 use std::io::{Read, Write};
@@ -7,7 +8,10 @@ use zeroize::Zeroizing;
 
 /// Encrypt to every recipient. One recipient failing to wrap is fatal, a store
 /// that silently drops its recovery key is worse than no store.
-pub fn encrypt(plaintext: &[u8], recipients: &[Box<dyn Recipient + Send>]) -> Result<Vec<u8>> {
+pub(crate) fn encrypt(
+    plaintext: &[u8],
+    recipients: &[Box<dyn Recipient + Send>],
+) -> Result<Vec<u8>> {
     if recipients.is_empty() {
         return Err(anyhow!(
             "no recipients, refusing to write an unreadable file"
@@ -15,7 +19,7 @@ pub fn encrypt(plaintext: &[u8], recipients: &[Box<dyn Recipient + Send>]) -> Re
     }
     let refs: Vec<&dyn Recipient> = recipients
         .iter()
-        .map(|r| r.as_ref() as &dyn Recipient)
+        .map(|r| -> &dyn Recipient { r.as_ref() })
         .collect();
     let encryptor = Encryptor::with_recipients(refs.into_iter())
         .map_err(|e| anyhow!("could not build encryptor: {e}"))?;
@@ -28,7 +32,7 @@ pub fn encrypt(plaintext: &[u8], recipients: &[Box<dyn Recipient + Send>]) -> Re
 }
 
 /// One record per line, hex rather than armour because age armour spans several lines
-pub fn encrypt_line(plaintext: &[u8], recipient: &age::x25519::Recipient) -> Result<String> {
+pub(crate) fn encrypt_line(plaintext: &[u8], recipient: &x25519::Recipient) -> Result<String> {
     Ok(hex::encode(encrypt(
         plaintext,
         &[Box::new(recipient.clone())],
@@ -36,19 +40,19 @@ pub fn encrypt_line(plaintext: &[u8], recipient: &age::x25519::Recipient) -> Res
 }
 
 #[cfg(feature = "host")]
-pub fn decrypt_line(line: &str, key: &age::x25519::Identity) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn decrypt_line(line: &str, key: &x25519::Identity) -> Result<Zeroizing<Vec<u8>>> {
     let raw = hex::decode(line.trim()).map_err(|e| anyhow!("bad audit line: {e}"))?;
     decrypt(&raw, &[Box::new(key.clone())])
 }
 
 /// Plaintext is never larger than its ciphertext, so the buffer is sized once and never grown,
 /// which would free a copy of the plaintext without wiping it. It wipes itself when dropped
-pub fn decrypt(ciphertext: &[u8], identities: &[Box<dyn Identity>]) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn decrypt(
+    ciphertext: &[u8],
+    identities: &[Box<dyn Identity>],
+) -> Result<Zeroizing<Vec<u8>>> {
     let decryptor = Decryptor::new_buffered(ciphertext)?;
-    let refs: Vec<&dyn Identity> = identities
-        .iter()
-        .map(|i| i.as_ref() as &dyn Identity)
-        .collect();
+    let refs: Vec<&dyn Identity> = identities.iter().map(AsRef::as_ref).collect();
     let mut reader = decryptor.decrypt(refs.into_iter())?;
     let mut out = Zeroizing::new(Vec::with_capacity(ciphertext.len()));
     reader.read_to_end(&mut out)?;
@@ -61,7 +65,7 @@ mod tests {
 
     #[test]
     fn round_trip_x25519() {
-        let id = age::x25519::Identity::generate();
+        let id = x25519::Identity::generate();
         let recipients: Vec<Box<dyn Recipient + Send>> = vec![Box::new(id.to_public())];
         let identities: Vec<Box<dyn Identity>> = vec![Box::new(id)];
 
@@ -78,8 +82,8 @@ mod tests {
 
     #[test]
     fn wrong_identity_fails() {
-        let a = age::x25519::Identity::generate();
-        let b = age::x25519::Identity::generate();
+        let a = x25519::Identity::generate();
+        let b = x25519::Identity::generate();
         let ct = encrypt(b"secret", &[Box::new(a.to_public())]).unwrap();
         assert!(decrypt(&ct, &[Box::new(b)]).is_err());
     }

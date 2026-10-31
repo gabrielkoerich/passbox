@@ -1,3 +1,10 @@
+//! An age password store that asks before an agent reads a secret.
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "a CLI talks on stdout and stderr, and the broker logs to stderr for launchd"
+)]
+
 mod broker;
 mod crypto;
 #[cfg(feature = "host")]
@@ -23,6 +30,7 @@ mod tree;
 #[cfg(feature = "host")]
 mod yubikey;
 
+use age::x25519;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -34,16 +42,19 @@ them without wiping, so wiping at the one place every free goes through catches 
 The default `realloc` frees through `dealloc`, so a buffer that grows is wiped too. */
 struct WipeOnFree<A>(A);
 
+// SAFETY: every block comes from the inner allocator and goes back to it with the same layout
 unsafe impl<A: GlobalAlloc> GlobalAlloc for WipeOnFree<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller's layout contract passes straight through
         unsafe { self.0.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe {
-            std::slice::from_raw_parts_mut(ptr, layout.size()).zeroize();
-            self.0.dealloc(ptr, layout)
-        }
+        // SAFETY: the caller hands back a live block of `layout.size()` bytes that nothing else uses
+        let block = unsafe { std::slice::from_raw_parts_mut(ptr, layout.size()) };
+        block.zeroize();
+        // SAFETY: the block came from the inner allocator with this layout
+        unsafe { self.0.dealloc(ptr, layout) };
     }
 }
 
@@ -58,7 +69,9 @@ const MIN_PASSPHRASE: usize = 12;
 
 // A token opens its grants and the passphrase opens the whole store, so a command passbox runs
 // for someone else inherits neither, or it could print them into a transcript
-pub fn without_credentials(command: &mut std::process::Command) -> &mut std::process::Command {
+pub(crate) fn without_credentials(
+    command: &mut std::process::Command,
+) -> &mut std::process::Command {
     command
         .env_remove("PASSBOX_TOKEN")
         .env_remove(PASSPHRASE_ENV)
@@ -95,23 +108,34 @@ fn take_env(name: &str) -> Option<zeroize::Zeroizing<String>> {
 fn wipe_env_value(name: &str) {
     use zeroize::Zeroize;
     #[cfg(target_os = "macos")]
-    // SAFETY: the C runtime's own pointer to the environment table
-    let mut entry = unsafe { *libc::_NSGetEnviron() };
+    // SAFETY: returns the C runtime's own pointer to its environment pointer
+    let table = unsafe { libc::_NSGetEnviron() };
+    #[cfg(target_os = "macos")]
+    // SAFETY: that pointer is valid for the life of the process
+    let mut entry = unsafe { *table };
     #[cfg(not(target_os = "macos"))]
     // SAFETY: the C runtime's own pointer to the environment table
     let mut entry = unsafe { environ };
     let prefix = format!("{name}=");
 
-    // SAFETY: walks the NUL terminated table and only writes inside the matched entry's value
-    unsafe {
-        while !(*entry).is_null() {
-            let bytes = std::ffi::CStr::from_ptr(*entry).to_bytes();
-            if let Some(value) = bytes.strip_prefix(prefix.as_bytes()) {
-                let start = (*entry).add(prefix.len()).cast::<u8>();
-                std::slice::from_raw_parts_mut(start, value.len()).zeroize();
-            }
-            entry = entry.add(1);
+    // The table is NUL terminated, and only the matched entry's value is written
+    loop {
+        // SAFETY: `entry` stays inside the table, which ends with a null pointer
+        let line = unsafe { *entry };
+        if line.is_null() {
+            break;
         }
+
+        // SAFETY: each entry is a NUL terminated C string
+        let bytes = unsafe { std::ffi::CStr::from_ptr(line) }.to_bytes();
+        if let Some(value) = bytes.strip_prefix(prefix.as_bytes()) {
+            // SAFETY: the prefix is inside the entry, so its end is too
+            let start = unsafe { line.add(prefix.len()) }.cast::<u8>();
+            // SAFETY: the value runs from `start` for `value.len()` bytes inside the entry
+            unsafe { std::slice::from_raw_parts_mut(start, value.len()) }.zeroize();
+        }
+        // SAFETY: this entry was not the terminator, so the next slot is in the table
+        entry = unsafe { entry.add(1) };
     }
 }
 
@@ -123,7 +147,7 @@ unsafe extern "C" {
 static STDIN_TOKEN: std::sync::OnceLock<zeroize::Zeroizing<String>> = std::sync::OnceLock::new();
 
 /// The token this process was started with, held outside the environment. `--token-stdin` wins
-pub fn held_token() -> Option<&'static str> {
+pub(crate) fn held_token() -> Option<&'static str> {
     if let Some(token) = STDIN_TOKEN.get() {
         return Some(token.as_str());
     }
@@ -139,7 +163,7 @@ fn take_stdin_token() -> Result<()> {
     let mut token = zeroize::Zeroizing::new(String::new());
     let mut byte = [0u8; 1];
     while stdin.read(&mut byte)? == 1 && byte[0] != b'\n' {
-        token.push(byte[0] as char);
+        token.push(char::from(byte[0]));
     }
     let token = zeroize::Zeroizing::new(token.trim().to_string());
     if token.is_empty() {
@@ -170,25 +194,7 @@ enum Command {
     /// Create the store, bound to this Mac's Secure Enclave and nothing else
     Init,
     /// Add a secret, reading the value from stdin or a prompt. An existing name is refused
-    Add {
-        name: String,
-        /// After the value, ask for `key: value` fields and notes, one per line
-        #[arg(short, long)]
-        multiline: bool,
-        /// After the value, ask for this field, such as `username`. Repeatable
-        #[arg(long = "field", value_name = "NAME")]
-        fields: Vec<String>,
-        /// Store the whole text, such as a certificate or a JSON key, and never read it as fields.
-        /// At a terminal, paste it and end with Ctrl-D
-        #[arg(long, conflicts_with_all = ["multiline", "fields"])]
-        blob: bool,
-        /// Store this file as a blob
-        #[arg(long, value_name = "PATH", conflicts_with_all = ["multiline", "fields"])]
-        file: Option<std::path::PathBuf>,
-        /// Replace an existing secret. A blob stays a blob
-        #[arg(long)]
-        replace: bool,
-    },
+    Add(AddArgs),
     /// Print a secret
     Get {
         name: String,
@@ -265,7 +271,7 @@ enum Command {
     #[cfg(feature = "host")]
     /// Copy the store to and from another machine through a shared directory
     Sync {
-        /// Directory or rclone remote, default $PASSBOX_REMOTE or the iCloud Drive folder
+        /// Directory or rclone remote, default `$PASSBOX_REMOTE` or the iCloud Drive folder
         #[arg(long)]
         remote: Option<String>,
         /// Create the recovery passphrase that syncing needs, turning sync on
@@ -315,6 +321,52 @@ enum Command {
     Broker,
 }
 
+#[derive(clap::Args)]
+struct AddArgs {
+    name: String,
+    /// After the value, ask for `key: value` fields and notes, one per line
+    #[arg(short, long)]
+    multiline: bool,
+    /// After the value, ask for this field, such as `username`. Repeatable
+    #[arg(long = "field", value_name = "NAME")]
+    fields: Vec<String>,
+    /// Store the whole text, such as a certificate or a JSON key, and never read it as fields.
+    /// At a terminal, paste it and end with Ctrl-D
+    #[arg(long, conflicts_with_all = ["multiline", "fields"])]
+    blob: bool,
+    /// Store this file as a blob
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["multiline", "fields"])]
+    file: Option<std::path::PathBuf>,
+    /// Replace an existing secret. A blob stays a blob
+    #[arg(long)]
+    replace: bool,
+}
+
+impl AddArgs {
+    fn input(&self) -> Input<'_> {
+        match (self.file.as_deref(), self.blob) {
+            (Some(path), _) => Input::File(path),
+            (None, true) => Input::Blob,
+            (None, false) => Input::Fields {
+                names: &self.fields,
+                notes: if self.multiline {
+                    Notes::Ask
+                } else {
+                    Notes::Skip
+                },
+            },
+        }
+    }
+
+    fn existing(&self) -> Existing {
+        if self.replace {
+            Existing::Replace
+        } else {
+            Existing::Refuse
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum SkillAction {
     /// Write the SKILL.md for this version, to ~/.claude/skills/passbox by default
@@ -341,7 +393,7 @@ compile_error!(
  **/
 #[cfg(feature = "mock-enclave")]
 fn refuse_outside_cargo() {
-    let inside = std::env::current_exe().ok().is_some_and(|exe| {
+    let inside = std::env::current_exe().is_ok_and(|exe| {
         exe.ancestors()
             .any(|dir| dir.join("CACHEDIR.TAG").is_file())
     });
@@ -374,23 +426,8 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Init => init(&store),
-        Command::Add {
-            name,
-            multiline,
-            fields,
-            blob,
-            file,
-            replace,
-        } => add(
-            &store,
-            &name,
-            multiline,
-            &fields,
-            blob,
-            file.as_deref(),
-            replace,
-        )
-        .inspect(|()| written(&store, "add a secret")),
+        Command::Add(args) => add(&store, &args.name, args.input(), args.existing())
+            .inspect(|()| written(&store, "add a secret")),
         Command::Get { name, field } => get(&store, &name, field.as_deref()),
         Command::Copy { name, field, clear } => copy(&store, &name, field.as_deref(), clear),
         Command::Grant {
@@ -427,7 +464,13 @@ fn run() -> Result<()> {
         #[cfg(feature = "host")]
         Command::Audit { tail } => audit(&store, tail),
         #[cfg(feature = "host")]
-        Command::Sync { remote, enable } => run_sync(&store, remote.as_deref(), enable),
+        Command::Sync { remote, enable } => {
+            if enable {
+                enable_sync(&store)?;
+            }
+
+            run_sync(&store, remote.as_deref())
+        }
         #[cfg(feature = "host")]
         Command::ImportPass { prefix } => {
             import_pass(&store, prefix.as_deref()).inspect(|()| written(&store, "import from pass"))
@@ -445,12 +488,12 @@ fn run() -> Result<()> {
             };
             import_1password(&store, &options).inspect(|()| {
                 if !dry_run {
-                    written(&store, "import from 1Password")
+                    written(&store, "import from 1Password");
                 }
             })
         }
         Command::Plugin { args } => plugin_cmd(&store, &args),
-        Command::Mcp => mcp::serve(store),
+        Command::Mcp => mcp::serve(&store),
         Command::Git { args } => git(&store, &args),
         Command::Skill { .. } => unreachable!("handled before the store opens"),
         #[cfg(feature = "host")]
@@ -485,11 +528,9 @@ fn git(store: &Store, args: &[String]) -> Result<()> {
 }
 
 #[cfg(feature = "host")]
-fn run_sync(store: &Store, remote: Option<&str>, enable: bool) -> Result<()> {
-    if enable {
-        enable_sync(store)?;
+fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
     // An empty directory is a machine joining, and the wrap it needs arrives with the pull
-    } else if store.is_initialised() && !store.has_portable_wrap() {
+    if store.is_initialised() && !store.has_portable_wrap() {
         bail!(
             "sync is off. No other machine could open this store, because the key is held by \
              this Mac's Secure Enclave alone. Add a way in first: `passbox sync --enable` for \
@@ -640,12 +681,12 @@ fn agent() -> String {
     std::env::var("PASSBOX_AGENT").unwrap_or_default()
 }
 
-fn read_secret(store: &Store, name: &str, for_agent: bool) -> Result<String> {
-    read_secret_as(store, name, &agent(), for_agent)
+fn read_secret(store: &Store, name: &str) -> Result<String> {
+    read_secret_as(store, name, &agent())
 }
 
-pub fn agent_read_secret(store: &Store, name: &str, agent: &str) -> Result<String> {
-    read_secret_as(store, name, agent, true)
+pub(crate) fn agent_read_secret(store: &Store, name: &str, agent: &str) -> Result<String> {
+    read_secret_as(store, name, agent)
 }
 
 // A configured host wins over this disk, or a client with no wraps falls through to asking
@@ -656,7 +697,7 @@ fn brokered(store: &Store) -> bool {
 
 /// The broker owns windows and the audit log, so every read goes through it when it can.
 /// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
-fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Result<String> {
+fn read_secret_as(store: &Store, name: &str, agent: &str) -> Result<String> {
     if brokered(store) {
         return broker::request(store, name, agent);
     }
@@ -664,8 +705,7 @@ fn read_secret_as(store: &Store, name: &str, agent: &str, for_agent: bool) -> Re
     let (_, secret) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
-    let _ = for_agent;
-    let caller = broker::ancestry(std::process::id() as libc::pid_t);
+    let caller = broker::own_ancestry();
     broker::append_audit(store, agent, name, "released", &caller, "")?;
     Ok(secret.value.clone())
 }
@@ -676,7 +716,7 @@ const EXEC_GRANT_SECS: u64 = 30;
 // Two or more broker reads would prompt once each, so grant them together and read through the
 // token. A held PASSBOX_TOKEN, or a refused grant, keeps one read per secret
 fn batch_token(store: &Store, names: &[&str]) -> Option<String> {
-    let mut names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    let mut names: Vec<String> = names.iter().copied().map(String::from).collect();
     names.sort();
     names.dedup();
     if names.len() < 2 || !brokered(store) || held_token().is_some() {
@@ -720,7 +760,11 @@ impl Drop for SecretFiles {
     fn drop(&mut self) {
         if let Ok(entries) = std::fs::read_dir(&self.dir) {
             for entry in entries.flatten() {
-                let len = entry.metadata().map(|m| m.len() as usize).unwrap_or(0);
+                let len = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| usize::try_from(m.len()).ok())
+                    .unwrap_or(0);
                 let _ = std::fs::write(entry.path(), vec![0u8; len]);
             }
         }
@@ -762,7 +806,7 @@ fn exec(
     let token = batch_token(store, &names);
     let read = |name: &str| match &token {
         Some(token) => broker::request_token(store, name, &agent(), token),
-        None => read_secret(store, name, true),
+        None => read_secret(store, name),
     };
 
     for (var, name) in pairs {
@@ -792,13 +836,14 @@ fn exec(
     // reaches the child alone and this process lives to remove the files
     if !secret_files.is_empty() {
         extern "C" fn nothing(_: libc::c_int) {}
+        #[expect(
+            clippy::as_conversions,
+            reason = "signal(2) takes the handler as an address, which only `as` produces"
+        )]
+        let handler = nothing as extern "C" fn(libc::c_int) as libc::sighandler_t;
         for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGTERM] {
-            unsafe {
-                libc::signal(
-                    signal,
-                    nothing as extern "C" fn(libc::c_int) as libc::sighandler_t,
-                )
-            };
+            // SAFETY: the handler does nothing, so it is safe to run at any point
+            unsafe { libc::signal(signal, handler) };
         }
     }
 
@@ -1009,11 +1054,15 @@ fn new_token(store: &Store) -> Result<String> {
     let seen = found.len();
     let found = yubikey::not_added(found, &stored);
     let terminal = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    yubikey::choose(found, seen, terminal, || {
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        Ok(answer)
-    })
+    yubikey::choose(
+        found,
+        seen,
+        terminal.then_some(|| {
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            Ok(answer)
+        }),
+    )
 }
 
 #[cfg(feature = "host")]
@@ -1043,7 +1092,7 @@ fn set_up_token() -> Result<()> {
 }
 
 /// Sync needs this: no other machine can open the store without it
-fn new_passphrase(store: &Store, key: &age::x25519::Identity) -> Result<()> {
+fn new_passphrase(store: &Store, key: &x25519::Identity) -> Result<()> {
     let pass = ask("recovery passphrase: ")?;
     if pass.chars().count() < MIN_PASSPHRASE {
         bail!("use at least {MIN_PASSPHRASE} characters, a copy of this leaves the Mac");
@@ -1070,7 +1119,7 @@ fn test_work_factor() -> Option<u8> {
 
 /// True when the Enclave took the key. An older Mac or CI cannot, and falls back to a passphrase.
 #[cfg(feature = "host")]
-fn bind_machine(store: &Store, key: &age::x25519::Identity) -> bool {
+fn bind_machine(store: &Store, key: &x25519::Identity) -> bool {
     if headless() {
         return false;
     }
@@ -1091,7 +1140,7 @@ fn headless() -> bool {
     held_passphrase().is_some()
 }
 
-fn unlock(store: &Store, reason: &str) -> Result<age::x25519::Identity> {
+fn unlock(store: &Store, reason: &str) -> Result<x25519::Identity> {
     #[cfg(feature = "host")]
     if !headless() && store.has_se_wrap() {
         return store.unlock_with_se(reason);
@@ -1125,7 +1174,7 @@ fn yubikey_add(store: &Store, recipient: Option<&str>) -> Result<()> {
 
 /// Opens the wrap with the new token alone, the one proof that it is a way back
 #[cfg(feature = "host")]
-fn check_token(store: &Store, key: &age::x25519::Identity, recipient: &str) -> Result<()> {
+fn check_token(store: &Store, key: &x25519::Identity, recipient: &str) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         return Ok(());
     }
@@ -1177,43 +1226,57 @@ fn ask(prompt: &str) -> Result<String> {
     }
 }
 
-fn add(
-    store: &Store,
-    name: &str,
-    multiline: bool,
-    fields: &[String],
-    blob: bool,
-    file: Option<&std::path::Path>,
-    replace: bool,
-) -> Result<()> {
+/// Where `add` reads the value, in the shapes its flags allow together
+#[derive(Clone, Copy)]
+enum Input<'a> {
+    /// The value, then each named field, then free lines if `notes` asks for them
+    Fields { names: &'a [String], notes: Notes },
+    /// The whole of stdin, kept as one blob
+    Blob,
+    /// A file, kept as one blob
+    File(&'a std::path::Path),
+}
+
+/// Whether `add` asks for free lines after the named fields, which `--multiline` turns on
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Notes {
+    Skip,
+    Ask,
+}
+
+/// What `add` does when the name is already taken
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Existing {
+    Refuse,
+    Replace,
+}
+
+fn add(store: &Store, name: &str, input: Input<'_>, existing: Existing) -> Result<()> {
     let recipient = store.recipient()?;
-    let mut blob = blob || file.is_some();
+    let mut blob = !matches!(input, Input::Fields { .. });
     // A replace opens the store first, to learn whether the old entry is a blob
-    let mut existing = None;
+    let mut replaced = None;
     let mut key = None;
-    if replace {
+    if existing == Existing::Replace {
         let k = unlock(store, &format!("replace {name}"))?;
         let (id, old) = store
             .find(name, &k)?
             .with_context(|| format!("{name} does not exist, drop --replace to add it"))?;
         blob = blob || old.blob;
-        existing = Some(id);
+        replaced = Some(id);
         key = Some(k);
     }
-    let value = if blob {
-        match file {
-            Some(path) => read_file(path)?,
-            None => read_blob()?,
-        }
-    } else {
-        read_value(multiline, fields)?
+    let value = match input {
+        Input::File(path) => read_file(path)?,
+        Input::Fields { names, notes } if !blob => read_value(notes, names)?,
+        Input::Fields { .. } | Input::Blob => read_blob()?,
     };
     if value.is_empty() {
         bail!("refusing to store an empty value");
     }
 
     // Spotting a duplicate needs the name to id map, which only the key can produce
-    let id = if let Some(id) = existing {
+    let id = if let Some(id) = replaced {
         id
     } else if store.ids_with_files()?.is_empty() && !store.versions_dir().exists() {
         store::new_id()
@@ -1274,7 +1337,7 @@ fn import_pass(store: &Store, prefix: Option<&str>) -> Result<()> {
 }
 
 #[cfg(feature = "host")]
-fn import_1password(store: &Store, options: &onepassword::Options) -> Result<()> {
+fn import_1password(store: &Store, options: &onepassword::Options<'_>) -> Result<()> {
     // One approval covers the whole import, it only reads the names to refuse a duplicate
     let key = if store.ids()?.is_empty() {
         None
@@ -1337,7 +1400,7 @@ fn fields(value: &str) -> std::collections::HashMap<String, String> {
 }
 
 fn read_field(store: &Store, name: &str, field: Option<&str>) -> Result<String> {
-    let whole = read_secret(store, name, false)?;
+    let whole = read_secret(store, name)?;
     match field {
         None => Ok(whole),
         Some(want) => fields(&whole)
@@ -1378,7 +1441,7 @@ fn copy(_store: &Store, _name: &str, _field: Option<&str>, _clear: u64) -> Resul
 }
 
 /// Through the broker, so a second listing inside the window does not ask again
-pub fn agent_list_names(store: &Store, agent: &str) -> Result<Vec<String>> {
+pub(crate) fn agent_list_names(store: &Store, agent: &str) -> Result<Vec<String>> {
     // A configured host has the key and the names, same as for a read
     if store.host().is_some() || (!headless() && store.has_se_wrap()) {
         return broker::list(store, agent);
@@ -1402,8 +1465,8 @@ fn plugin_cmd(store: &Store, args: &[String]) -> Result<()> {
 fn plugin_manage(store: &Store, verb: &str, rest: &[String]) -> Result<()> {
     match verb {
         "list" => plugin_list(store),
-        "add" => plugin_install(store, rest, false),
-        "update" => plugin_install(store, rest, true),
+        "add" => plugin_install(store, rest, Install::Add),
+        "update" => plugin_install(store, rest, Install::Update),
         "remove" => plugin_remove(store, rest),
         _ => unreachable!(),
     }
@@ -1460,12 +1523,37 @@ fn stale_note(manifest: &plugin::Manifest) -> String {
     String::new()
 }
 
+/// `plugin add` refuses a plugin already there, `plugin update` replaces it
+#[cfg(feature = "host")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Install {
+    Add,
+    Update,
+}
+
+#[cfg(feature = "host")]
+impl Install {
+    fn verb(self) -> &'static str {
+        match self {
+            Install::Add => "add",
+            Install::Update => "update",
+        }
+    }
+
+    fn done(self) -> &'static str {
+        match self {
+            Install::Add => "installed",
+            Install::Update => "updated",
+        }
+    }
+}
+
 /* A plugin is a directory holding plugin.toml. Installing copies it under the store so a later
 edit to the source does not silently change what runs. The manifest is parsed first, so a broken
 one is refused before anything is copied. */
 #[cfg(feature = "host")]
-fn plugin_install(store: &Store, rest: &[String], overwrite: bool) -> Result<()> {
-    let verb = if overwrite { "update" } else { "add" };
+fn plugin_install(store: &Store, rest: &[String], install: Install) -> Result<()> {
+    let verb = install.verb();
     let arg = rest
         .first()
         .with_context(|| format!("usage: passbox plugin {verb} <name|dir>"))?;
@@ -1473,7 +1561,7 @@ fn plugin_install(store: &Store, rest: &[String], overwrite: bool) -> Result<()>
     // The destination is wiped before an overwrite, so a renamed or dropped file does not linger
     let fresh = |to: &std::path::Path| -> Result<()> {
         if to.exists() {
-            if !overwrite {
+            if install == Install::Add {
                 bail!("already installed, run `passbox plugin update` to refresh it");
             }
             std::fs::remove_dir_all(to)?;
@@ -1488,7 +1576,7 @@ fn plugin_install(store: &Store, rest: &[String], overwrite: bool) -> Result<()>
         for (name, contents) in files {
             std::fs::write(to.join(name), contents)?;
         }
-        eprintln!("{}ed {arg}", if overwrite { "updat" } else { "install" });
+        eprintln!("{} {arg}", install.done());
         return Ok(());
     }
 
@@ -1500,8 +1588,8 @@ fn plugin_install(store: &Store, rest: &[String], overwrite: bool) -> Result<()>
     fresh(&to)?;
     copy_dir(from, &to)?;
     eprintln!(
-        "{}ed {} {} with {} tool(s)",
-        if overwrite { "updat" } else { "install" },
+        "{} {} {} with {} tool(s)",
+        install.done(),
         manifest.name,
         manifest.version(),
         manifest.tools.len()
@@ -1659,7 +1747,7 @@ fn plugin_run_fed(
     let Some((_, entry)) = store.find(secret, &key)? else {
         return Err(plugin::missing(name, secret));
     };
-    let caller = broker::ancestry(std::process::id() as libc::pid_t);
+    let caller = broker::own_ancestry();
     let args = manifest
         .tool(action)
         .map(|t| t.shown(&params))
@@ -1704,7 +1792,7 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
 }
 
 /// Captures the child's output instead of inheriting, which is what a tool result needs
-pub fn run_child(
+pub(crate) fn run_child(
     command: &[String],
     env_var: Option<&str>,
     value: &str,
@@ -1774,7 +1862,7 @@ fn ls(store: &Store) -> Result<()> {
     let names = agent_list_names(store, &agent())?;
     let mut out = std::io::stdout();
     if out.is_terminal() {
-        out.write_all(tree::render(&names, true).as_bytes())?;
+        out.write_all(tree::render(&names).as_bytes())?;
     } else {
         for name in names {
             writeln!(out, "{name}")?;
@@ -1796,7 +1884,7 @@ fn rm(store: &Store, name: &str) -> Result<()> {
 }
 
 /// The secret is already written, so a failed rebuild warns rather than fails the command
-fn offer_ssh_keys(store: &Store, key: &age::x25519::Identity) {
+fn offer_ssh_keys(store: &Store, key: &x25519::Identity) {
     #[cfg(feature = "host")]
     if let Err(e) = ssh::rebuild(store, key) {
         eprintln!("could not refresh the SSH keys: {e:#}");
@@ -1814,7 +1902,7 @@ fn restore(store: &Store, name: &str, index: Option<usize>) -> Result<()> {
 
 fn restore_version(
     store: &Store,
-    key: &age::x25519::Identity,
+    key: &x25519::Identity,
     name: &str,
     index: Option<usize>,
 ) -> Result<()> {
@@ -1839,10 +1927,7 @@ fn restore_version(
 
     let Some(index) = index else {
         for (i, (stamp, path)) in versions.iter().enumerate() {
-            let bytes = store
-                .load_path(path, key)
-                .map(|s| s.value.len())
-                .unwrap_or(0);
+            let bytes = store::load_path(path, key).map_or(0, |s| s.value.len());
             println!("{i}\t{stamp}\t{bytes} bytes");
         }
         eprintln!("restore one with `passbox restore {name} --index N`");
@@ -1864,7 +1949,7 @@ fn restore_version(
 }
 
 /// A deleted secret is hidden from `ids`, so look through tombstoned files and then versions.
-fn find_deleted(store: &Store, name: &str, key: &age::x25519::Identity) -> Result<String> {
+fn find_deleted(store: &Store, name: &str, key: &x25519::Identity) -> Result<String> {
     for id in store.ids_with_files()? {
         if let Ok(secret) = store.load(&id, key)
             && secret.name == name
@@ -1881,7 +1966,7 @@ fn find_deleted(store: &Store, name: &str, key: &age::x25519::Identity) -> Resul
                 continue;
             };
             for (_, version) in store.versions(id)? {
-                if let Ok(secret) = store.load_path(&version, key)
+                if let Ok(secret) = store::load_path(&version, key)
                     && secret.name == name
                 {
                     return Ok(id.to_string());
@@ -1908,7 +1993,7 @@ fn read_blob() -> Result<String> {
     Ok(buf.trim_end_matches('\n').to_string())
 }
 
-fn read_value(multiline: bool, fields: &[String]) -> Result<String> {
+fn read_value(notes: Notes, fields: &[String]) -> Result<String> {
     for field in fields {
         let lower = field.trim().to_lowercase();
         if lower.is_empty() || lower == "password" || field.contains([':', '\n']) {
@@ -1924,7 +2009,7 @@ fn read_value(multiline: bool, fields: &[String]) -> Result<String> {
             value.push('\n');
             value.push_str(&line);
         }
-        if multiline {
+        if notes == Notes::Ask {
             eprintln!("fields and notes, one per line, empty line to finish:");
             for line in extra_lines(std::io::stdin().lock())? {
                 value.push('\n');
@@ -2003,16 +2088,20 @@ mod tests {
     /// Stands in for the system allocator and records whether a block was zero when it got it back
     struct Spy(std::sync::atomic::AtomicBool);
 
+    // SAFETY: every block comes from System and goes back to it with the same layout
     unsafe impl GlobalAlloc for Spy {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: the caller's layout contract passes straight through
             unsafe { System.alloc(layout) }
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: the caller hands back a live block of `layout.size()` bytes
             let zero = unsafe { std::slice::from_raw_parts(ptr, layout.size()) }
                 .iter()
                 .all(|&b| b == 0);
             self.0.store(zero, std::sync::atomic::Ordering::SeqCst);
+            // SAFETY: the block came from System with this layout
             unsafe { System.dealloc(ptr, layout) }
         }
     }
@@ -2025,12 +2114,13 @@ mod tests {
         let wiper = WipeOnFree(Spy(std::sync::atomic::AtomicBool::new(false)));
         for size in [1, 31, 4099, 1 << 20] {
             let layout = Layout::from_size_align(size, 1).unwrap();
-            unsafe {
-                let p = wiper.alloc(layout);
-                std::slice::from_raw_parts_mut(p, size).fill(0xAB);
-                wiper.0.0.store(false, std::sync::atomic::Ordering::SeqCst);
-                wiper.dealloc(p, layout);
-            }
+            // SAFETY: the layout has a non-zero size
+            let p = unsafe { wiper.alloc(layout) };
+            // SAFETY: `p` is a fresh block of `size` bytes
+            unsafe { std::slice::from_raw_parts_mut(p, size) }.fill(0xAB);
+            wiper.0.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            // SAFETY: `p` came from this allocator with this layout
+            unsafe { wiper.dealloc(p, layout) };
             assert!(
                 wiper.0.0.load(std::sync::atomic::Ordering::SeqCst),
                 "a freed block of {size} bytes was not wiped"

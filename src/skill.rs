@@ -30,7 +30,7 @@ fn path(dir: Option<PathBuf>) -> Result<PathBuf> {
     Ok(dir.join("SKILL.md"))
 }
 
-pub fn install(dir: Option<PathBuf>) -> Result<()> {
+pub(crate) fn install(dir: Option<PathBuf>) -> Result<()> {
     let file = path(dir)?;
     let parent = file.parent().context("no parent directory")?;
     std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -39,7 +39,7 @@ pub fn install(dir: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-pub fn check(dir: Option<PathBuf>) -> Result<()> {
+pub(crate) fn check(dir: Option<PathBuf>) -> Result<()> {
     let file = path(dir)?;
     let text = match std::fs::read_to_string(&file) {
         Ok(text) => text,

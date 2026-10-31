@@ -1,12 +1,13 @@
 //! Bring entries across from `pass`, decrypting through GPG and re-encrypting to the store key.
 
+use crate::ssh;
 use crate::store::{Secret, Store, new_id, now};
 use age::x25519;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
-pub fn store_dir() -> PathBuf {
+pub(crate) fn store_dir() -> PathBuf {
     if let Some(set) = std::env::var_os("PASSWORD_STORE_DIR") {
         return PathBuf::from(set);
     }
@@ -16,7 +17,7 @@ pub fn store_dir() -> PathBuf {
 }
 
 /// Entry names are paths under the store with the `.gpg` taken off, which is how pass names them
-pub fn entries(dir: &Path) -> Result<Vec<String>> {
+pub(crate) fn entries(dir: &Path) -> Result<Vec<String>> {
     let mut found = Vec::new();
     walk(dir, dir, &mut found)?;
     found.sort();
@@ -49,7 +50,7 @@ fn walk(root: &Path, at: &Path, out: &mut Vec<String>) -> Result<()> {
 }
 
 /// No prefix takes everything. A prefix takes that entry, or the namespace under it.
-pub use crate::store::select;
+pub(crate) use crate::store::select;
 
 /* The whole body is kept, not just the first line. pass entries commonly carry `key: value` lines
 under the password, and `get --field` reads them, so trimming to line one would lose data. */
@@ -67,12 +68,16 @@ fn show(entry: &str) -> Result<String> {
     Ok(body.trim_end_matches('\n').to_string())
 }
 
-pub struct Report {
+pub(crate) struct Report {
     pub imported: usize,
     pub skipped: usize,
 }
 
-pub fn import(store: &Store, names: &[String], key: Option<&x25519::Identity>) -> Result<Report> {
+pub(crate) fn import(
+    store: &Store,
+    names: &[String],
+    key: Option<&x25519::Identity>,
+) -> Result<Report> {
     let recipient = store.recipient()?;
     let mut report = Report {
         imported: 0,
@@ -101,7 +106,7 @@ pub fn import(store: &Store, names: &[String], key: Option<&x25519::Identity>) -
         value.zeroize();
 
         store.put(&new_id(), &secret, &recipient)?;
-        crate::ssh::remember(store, &secret.value)?;
+        ssh::remember(store, &secret.value)?;
         report.imported += 1;
     }
     Ok(report)
@@ -153,7 +158,8 @@ mod tests {
             "top",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .copied()
+        .map(String::from)
         .collect()
     }
 
@@ -185,12 +191,12 @@ mod tests {
 
     #[test]
     fn an_unknown_prefix_selects_nothing() {
-        assert!(select(&names(), Some("nope")).is_empty());
+        assert_eq!(select(&names(), Some("nope")), Vec::<String>::new());
     }
 
     #[test]
     fn an_empty_store_is_not_an_error() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(entries(tmp.path()).unwrap().is_empty());
+        assert_eq!(entries(tmp.path()).unwrap(), Vec::<String>::new());
     }
 }

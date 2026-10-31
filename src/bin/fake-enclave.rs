@@ -1,6 +1,11 @@
 //! The Secure Enclave helper's commands with no Enclave and no prompt, for `mock-enclave` tests.
 //! Each prompt goes to `PASSBOX_FAKE_ENCLAVE_LOG`. `<log>.deny` holds `all`, a count or `unavailable`,
 //! and while `<log>.hold` exists a prompt stays open, as it does when nobody is at the Mac
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "it answers the helper protocol on stdout, as the real Swift helper does"
+)]
 
 use std::io::{Read, Write};
 

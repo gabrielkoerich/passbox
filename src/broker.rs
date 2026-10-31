@@ -1,20 +1,20 @@
 //! Decides who may open a secret, holds the approval windows, and writes the audit log.
 
+use crate::crypto;
 #[cfg(feature = "host")]
 use crate::plugin;
 #[cfg(feature = "host")]
 use crate::project::{self, Grant};
+use crate::store::{self, Store};
 #[cfg(feature = "host")]
-use crate::ssh;
-#[cfg(feature = "host")]
-use crate::store;
-use crate::store::Store;
-#[cfg(feature = "host")]
+use crate::{ssh, tailnet};
 use age::x25519;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "host")]
 use std::collections::HashMap;
+#[cfg(feature = "host")]
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(feature = "host")]
 use std::os::unix::net::UnixListener;
@@ -135,6 +135,12 @@ fn delegate(
     }))
 }
 
+/// Two ids long, since a token is a bearer credential and an id alone is only a file name
+#[cfg(feature = "host")]
+fn new_token() -> String {
+    format!("{}{}", store::new_id(), store::new_id())
+}
+
 /// Mints a child under the token lock alone, so it never waits behind a prompt
 #[cfg(feature = "host")]
 fn mint_child(shared: &Shared, request: &Request, caller: &str) -> Option<Result<String>> {
@@ -145,7 +151,7 @@ fn mint_child(shared: &Shared, request: &Request, caller: &str) -> Option<Result
         Ok(child) => child,
         Err(e) => return Some(Err(e)),
     };
-    let token = store::new_id() + &store::new_id();
+    let token = new_token();
     let mut granted: Vec<String> = child.values.keys().cloned().collect();
     granted.sort();
     let grant = child.grant.clone();
@@ -175,7 +181,7 @@ fn mint_child(shared: &Shared, request: &Request, caller: &str) -> Option<Result
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
-pub enum Op {
+pub(crate) enum Op {
     #[default]
     Get,
     List,
@@ -186,7 +192,7 @@ pub enum Op {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Request {
+pub(crate) struct Request {
     #[serde(default)]
     pub name: String,
     pub agent: String,
@@ -213,7 +219,7 @@ pub struct Request {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Response {
+pub(crate) struct Response {
     pub ok: bool,
     pub value: Option<String>,
     pub error: Option<String>,
@@ -378,6 +384,16 @@ fn open_window(windows: &mut HashMap<WindowKey, Window>, key: WindowKey, window:
     windows.insert(key, window);
 }
 
+/// Where a request came from, which names its agent and scopes its plugin windows
+#[cfg(feature = "host")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// This Mac's socket, where every caller shares one window scope
+    Local,
+    /// Another machine through `tailscale serve`, named by whois
+    Tailnet,
+}
+
 #[cfg(feature = "host")]
 impl Broker {
     fn new(store: Store, tokens: Tokens) -> Self {
@@ -489,7 +505,7 @@ impl Broker {
         request: &Request,
         caller: &str,
         cwd: Option<&std::path::Path>,
-        local: bool,
+        origin: Origin,
     ) -> Result<String> {
         match request.op {
             Op::Get => self.handle_get(request, caller, cwd),
@@ -497,7 +513,10 @@ impl Broker {
             Op::Grant => self.handle_grant(request, caller),
             Op::Plugin => {
                 // A tailnet caller is the host whois named, every caller on this Mac is one scope
-                let scope = if local { "local" } else { caller };
+                let scope = match origin {
+                    Origin::Local => "local",
+                    Origin::Tailnet => caller,
+                };
                 self.handle_plugin(request, caller, scope)
             }
         }
@@ -714,9 +733,10 @@ impl Broker {
         let mut reason = format!("sign {purpose}{to} with SSH key {label} for {agent}");
         if let Some((name, secs)) = &listed {
             let span = plugin::span(*secs);
-            reason.push_str(&format!(
+            let _ = write!(
+                reason,
                 ", and its logins to {name} for {span} without asking"
-            ));
+            );
         }
 
         let stored = ssh::approved(&self.store);
@@ -765,7 +785,7 @@ impl Broker {
             _ => String::new(),
         };
         if let (true, Some((host_name, secs)), Some(window_key)) = (trusted, &listed, window_key) {
-            args.push_str(&format!(", window {}", plugin::span(*secs)));
+            let _ = write!(args, ", window {}", plugin::span(*secs));
             self.ssh_windows.insert(
                 window_key,
                 SshWindow {
@@ -824,7 +844,7 @@ impl Broker {
             bail!("{} matched no secrets", request.names.join(", "));
         }
 
-        let token = store::new_id() + &store::new_id();
+        let token = new_token();
         let grant = store::new_id();
         let granted: Vec<String> = values.keys().cloned().collect();
         self.tokens.lock().expect("tokens").insert(
@@ -941,7 +961,7 @@ impl Broker {
 /* The port the broker answers on over the tailnet. Fixed rather than configurable: a client
 would have to guess it, and a second knob is a second thing to get wrong. A client needs it
 too, so it is not gated behind the host feature. */
-pub const TAILNET_PORT: u16 = 8787;
+pub(crate) const TAILNET_PORT: u16 = 8787;
 
 /// The PROXY header is how the broker learns which host connected, so the listener requires it
 #[cfg(feature = "host")]
@@ -1024,10 +1044,10 @@ fn ssh_requester(chain: &str) -> String {
 
 /// One loop per connection, since ssh sends several requests on one, and only signing takes the lock
 #[cfg(feature = "host")]
-fn serve_ssh(listener: UnixListener, shared: std::sync::Arc<Shared>) {
+fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
-        let shared = std::sync::Arc::clone(&shared);
+        let shared = std::sync::Arc::clone(shared);
         std::thread::spawn(move || {
             let pid = peer_pid(&stream);
             let mut connection = ssh::Connection::default();
@@ -1067,7 +1087,7 @@ fn reply<S: std::io::Read + Write>(
     stream: &mut S,
     caller: &str,
     cwd: Option<&std::path::Path>,
-    local: bool,
+    origin: Origin,
 ) -> Result<()> {
     let mut line = String::new();
     let mut reader = BufReader::new(&mut *stream);
@@ -1080,14 +1100,13 @@ fn reply<S: std::io::Read + Write>(
         Ok(mut request) => {
             // An unset agent is named from the caller's own process chain, so the prompt says who
             if request.agent.is_empty() {
-                request.agent = if local {
-                    prompt_agent(caller)
-                } else {
-                    "passbox".to_string()
+                request.agent = match origin {
+                    Origin::Local => prompt_agent(caller),
+                    Origin::Tailnet => "passbox".to_string(),
                 };
             }
 
-            if !local {
+            if origin == Origin::Tailnet {
                 request.agent = remote_agent(&request.agent, caller);
             }
             // A token read or a child grant needs no key and no prompt, so it never waits behind one
@@ -1119,7 +1138,7 @@ fn reply<S: std::io::Read + Write>(
                     .broker
                     .lock()
                     .expect("broker")
-                    .handle(&request, caller, cwd, local),
+                    .handle(&request, caller, cwd, origin),
             };
             match answer {
                 Ok(value) => Response {
@@ -1148,14 +1167,14 @@ fn reply<S: std::io::Read + Write>(
 node's address and `tailscale whois` names it. Unlike the agent string a caller sends, the
 control plane authenticated that name, so it is the one caller identity that is not self declared */
 #[cfg(feature = "host")]
-fn serve_tailnet(listener: std::net::TcpListener, shared: std::sync::Arc<Shared>) {
+fn serve_tailnet(listener: &std::net::TcpListener, shared: &std::sync::Arc<Shared>) {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         LAST_SEEN.store(store::now(), Ordering::Relaxed);
-        let shared = std::sync::Arc::clone(&shared);
+        let shared = std::sync::Arc::clone(shared);
         IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
-            let Some(peer) = crate::tailnet::proxied_peer(&mut stream) else {
+            let Some(peer) = tailnet::proxied_peer(&mut stream) else {
                 eprintln!("tailnet request refused: no PROXY header, see `tailscale serve` below");
                 let refusal = Response {
                     ok: false,
@@ -1172,10 +1191,10 @@ fn serve_tailnet(listener: std::net::TcpListener, shared: std::sync::Arc<Shared>
                 IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
                 return;
             };
-            let caller = crate::tailnet::whois(peer)
-                .unwrap_or_else(|| format!("an unknown tailnet host ({peer})"));
+            let caller =
+                tailnet::whois(peer).unwrap_or_else(|| format!("an unknown tailnet host ({peer})"));
             eprintln!("tailnet request from {caller}");
-            if let Err(e) = reply(&shared, &mut stream, &caller, None, false) {
+            if let Err(e) = reply(&shared, &mut stream, &caller, None, Origin::Tailnet) {
                 eprintln!("tailnet request failed: {e:#}");
             }
             LAST_SEEN.store(store::now(), Ordering::Relaxed);
@@ -1189,14 +1208,14 @@ could read it out. PT_DENY_ATTACH refuses that attach, and a zero core limit sto
 writing the key to disk. Root can still get past both. */
 #[cfg(all(feature = "host", target_os = "macos"))]
 fn harden() {
-    unsafe {
-        libc::ptrace(libc::PT_DENY_ATTACH, 0, std::ptr::null_mut(), 0);
-        let none = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        libc::setrlimit(libc::RLIMIT_CORE, &none);
-    }
+    // SAFETY: PT_DENY_ATTACH takes no address or data, it only flags this process
+    unsafe { libc::ptrace(libc::PT_DENY_ATTACH, 0, std::ptr::null_mut(), 0) };
+    let none = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: setrlimit only reads the rlimit it is given
+    unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const none) };
 }
 
 /// A socket only this user can reach, replacing one a previous broker left behind
@@ -1211,7 +1230,7 @@ fn bind_private(path: &std::path::Path) -> Result<UnixListener> {
 }
 
 #[cfg(feature = "host")]
-pub fn serve(store: Store) -> Result<()> {
+pub(crate) fn serve(store: Store) -> Result<()> {
     #[cfg(target_os = "macos")]
     harden();
     let socket = store.socket_path();
@@ -1222,13 +1241,13 @@ pub fn serve(store: Store) -> Result<()> {
     LAST_SEEN.store(store::now(), Ordering::Relaxed);
     let tokens = Tokens::default();
     let shared = std::sync::Arc::new(Shared {
-        broker: std::sync::Mutex::new(Broker::new(store.clone(), tokens.clone())),
+        broker: std::sync::Mutex::new(Broker::new(store.clone(), std::sync::Arc::clone(&tokens))),
         tokens,
         store,
     });
-    watchdog(socket.clone(), shared.clone());
+    watchdog(socket, std::sync::Arc::clone(&shared));
     let for_agent = std::sync::Arc::clone(&shared);
-    std::thread::spawn(move || serve_ssh(agent, for_agent));
+    std::thread::spawn(move || serve_ssh(&agent, &for_agent));
 
     /* Loopback, exposed to the tailnet by `tailscale serve`, rather than bound to the tailnet
     address directly. Measured 2026-09-27: macOS runs Tailscale as a network extension, and a
@@ -1238,12 +1257,12 @@ pub fn serve(store: Store) -> Result<()> {
 
     Loopback has none of the unix socket's 0600 protection, so any local user can reach this
     port. That is the cost of the only inbound path macOS actually delivers. */
-    if crate::tailnet::address().is_some() {
+    if tailnet::address().is_some() {
         match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, TAILNET_PORT)) {
             Ok(tcp) => {
                 eprintln!("listening on 127.0.0.1:{TAILNET_PORT}; expose it with\n  {SERVE}");
                 let shared = std::sync::Arc::clone(&shared);
-                std::thread::spawn(move || serve_tailnet(tcp, shared));
+                std::thread::spawn(move || serve_tailnet(&tcp, &shared));
             }
             Err(e) => eprintln!("not listening for tailnet peers: {e}"),
         }
@@ -1266,7 +1285,7 @@ pub fn serve(store: Store) -> Result<()> {
             let pid = peer_pid(&stream);
             let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
             let cwd = pid.and_then(caller_cwd);
-            let _ = reply(&shared, &mut stream, &caller, cwd.as_deref(), true);
+            let _ = reply(&shared, &mut stream, &caller, cwd.as_deref(), Origin::Local);
             LAST_SEEN.store(store::now(), Ordering::Relaxed);
             IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         });
@@ -1380,10 +1399,11 @@ impl Broker {
 /// Local time for the broker log, which launchd writes without one
 #[cfg(feature = "host")]
 fn clock() -> String {
-    let t = store::now() as libc::time_t;
-    // SAFETY: localtime_r only writes the tm it is given
+    let t = libc::time_t::try_from(store::now()).unwrap_or_default();
+    // SAFETY: tm holds plain integers and a nullable pointer, so all zero is a valid value
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
+    // SAFETY: localtime_r reads t and writes only the tm it is given
+    unsafe { libc::localtime_r(&raw const t, &raw mut tm) };
     format!(
         "{}-{:02}-{:02} {:02}:{:02}:{:02}",
         tm.tm_year + 1900,
@@ -1404,7 +1424,9 @@ fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
     const LOCAL_PEERPID: libc::c_int = 0x002;
 
     let mut pid: libc::pid_t = 0;
-    let mut len = size_of::<libc::pid_t>() as libc::socklen_t;
+    let mut len =
+        libc::socklen_t::try_from(size_of::<libc::pid_t>()).expect("a pid fits a socklen_t");
+    // SAFETY: pid and len are live locals, and len holds pid's size
     let got = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -1426,7 +1448,9 @@ fn peer_pid(stream: &UnixStream) -> Option<libc::pid_t> {
         uid: 0,
         gid: 0,
     };
-    let mut len = size_of::<libc::ucred>() as libc::socklen_t;
+    let mut len =
+        libc::socklen_t::try_from(size_of::<libc::ucred>()).expect("a ucred fits a socklen_t");
+    // SAFETY: cred and len are live locals, and len holds cred's size
     let got = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -1482,10 +1506,13 @@ pub(crate) fn append_audit(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is one field of the record, named at every call"
+)]
 fn append_audit_to(
     store: &Store,
-    to: &age::x25519::Recipient,
+    to: &x25519::Recipient,
     agent: &str,
     secret: &str,
     decision: &str,
@@ -1494,7 +1521,7 @@ fn append_audit_to(
     args: &str,
 ) -> Result<()> {
     let record = AuditRecord {
-        at: crate::store::now(),
+        at: store::now(),
         agent,
         secret,
         decision,
@@ -1502,13 +1529,18 @@ fn append_audit_to(
         grant,
         args,
     };
-    let line = crate::crypto::encrypt_line(&serde_json::to_vec(&record)?, to)?;
+    let line = crypto::encrypt_line(&serde_json::to_vec(&record)?, to)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(store.audit_path())?;
     writeln!(file, "{line}")?;
     Ok(())
+}
+
+/// The chain for this process, for a read that opens the store here instead of in the broker
+pub(crate) fn own_ancestry() -> String {
+    libc::pid_t::try_from(std::process::id()).map_or_else(|_| "unknown".to_string(), ancestry)
 }
 
 pub(crate) fn ancestry(pid: libc::pid_t) -> String {
@@ -1520,11 +1552,11 @@ pub(crate) fn ancestry(pid: libc::pid_t) -> String {
             .output();
         let Ok(out) = out else { break };
         let text = String::from_utf8_lossy(&out.stdout);
-        let Some((ppid, comm)) = text.trim().split_once(char::is_whitespace) else {
+        let Some((parent, comm)) = text.trim().split_once(char::is_whitespace) else {
             break;
         };
         chain.push(comm.trim().to_string());
-        match ppid.trim().parse::<libc::pid_t>() {
+        match parent.trim().parse::<libc::pid_t>() {
             Ok(next) if next > 1 => current = next,
             _ => break,
         }
@@ -1535,15 +1567,15 @@ pub(crate) fn ancestry(pid: libc::pid_t) -> String {
     chain.join(" < ")
 }
 
-pub fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
+pub(crate) fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
     request_token(store, name, agent, crate::held_token().unwrap_or_default())
 }
 
 /// A read carrying a token the caller already holds, such as the one exec mints for its batch
-pub fn request_token(store: &Store, name: &str, agent: &str, token: &str) -> Result<String> {
+pub(crate) fn request_token(store: &Store, name: &str, agent: &str, token: &str) -> Result<String> {
     ask_broker(
         store,
-        Request {
+        &Request {
             name: name.to_string(),
             agent: agent.to_string(),
             op: Op::Get,
@@ -1558,10 +1590,10 @@ pub fn request_token(store: &Store, name: &str, agent: &str, token: &str) -> Res
 }
 
 /// Names come back one per line, so the broker keeps the key and the caller never sees it.
-pub fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
+pub(crate) fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
     let names = ask_broker(
         store,
-        Request {
+        &Request {
             name: String::new(),
             agent: agent.to_string(),
             op: Op::List,
@@ -1577,10 +1609,10 @@ pub fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
 }
 
 /// Approve once and get a token back, with the names it covers listed after it
-pub fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<String> {
+pub(crate) fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<String> {
     ask_broker(
         store,
-        Request {
+        &Request {
             name: String::new(),
             agent: agent.to_string(),
             op: Op::Grant,
@@ -1597,7 +1629,7 @@ pub fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<S
 /// Ask the broker to approve one plugin call. The caller runs the command built from these
 /// `params` once this returns ok
 #[cfg(feature = "host")]
-pub fn plugin_approve(
+pub(crate) fn plugin_approve(
     store: &Store,
     name: &str,
     action: &str,
@@ -1606,7 +1638,7 @@ pub fn plugin_approve(
 ) -> Result<()> {
     ask_broker(
         store,
-        Request {
+        &Request {
             name: name.to_string(),
             agent: agent.to_string(),
             op: Op::Plugin,
@@ -1623,7 +1655,7 @@ pub fn plugin_approve(
 
 /// Ask the broker to run a plugin tool and return its output, for a client with no local app or a
 /// plugin with `stdin`, whose secret stays in the broker
-pub fn plugin_run_remote(
+pub(crate) fn plugin_run_remote(
     store: &Store,
     name: &str,
     action: &str,
@@ -1632,7 +1664,7 @@ pub fn plugin_run_remote(
 ) -> Result<String> {
     ask_broker(
         store,
-        Request {
+        &Request {
             name: name.to_string(),
             agent: agent.to_string(),
             op: Op::Plugin,
@@ -1647,42 +1679,41 @@ pub fn plugin_run_remote(
 }
 
 /// Ask a running broker, starting one if the socket is dead.
-fn ask_broker(store: &Store, request: Request) -> Result<String> {
+fn ask_broker(store: &Store, request: &Request) -> Result<String> {
     /* A configured host means this machine has no store of its own worth unlocking, so the
     request goes over the tailnet to one that has. The reply is the value, and the finger that
     released it was somewhere else. */
     if let Some(host) = store.host() {
         let target = if host.contains(':') {
-            host.clone()
+            host
         } else {
             format!("{host}:{TAILNET_PORT}")
         };
         let mut stream = std::net::TcpStream::connect(&target)
             .with_context(|| format!("no passbox host at {target}"))?;
-        writeln!(stream, "{}", serde_json::to_string(&request)?)?;
+        writeln!(stream, "{}", serde_json::to_string(request)?)?;
         let mut line = String::new();
         BufReader::new(stream.try_clone()?).read_line(&mut line)?;
         return unwrap_response(&line);
     }
 
     let socket = store.socket_path();
-    let mut stream = match UnixStream::connect(&socket) {
-        Ok(s) => s,
-        Err(_) => {
-            #[cfg(feature = "host")]
-            {
-                spawn(store)?;
-                UnixStream::connect(&socket).context("the broker did not come up")?
-            }
-            #[cfg(not(feature = "host"))]
-            bail!(
-                "no broker at {}, and a client cannot start one",
-                socket.display()
-            )
-        }
+    #[cfg(feature = "host")]
+    let mut stream = if let Ok(stream) = UnixStream::connect(&socket) {
+        stream
+    } else {
+        spawn(store)?;
+        UnixStream::connect(&socket).context("the broker did not come up")?
+    };
+    #[cfg(not(feature = "host"))]
+    let Ok(mut stream) = UnixStream::connect(&socket) else {
+        bail!(
+            "no broker at {}, and a client cannot start one",
+            socket.display()
+        );
     };
 
-    writeln!(stream, "{}", serde_json::to_string(&request)?)?;
+    writeln!(stream, "{}", serde_json::to_string(request)?)?;
 
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
@@ -1737,6 +1768,7 @@ fn run_plugin_command(mut command: std::process::Command) -> Result<String> {
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
+    use ssh_key::private::Ed25519Keypair;
 
     #[test]
     fn a_remote_agent_cannot_forge_a_line_or_a_second_host() {
@@ -1809,7 +1841,7 @@ mod tests {
     #[test]
     fn a_signing_window_covers_its_host_key_until_it_lapses_or_the_section_changes() {
         let policy = ssh::parse_windows("[ssh.windows]\nlegion = \"1h\"\n").unwrap();
-        let pair = ssh_key::private::Ed25519Keypair::from_seed(&[3; 32]);
+        let pair = Ed25519Keypair::from_seed(&[3; 32]);
         let private = ssh_key::PrivateKey::new(pair.into(), "").unwrap();
         let mut windows = HashMap::new();
         let key = ("key".to_string(), "SHA256:legion".to_string());
@@ -1905,7 +1937,8 @@ mod tests {
     fn a_namespace_is_refused_and_its_names_listed() {
         let known: Vec<String> = ["acme/pk", "acme/addr", "personal/github"]
             .iter()
-            .map(|s| s.to_string())
+            .copied()
+            .map(String::from)
             .collect();
         let err = reject_namespaces(&["acme".to_string()], &known)
             .unwrap_err()
@@ -1921,7 +1954,8 @@ mod tests {
     fn exact_names_are_accepted() {
         let known: Vec<String> = ["acme/pk", "personal/github"]
             .iter()
-            .map(|s| s.to_string())
+            .copied()
+            .map(String::from)
             .collect();
         assert!(reject_namespaces(&["acme/pk".to_string()], &known).is_ok());
         assert!(
@@ -1975,7 +2009,7 @@ mod tests {
         let mut tokens = HashMap::new();
         let parent = grant_of(&[("w/a", "1"), ("w/b", "2")], 2_000);
         tokens.insert("parent".to_string(), parent);
-        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let names = |n: &[&str]| n.iter().copied().map(String::from).collect::<Vec<_>>();
         let mint = |tokens: &HashMap<String, TokenGrant>, from: &str, n: &[&str], ttl, now| {
             delegate(tokens, from, &names(n), ttl, now).map(|r| r.unwrap())
         };
@@ -2160,7 +2194,11 @@ mod tests {
         let mut windows = HashMap::new();
         open_window(&mut windows, key("other", 0), window(1));
         for n in 0..MAX_WINDOWS_PER_SCOPE {
-            open_window(&mut windows, key("local", n), window(1_000 + n as u64));
+            open_window(
+                &mut windows,
+                key("local", n),
+                window(1_000 + u64::try_from(n).unwrap()),
+            );
         }
         assert_eq!(windows.len(), MAX_WINDOWS_PER_SCOPE + 1);
 
@@ -2196,7 +2234,7 @@ mod tests {
             assert!(found.is_none(), "{approved:?}");
         }
         let emptied = plugin::Windows {
-            tools: Default::default(),
+            tools: std::collections::BTreeMap::default(),
             hash: "approved".into(),
         };
         let found = window_open(

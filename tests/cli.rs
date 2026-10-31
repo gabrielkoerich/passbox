@@ -1,4 +1,8 @@
 //! Drives the built binary, so it covers what unit tests cannot: argument handling and exit codes.
+#![expect(
+    clippy::unwrap_used,
+    reason = "allow-unwrap-in-tests does not reach an integration test crate's helpers"
+)]
 
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -623,6 +627,24 @@ fn sync_is_refused_until_it_is_enabled() {
     assert_eq!(std::fs::read_dir(remote.path()).unwrap().count(), 0);
 }
 
+/// `--enable` asks where copies go, then syncs there in the same run
+#[test]
+fn sync_enable_picks_a_directory_and_copies_into_it() {
+    let remote = tempfile::tempdir().unwrap();
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+
+    let answers = format!("2\n{}\n", remote.path().display());
+    let err = cli.note(&["sync", "--enable"], Some(&answers));
+
+    assert!(err.contains("already has a wrap"), "{err}");
+    assert!(err.contains("copies go to"), "{err}");
+    assert!(
+        std::fs::read_dir(remote.path()).unwrap().count() > 0,
+        "nothing was copied: {err}"
+    );
+}
+
 #[test]
 fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     let cli = Cli::new();
@@ -893,7 +915,7 @@ fn a_write_commits_and_mirrors_without_copying_the_repo() {
 
     let mirrored: Vec<_> = std::fs::read_dir(remote.path().join("store"))
         .expect("the mirror should hold a store")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "age"))
         .collect();
     assert_eq!(mirrored.len(), 1, "the write should reach the mirror");
@@ -907,7 +929,7 @@ fn a_write_commits_and_mirrors_without_copying_the_repo() {
     cli.run(&["rm", "one/secret"], None).expect("rm");
     let tombs = std::fs::read_dir(remote.path().join("store"))
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "tomb"))
         .count();
     assert_eq!(tombs, 1, "a delete should reach the mirror as a tombstone");
@@ -942,7 +964,7 @@ fn autosync_can_be_turned_off() {
     );
 }
 
-/// The Mac's broker as a client with PASSBOX_HOST reaches it, on loopback. Each connection is one
+/// The Mac's broker as a client with `PASSBOX_HOST` reaches it, on loopback. Each connection is one
 /// request, answered by `answer` and handed back so a test can check what the client asked for
 fn fake_host(
     answer: impl Fn(&serde_json::Value) -> Result<String, String> + Send + 'static,
@@ -1101,7 +1123,7 @@ fn a_token_on_stdin_needs_a_first_line_and_no_newline_after_it() {
             assert!(stderr.contains("--token-stdin read no token"), "{stderr}");
         }
     }
-    assert!(ops(&requests).is_empty());
+    assert_eq!(ops(&requests), Vec::<serde_json::Value>::new());
 
     let (ok, stdout, stderr) = on_host_stdin(&cli, &host, "parent-tok", &grant);
     assert!(ok, "{stderr}");
@@ -1343,13 +1365,13 @@ fn a_test_can_never_reach_the_secure_enclave() {
         .arg("init")
         .stdin(Stdio::null());
     // No controlling terminal, so the passphrase init falls back to cannot wait on a keyboard
-    // SAFETY: setsid is async-signal-safe and touches nothing in this process
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
+    let detach = || {
+        // SAFETY: setsid only moves the child into a session of its own
+        unsafe { libc::setsid() };
+        Ok(())
+    };
+    // SAFETY: the hook only calls setsid, which is async-signal-safe and touches nothing in this process
+    unsafe { cmd.pre_exec(detach) };
     let out = cmd.output().unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -2186,7 +2208,7 @@ fn agent_round_trip(kind: &str) {
         .arg(&path)
         .status()
         .unwrap();
-    assert!(made.success());
+    assert!(made.success(), "ssh-keygen could not make a {kind} key");
     let private = std::fs::read_to_string(&path).unwrap();
     bound.run(&["add", "ssh/test"], Some(&private)).unwrap();
     // Starts the broker, which serves the agent socket beside its own
@@ -2197,7 +2219,8 @@ fn agent_round_trip(kind: &str) {
     let public = std::fs::read_to_string(path.with_extension("pub")).unwrap();
     assert_eq!(
         String::from_utf8_lossy(&listed.stdout).trim(),
-        public.trim()
+        public.trim(),
+        "ssh-add -L does not list the stored key"
     );
     assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
 
@@ -2247,7 +2270,10 @@ fn agent_round_trip(kind: &str) {
     );
 
     bound.deny("all");
-    assert!(!sign(&keys.path().join("refused")).status.success());
+    assert!(
+        !sign(&keys.path().join("refused")).status.success(),
+        "a refused prompt still signed"
+    );
     let log = bound.audit();
     assert!(decided(&log, "ssh/test", "signed"), "{log}");
     assert!(decided(&log, "ssh:test@passbox.dev", "denied"), "{log}");

@@ -1,6 +1,6 @@
 //! Copies the store to and from a directory. No shared mutable file, so there is nothing to merge.
 
-use crate::store::Store;
+use crate::store::{Store, write_private};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::fs;
@@ -8,18 +8,20 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[derive(PartialEq, Eq, Debug)]
-pub enum Kind {
+pub(crate) enum Kind {
     Directory,
     Rclone,
     Git,
 }
 
 /// A destination is a directory unless it looks like a git URL or an rclone remote
-pub fn classify(remote: &str) -> Kind {
+pub(crate) fn classify(remote: &str) -> Kind {
     let remote = remote.trim();
     if remote.starts_with("git@")
         || remote.starts_with("ssh://")
-        || remote.ends_with(".git")
+        || remote
+            .get(remote.len().saturating_sub(4)..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(".git"))
         || remote.starts_with("https://")
     {
         return Kind::Git;
@@ -34,12 +36,12 @@ pub fn classify(remote: &str) -> Kind {
 }
 
 /// The old one-line destination, read when there is no config and replaced by the next `--enable`
-pub fn remote_path(store: &Store) -> PathBuf {
+pub(crate) fn remote_path(store: &Store) -> PathBuf {
     store.dir.join("remote")
 }
 
 /// Machine local, since a USB path on one Mac means nothing on another
-pub fn config_path(store: &Store) -> PathBuf {
+pub(crate) fn config_path(store: &Store) -> PathBuf {
     store.dir.join("config.toml")
 }
 
@@ -58,7 +60,7 @@ struct Config {
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq, Clone)]
 #[serde(tag = "engine", rename_all = "lowercase", deny_unknown_fields)]
-pub enum Engine {
+pub(crate) enum Engine {
     Icloud {
         #[serde(skip_serializing_if = "Option::is_none")]
         directory: Option<String>,
@@ -75,14 +77,14 @@ pub enum Engine {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Destination {
+pub(crate) struct Destination {
     pub kind: Kind,
     pub target: String,
 }
 
 impl Destination {
     /// For `--remote`, `PASSBOX_REMOTE` and the old file, which name no engine
-    pub fn guess(target: &str) -> Self {
+    pub(crate) fn guess(target: &str) -> Self {
         Destination {
             kind: classify(target),
             target: target.trim().to_string(),
@@ -104,7 +106,7 @@ fn clean(what: &str, value: &str) -> Result<()> {
 
 impl Engine {
     /// Checked on every read, so a stray keystroke in the file is an error and never a new folder
-    pub fn resolve(&self) -> Result<Destination> {
+    pub(crate) fn resolve(&self) -> Result<Destination> {
         let (kind, target) = match self {
             Engine::Icloud { directory } => {
                 let name = directory.as_deref().unwrap_or(".passbox");
@@ -142,7 +144,7 @@ impl Engine {
 }
 
 /// The chosen destination: the config, then the old `remote` file, then nothing
-pub fn configured(store: &Store) -> Result<Option<Destination>> {
+pub(crate) fn configured(store: &Store) -> Result<Option<Destination>> {
     let path = config_path(store);
     if let Ok(text) = fs::read_to_string(&path) {
         let invalid = || format!("{} is not valid", path.display());
@@ -186,7 +188,7 @@ fn legacy(store: &Store) -> Result<Option<Destination>> {
 }
 
 /// Writes the old `remote` file to the config with the same destination, for `--enable`
-pub fn migrate(store: &Store) -> Result<Option<Destination>> {
+pub(crate) fn migrate(store: &Store) -> Result<Option<Destination>> {
     if config_path(store).exists() {
         return Ok(None);
     }
@@ -208,7 +210,7 @@ pub fn migrate(store: &Store) -> Result<Option<Destination>> {
 }
 
 /// Written by `--enable`, and it replaces the old `remote` file
-pub fn choose(store: &Store, engine: Engine) -> Result<Destination> {
+pub(crate) fn choose(store: &Store, engine: Engine) -> Result<Destination> {
     let destination = engine.resolve()?;
     // The windows in the same file are the owner's, so choosing a destination keeps them
     let old = fs::read_to_string(config_path(store))
@@ -220,13 +222,13 @@ pub fn choose(store: &Store, engine: Engine) -> Result<Destination> {
         plugins,
         ssh,
     })?;
-    crate::store::write_private(&config_path(store), text.as_bytes())?;
+    write_private(&config_path(store), text.as_bytes())?;
     let _ = fs::remove_file(remote_path(store));
     Ok(destination)
 }
 
 /// The environment wins, then whatever was chosen, then iCloud Drive
-pub fn default_destination(store: &Store) -> Result<Destination> {
+pub(crate) fn default_destination(store: &Store) -> Result<Destination> {
     if let Some(set) = std::env::var_os("PASSBOX_REMOTE") {
         return Ok(Destination::guess(&set.to_string_lossy()));
     }
@@ -329,7 +331,7 @@ fn copy(from: &Path, to: &Path) -> Result<()> {
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
-pub struct Report {
+pub(crate) struct Report {
     pub pushed: usize,
     pub pulled: usize,
 }
@@ -358,7 +360,7 @@ fn check_destination(store: &Store, remote: &Path) -> Result<()> {
     let mirror = remote.join("store").is_dir() || remote.join("wraps").is_dir();
     let empty = fs::read_dir(remote)
         .with_context(unreadable)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .all(|e| e.file_name() == ".DS_Store");
     if !mirror && !empty {
         bail!("{shown} holds other files and no passbox copy, {again} with an empty folder");
@@ -367,7 +369,7 @@ fn check_destination(store: &Store, remote: &Path) -> Result<()> {
 }
 
 /// Union both sides, newest modification time wins, and keep whatever it replaced.
-pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
+pub(crate) fn sync(store: &Store, remote: &Path) -> Result<Report> {
     if remote.to_string_lossy().contains(':') {
         bail!(
             "{} looks like an rclone remote, not a directory",
@@ -389,21 +391,21 @@ pub fn sync(store: &Store, remote: &Path) -> Result<Report> {
     for name in names {
         let ours = here.get(&name);
         let theirs = there.get(&name);
-        let from_here = store.dir.join(&name);
-        let from_there = remote.join(&name);
-        let push = || copy(&from_here, &from_there);
+        let local = store.dir.join(&name);
+        let mirrored = remote.join(&name);
+        let push = || copy(&local, &mirrored);
         let pull = || {
             keep_losing_version(store, &name)?;
-            copy(&from_there, &from_here)
+            copy(&mirrored, &local)
         };
 
         // A tombstone loses to its secret written after it, so rm then add of one name sticks
         let done = match (ours, theirs) {
             (None, Some(theirs)) if outlived(&here, &name, *theirs) => {
-                fs::remove_file(&from_there).map_err(Into::into)
+                fs::remove_file(&mirrored).map_err(Into::into)
             }
             (Some(ours), None) if outlived(&there, &name, *ours) => {
-                fs::remove_file(&from_here).map_err(Into::into)
+                fs::remove_file(&local).map_err(Into::into)
             }
             (Some(_), None) => push().map(|()| report.pushed += 1),
             (None, Some(_)) => pull().map(|()| report.pulled += 1),
@@ -475,7 +477,7 @@ fn rclone_args(store: &Store, remote: &str) -> Vec<std::ffi::OsString> {
 }
 
 /// rclone covers every backend it supports, and nobody on the default path needs it installed
-pub fn sync_via_rclone(store: &Store, remote: &str) -> Result<()> {
+pub(crate) fn sync_via_rclone(store: &Store, remote: &str) -> Result<()> {
     let status = std::process::Command::new("rclone")
         .args(rclone_args(store, remote))
         .status()
@@ -491,9 +493,11 @@ pub fn sync_via_rclone(store: &Store, remote: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::store::{Secret, new_id, now};
+    use crate::{plugin, project, ssh};
+    use age::x25519;
     use secrecy::SecretString;
 
-    fn store(dir: &Path) -> (Store, age::x25519::Identity) {
+    fn store(dir: &Path) -> (Store, x25519::Identity) {
         let store = Store {
             dir: dir.to_path_buf(),
         };
@@ -524,6 +528,7 @@ mod tests {
         assert_eq!(classify("git@github.com:you/store.git"), Kind::Git);
         assert_eq!(classify("https://github.com/you/store.git"), Kind::Git);
         assert_eq!(classify("ssh://git@host/store"), Kind::Git);
+        assert_eq!(classify("/srv/store.GIT"), Kind::Git);
     }
 
     /// A git URL also contains a colon, so it must be tested before the rclone shape
@@ -538,7 +543,7 @@ mod tests {
         let (one, _key) = store(tmp.path());
         assert!(configured(&one).unwrap().is_none());
 
-        crate::store::write_private(&remote_path(&one), b"/Volumes/stick/passbox\n").unwrap();
+        write_private(&remote_path(&one), b"/Volumes/stick/passbox\n").unwrap();
         let chosen = configured(&one).unwrap().unwrap();
         assert_eq!(chosen.target, "/Volumes/stick/passbox");
         assert_eq!(chosen.kind, Kind::Directory);
@@ -548,7 +553,7 @@ mod tests {
     fn choosing_writes_a_config_that_wins_over_the_old_file() {
         let tmp = tempfile::tempdir().unwrap();
         let (one, _key) = store(tmp.path());
-        crate::store::write_private(&remote_path(&one), b"/old/place").unwrap();
+        write_private(&remote_path(&one), b"/old/place").unwrap();
 
         let engine = Engine::Directory {
             path: "/Volumes/stick/passbox".into(),
@@ -592,7 +597,7 @@ mod tests {
         ];
         for (old, expected) in cases {
             let _ = fs::remove_file(config_path(&one));
-            crate::store::write_private(&remote_path(&one), old.as_bytes()).unwrap();
+            write_private(&remote_path(&one), old.as_bytes()).unwrap();
             assert_eq!(migrate(&one).unwrap().unwrap().target, old);
             let text = fs::read_to_string(config_path(&one)).unwrap();
             assert!(text.contains(expected), "{old}: {text}");
@@ -601,7 +606,7 @@ mod tests {
         }
 
         // A config already written is left alone, and so is a store with no old file
-        crate::store::write_private(&remote_path(&one), b"/elsewhere").unwrap();
+        write_private(&remote_path(&one), b"/elsewhere").unwrap();
         assert_eq!(migrate(&one).unwrap(), None);
         assert!(remote_path(&one).exists());
     }
@@ -699,7 +704,7 @@ mod tests {
     fn a_remote_split_by_a_yubikey_touch_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         let (one, _key) = store(tmp.path());
-        crate::store::write_private(&remote_path(&one), b"/icloud/.ccdbkdtdu\npassbox\n").unwrap();
+        write_private(&remote_path(&one), b"/icloud/.ccdbkdtdu\npassbox\n").unwrap();
         assert!(configured(&one).is_err());
         assert!(default_destination(&one).is_err());
 
@@ -770,13 +775,13 @@ mod tests {
         one.delete(&id).unwrap();
         sync(&one, remote.path()).unwrap();
         sync(&two, remote.path()).unwrap();
-        assert!(two.names(&key).unwrap().is_empty());
+        assert_eq!(two.names(&key).unwrap(), Vec::<String>::new());
 
         // The tombstone is what stops the far side putting it back
         sync(&two, remote.path()).unwrap();
         sync(&one, remote.path()).unwrap();
-        assert!(one.names(&key).unwrap().is_empty());
-        assert!(two.names(&key).unwrap().is_empty());
+        assert_eq!(one.names(&key).unwrap(), Vec::<String>::new());
+        assert_eq!(two.names(&key).unwrap(), Vec::<String>::new());
     }
 
     #[test]
@@ -858,7 +863,11 @@ mod tests {
         sync(&one, remote.path()).unwrap();
 
         assert_eq!(one.load(&id, &key).unwrap().value, "second");
-        assert!(!one.versions(&id).unwrap().is_empty());
+        assert_ne!(
+            one.versions(&id).unwrap().len(),
+            0,
+            "the losing write kept no version"
+        );
     }
 
     #[test]
@@ -888,18 +897,18 @@ mod tests {
         let remote = tempfile::tempdir().unwrap();
         let (one, _key) = store(a.path());
 
-        let grant = crate::project::Grant {
+        let grant = project::Grant {
             dir: "/x".into(),
             hash: "h".into(),
             secrets: vec!["a/b".into()],
             until: now() + 600,
         };
-        crate::project::save(&one, &[grant]).unwrap();
+        project::save(&one, &[grant]).unwrap();
         sync(&one, remote.path()).unwrap();
 
         let leaked: Vec<_> = fs::read_dir(remote.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n.starts_with("grants-"))
             .collect();
@@ -1041,9 +1050,9 @@ mod tests {
             one.dir.join(".gitignore"),
             remote_path(&one),
             config_path(&one),
-            crate::project::path(&one),
-            crate::plugin::approval_path(&one),
-            crate::ssh::approval_path(&one),
+            project::path(&one),
+            plugin::approval_path(&one),
+            ssh::approval_path(&one),
         ] {
             let relative = path.strip_prefix(&one.dir).unwrap();
             assert!(skip(relative), "{} would sync", relative.display());

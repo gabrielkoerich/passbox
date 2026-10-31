@@ -16,7 +16,7 @@ const PLUGIN: &str = "age-plugin-yubikey";
 const PLUGIN_NAME: &str = "yubikey";
 
 /// Recipients look like `age1yubikey1...` and identities like `AGE-PLUGIN-YUBIKEY-1...`
-pub fn recipient(text: &str) -> Result<Box<dyn age::Recipient + Send>> {
+pub(crate) fn recipient(text: &str) -> Result<Box<dyn age::Recipient + Send>> {
     let parsed = Recipient::from_str(text.trim())
         .map_err(|e| anyhow!("{text} is not an age recipient: {e}"))?;
     if parsed.plugin() != PLUGIN_NAME {
@@ -33,7 +33,7 @@ pub fn recipient(text: &str) -> Result<Box<dyn age::Recipient + Send>> {
 }
 
 /// Asks the plugin for whichever token is plugged in, so no identity file has to be kept
-pub fn identity() -> Result<Box<dyn age::Identity>> {
+pub(crate) fn identity() -> Result<Box<dyn age::Identity>> {
     let found = Identity::default_for_plugin(PLUGIN_NAME)
         .map_err(|e| anyhow!("no YubiKey identity: {e}"))?;
     let plugin = IdentityPluginV1::new(PLUGIN_NAME, &[found], UiCallbacks)
@@ -43,7 +43,7 @@ pub fn identity() -> Result<Box<dyn age::Identity>> {
 
 /* Offer rather than act. Installing software is a change to the user's machine, and this
 particular binary goes on to handle key material, so it is not something to do quietly. */
-pub fn offer_install() -> Result<()> {
+pub(crate) fn offer_install() -> Result<()> {
     if installed() {
         return Ok(());
     }
@@ -87,7 +87,7 @@ fn piv_info() -> Option<String> {
 /* What the PIV applet already holds. OpenPGP is a separate applet on the same chip, so PGP keys
 are never at risk, but a PIV slot in use is worth seeing before provisioning one. None means the
 check could not run. */
-pub fn piv_slots_in_use() -> Option<Vec<String>> {
+pub(crate) fn piv_slots_in_use() -> Option<Vec<String>> {
     Some(
         piv_info()?
             .lines()
@@ -101,7 +101,7 @@ pub fn piv_slots_in_use() -> Option<Vec<String>> {
 key fails after the PIN prompt with an error naming neither the cause nor the token. Recent ykman
 picks AES192 when it sets a management key, so this is the state a careful user lands in.
 See https://github.com/str4d/age-plugin-yubikey/issues/92 */
-pub fn management_key_is_supported() -> Result<()> {
+pub(crate) fn management_key_is_supported() -> Result<()> {
     match piv_info() {
         // No ykman, so let the plugin speak for itself
         None => Ok(()),
@@ -110,6 +110,7 @@ pub fn management_key_is_supported() -> Result<()> {
 }
 
 fn check_management_key(info: &str) -> Result<()> {
+    const DEFAULT_TDES: &str = "010203040506070801020304050607080102030405060708";
     let Some(algorithm) = info
         .lines()
         .find_map(|l| l.trim().strip_prefix("Management key algorithm:"))
@@ -120,7 +121,6 @@ fn check_management_key(info: &str) -> Result<()> {
     if algorithm.eq_ignore_ascii_case("TDES") {
         return Ok(());
     }
-    const DEFAULT_TDES: &str = "010203040506070801020304050607080102030405060708";
     bail!(
         "the PIV management key is {algorithm}, and {PLUGIN} can only use TDES.\n\
          Firmware 5.7 sets {algorithm} on a new token and on a factory reset, so this\n\
@@ -133,16 +133,15 @@ fn check_management_key(info: &str) -> Result<()> {
 /* GPG's scdaemon opens the card exclusively and holds it, so it lands between the plugin's key
 generation and its certificate write and the write comes back as an authentication error. The
 card is released when scdaemon stops, and gpg-agent starts it again the next time GPG wants it. */
-pub fn scdaemon_is_running() -> bool {
+pub(crate) fn scdaemon_is_running() -> bool {
     std::process::Command::new("pgrep")
         .args(["-x", "scdaemon"])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Stopping another program's daemon is not something to do quietly, so it is offered
-pub fn offer_to_stop_scdaemon() -> Result<()> {
+pub(crate) fn offer_to_stop_scdaemon() -> Result<()> {
     if !scdaemon_is_running() {
         return Ok(());
     }
@@ -177,13 +176,13 @@ pub fn offer_to_stop_scdaemon() -> Result<()> {
 
 /// A recipient on a plugged token, with the `Serial: ..., Slot: ...` line that tells tokens apart
 #[derive(Debug, PartialEq)]
-pub struct Plugged {
+pub(crate) struct Plugged {
     pub recipient: String,
     pub serial: Option<String>,
 }
 
 /// Recipients already provisioned on every token plugged in
-pub fn recipients() -> Result<Vec<Plugged>> {
+pub(crate) fn recipients() -> Result<Vec<Plugged>> {
     let out = std::process::Command::new(PLUGIN)
         .arg("--list")
         .output()
@@ -222,19 +221,18 @@ fn parse_list(out: &str) -> Vec<Plugged> {
 }
 
 /// Plugged recipients the store does not hold yet
-pub fn not_added(plugged: Vec<Plugged>, stored: &[String]) -> Vec<Plugged> {
+pub(crate) fn not_added(plugged: Vec<Plugged>, stored: &[String]) -> Vec<Plugged> {
     plugged
         .into_iter()
         .filter(|p| !stored.contains(&p.recipient))
         .collect()
 }
 
-/// The one new token, or the pick from several, which needs a terminal to ask on
-pub fn choose(
+/// The one new token, or the pick from several, which needs `answer` to ask at a terminal
+pub(crate) fn choose(
     mut found: Vec<Plugged>,
     seen: usize,
-    terminal: bool,
-    answer: impl FnOnce() -> Result<String>,
+    answer: Option<impl FnOnce() -> Result<String>>,
 ) -> Result<String> {
     if found.len() <= 1 {
         let token = found.pop().with_context(|| {
@@ -251,9 +249,9 @@ pub fn choose(
         return Ok(token.recipient);
     }
 
-    if !terminal {
+    let Some(answer) = answer else {
         bail!("several new tokens are plugged in, pass the recipient to `passbox yubikey-add`");
-    }
+    };
     eprintln!("Several tokens are plugged in and new to this store:");
     for (i, token) in found.iter().enumerate() {
         let serial = token.serial.as_deref().unwrap_or("serial unknown");
@@ -271,7 +269,7 @@ pub fn choose(
 }
 
 /// Provisioning a PIV slot changes the token, so it runs only when the user says so
-pub fn generate() -> Result<()> {
+pub(crate) fn generate() -> Result<()> {
     let status = std::process::Command::new(PLUGIN)
         .arg("--generate")
         .status()
@@ -282,7 +280,7 @@ pub fn generate() -> Result<()> {
     Ok(())
 }
 
-pub fn installed() -> bool {
+pub(crate) fn installed() -> bool {
     std::process::Command::new(PLUGIN)
         .arg("--version")
         .output()
@@ -345,18 +343,18 @@ mod tests {
         assert_eq!(found[0].recipient, "age1yubikey1aaa");
         assert_eq!(found[0].serial.as_deref(), Some("Serial: 111, Slot: 1"));
         assert_eq!(found[1].serial.as_deref(), Some("Serial: 222, Slot: 1"));
-        assert!(parse_list("").is_empty());
+        assert_eq!(parse_list(""), Vec::new());
     }
 
     #[test]
     fn stored_recipients_are_filtered_out() {
-        let stored = |s: &[&str]| s.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+        let stored = |s: &[&str]| s.iter().copied().map(String::from).collect::<Vec<_>>();
 
         let none = not_added(
             parse_list(LIST),
             &stored(&["age1yubikey1aaa", "age1yubikey1bbb"]),
         );
-        assert!(none.is_empty());
+        assert_eq!(none, Vec::new());
 
         let one = not_added(parse_list(LIST), &stored(&["age1yubikey1aaa"]));
         assert_eq!(one.len(), 1);
@@ -368,7 +366,10 @@ mod tests {
 
     #[test]
     fn list_skips_garbage_and_repeats() {
-        assert!(parse_list("error: no smart card\n\x00\u{fffd}age1yubi\n").is_empty());
+        assert_eq!(
+            parse_list("error: no smart card\n\x00\u{fffd}age1yubi\n"),
+            Vec::new()
+        );
         let twice = parse_list("age1yubikey1aaa\n#  Serial: 1, Slot: 1\nage1yubikey1aaa\n");
         assert_eq!(
             twice,
@@ -389,22 +390,24 @@ mod tests {
             .collect()
     }
 
+    const HEADLESS: Option<fn() -> Result<String>> = None;
+
     fn never() -> Result<String> {
-        panic!("one candidate or none must not ask")
+        bail!("one candidate or none must not ask")
     }
 
     #[test]
     fn choose_takes_the_one_new_token_without_asking() {
-        let got = choose(plugged(&["age1yubikey1bbb"]), 2, false, never).unwrap();
+        let got = choose(plugged(&["age1yubikey1bbb"]), 2, HEADLESS).unwrap();
         assert_eq!(got, "age1yubikey1bbb");
     }
 
     #[test]
     fn choose_with_nothing_names_why() {
-        let none = choose(Vec::new(), 0, true, never).unwrap_err().to_string();
+        let none = choose(Vec::new(), 0, Some(never)).unwrap_err().to_string();
         assert!(none.contains("is the token plugged in"), "{none}");
 
-        let stored = choose(Vec::new(), 2, true, never).unwrap_err().to_string();
+        let stored = choose(Vec::new(), 2, Some(never)).unwrap_err().to_string();
         assert!(
             stored.contains("2 plugged token(s) already open"),
             "{stored}"
@@ -414,14 +417,14 @@ mod tests {
     #[test]
     fn choose_among_several_asks_only_on_a_terminal() {
         let two = || plugged(&["age1yubikey1aaa", "age1yubikey1bbb"]);
-        let headless = choose(two(), 2, false, never).unwrap_err().to_string();
+        let headless = choose(two(), 2, HEADLESS).unwrap_err().to_string();
         assert!(headless.contains("pass the recipient"), "{headless}");
 
-        let got = choose(two(), 2, true, || Ok("2\n".into())).unwrap();
+        let got = choose(two(), 2, Some(|| Ok("2\n".into()))).unwrap();
         assert_eq!(got, "age1yubikey1bbb");
 
         for bad in ["0\n", "3\n", "b\n", ""] {
-            let err = choose(two(), 2, true, || Ok(bad.into())).unwrap_err();
+            let err = choose(two(), 2, Some(|| Ok(bad.into()))).unwrap_err();
             assert!(
                 err.to_string().contains("expected 1 to 2"),
                 "{bad:?}: {err}"

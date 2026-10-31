@@ -1,5 +1,6 @@
 //! Secure Enclave wrapping, through the Swift helper that owns the Touch ID prompt.
 
+use crate::store::write_private;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Read, Write};
@@ -17,7 +18,7 @@ const HELPER: &[u8] = &[];
 
 /// Everything needed to open the store key on this machine, minus the fingerprint
 #[derive(Serialize, Deserialize)]
-pub struct SeWrap {
+pub(crate) struct SeWrap {
     pub public_key: String,
     pub key_blob: String,
     pub ephemeral: String,
@@ -76,7 +77,7 @@ fn helper() -> Result<PathBuf> {
 
     // Comparing bytes is cheaper than versioning, and a changed helper replaces itself
     if std::fs::read(&path).ok().as_deref() != Some(HELPER) {
-        crate::store::write_private(&path, HELPER)?;
+        write_private(&path, HELPER)?;
         let mut perms = std::fs::metadata(&path)?.permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
         std::fs::set_permissions(&path, perms)?;
@@ -121,7 +122,7 @@ fn ensure_enabled() -> Result<()> {
 }
 
 /// Wrap the store key to a new Secure Enclave key. Neither step raises a prompt.
-pub fn wrap(plaintext: &[u8]) -> Result<SeWrap> {
+pub(crate) fn wrap(plaintext: &[u8]) -> Result<SeWrap> {
     ensure_enabled()?;
     let pair: KeyPair = serde_json::from_slice(&run(&["keygen"], None)?)?;
     let request = serde_json::json!({
@@ -142,7 +143,7 @@ pub fn wrap(plaintext: &[u8]) -> Result<SeWrap> {
 /* Raise a Touch ID prompt worded by `reason`, then open the wrap. macOS renders the dialog as
 "<binary> is trying to <reason>.", so `reason` has to be a verb phrase that finishes that
 sentence, such as "release the password for github/token to claude-code". */
-pub fn unwrap(wrap: &SeWrap, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn unwrap(wrap: &SeWrap, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
     ensure_enabled()?;
     let request = serde_json::json!({
         "key_blob": wrap.key_blob,
@@ -157,7 +158,7 @@ pub fn unwrap(wrap: &SeWrap, reason: &str) -> Result<Zeroizing<Vec<u8>>> {
 
 // The helper keeps running to clear the clipboard, so wait only for the line that confirms the
 // pasteboard is set, then leave it. The value goes in on stdin, so it never reaches argv or ps
-pub fn clip(value: &str, secs: u64) -> Result<()> {
+pub(crate) fn clip(value: &str, secs: u64) -> Result<()> {
     let mut child = Command::new(helper()?)
         .args(["clip", "--clear", &secs.to_string()])
         .stdin(Stdio::piped())
@@ -194,7 +195,9 @@ fn base64(bytes: &[u8]) -> String {
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         for i in 0..4 {
             if i <= chunk.len() {
-                out.push(ALPHABET[(n >> (18 - 6 * i)) as usize & 63] as char);
+                let index =
+                    usize::try_from((n >> (18 - 6 * i)) & 63).expect("six bits fit a usize");
+                out.push(char::from(ALPHABET[index]));
             } else {
                 out.push('=');
             }

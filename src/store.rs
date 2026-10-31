@@ -1,7 +1,9 @@
 //! One age file per secret. The filename is a random id, the name lives inside the ciphertext.
 
 use crate::crypto;
-use age::x25519;
+#[cfg(feature = "host")]
+use crate::{se, yubikey};
+use age::{scrypt, x25519};
 use anyhow::{Context, Result, anyhow, bail};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -13,10 +15,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroize;
 
 const KEEP_VERSIONS: usize = 5;
-pub const TOMB_TTL_SECS: u64 = 90 * 24 * 60 * 60;
+pub(crate) const TOMB_TTL_SECS: u64 = 90 * 24 * 60 * 60;
 
 #[derive(Serialize, Deserialize)]
-pub struct Secret {
+pub(crate) struct Secret {
     pub name: String,
     pub value: String,
     pub created: u64,
@@ -32,17 +34,16 @@ impl Drop for Secret {
     }
 }
 
-pub fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /* A name, or everything under a namespace. The trailing slash is what stops `acme` dragging
 in `acmecorp`. Lives here rather than in `import` because the client build has no `import`. */
 #[cfg(feature = "host")]
-pub fn select(all: &[String], prefix: Option<&str>) -> Vec<String> {
+pub(crate) fn select(all: &[String], prefix: Option<&str>) -> Vec<String> {
     let Some(prefix) = prefix else {
         return all.to_vec();
     };
@@ -53,18 +54,18 @@ pub fn select(all: &[String], prefix: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-pub fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     let bytes: [u8; 16] = rand::random();
     hex::encode(bytes)
 }
 
 #[derive(Clone)]
-pub struct Store {
+pub(crate) struct Store {
     pub dir: PathBuf,
 }
 
 impl Store {
-    pub fn open() -> Result<Self> {
+    pub(crate) fn open() -> Result<Self> {
         let dir = match std::env::var_os("PASSBOX_DIR") {
             Some(d) => PathBuf::from(d),
             None => home()?.join(".passbox"),
@@ -72,13 +73,13 @@ impl Store {
         Ok(Store { dir })
     }
 
-    pub fn secrets_dir(&self) -> PathBuf {
+    pub(crate) fn secrets_dir(&self) -> PathBuf {
         self.dir.join("store")
     }
-    pub fn versions_dir(&self) -> PathBuf {
+    pub(crate) fn versions_dir(&self) -> PathBuf {
         self.secrets_dir().join(".versions")
     }
-    pub fn wraps_dir(&self) -> PathBuf {
+    pub(crate) fn wraps_dir(&self) -> PathBuf {
         self.dir.join("wraps")
     }
     fn recipient_path(&self) -> PathBuf {
@@ -88,46 +89,51 @@ impl Store {
         self.wraps_dir().join("recovery.age")
     }
     /// Opened by the token rather than by a passphrase, so the file is inert on its own
-    pub fn yubikey_wrap_path(&self) -> PathBuf {
+    #[cfg(feature = "host")]
+    pub(crate) fn yubikey_wrap_path(&self) -> PathBuf {
         self.wraps_dir().join("yubikey.age")
     }
-    pub fn has_yubikey_wrap(&self) -> bool {
+    #[cfg(feature = "host")]
+    pub(crate) fn has_yubikey_wrap(&self) -> bool {
         self.yubikey_wrap_path().exists()
     }
 
     /// One wrap per machine, because a Secure Enclave key cannot leave the Mac that made it
-    pub fn se_wrap_path(&self) -> PathBuf {
+    pub(crate) fn se_wrap_path(&self) -> PathBuf {
         self.wraps_dir().join(format!("se-{}.json", hostname()))
     }
-    pub fn socket_path(&self) -> PathBuf {
+    pub(crate) fn socket_path(&self) -> PathBuf {
         self.dir.join("broker.sock")
     }
     /// Where `SSH_AUTH_SOCK` points
-    pub fn ssh_agent_path(&self) -> PathBuf {
+    #[cfg(feature = "host")]
+    pub(crate) fn ssh_agent_path(&self) -> PathBuf {
         self.dir.join("ssh-agent.sock")
     }
     /// The public half of every SSH key in the store, so listing them needs no prompt
-    pub fn ssh_keys_path(&self) -> PathBuf {
+    #[cfg(feature = "host")]
+    pub(crate) fn ssh_keys_path(&self) -> PathBuf {
         self.dir.join("ssh-keys.pub")
     }
     /// Installed plugins, one directory each. Local and machine specific, so sync skips it
-    pub fn plugins_dir(&self) -> PathBuf {
+    #[cfg(feature = "host")]
+    pub(crate) fn plugins_dir(&self) -> PathBuf {
         self.dir.join("plugins")
     }
     /// Per machine, so two Macs never append to the same file through a syncer
-    pub fn audit_path(&self) -> PathBuf {
+    pub(crate) fn audit_path(&self) -> PathBuf {
         self.dir.join(format!("audit-{}.log", hostname()))
     }
-    pub fn is_initialised(&self) -> bool {
+    pub(crate) fn is_initialised(&self) -> bool {
         self.recipient_path().exists()
     }
-    pub fn has_se_wrap(&self) -> bool {
+    pub(crate) fn has_se_wrap(&self) -> bool {
         self.se_wrap_path().exists()
     }
 
     /// Generate the store key and write no wrap. The recipient stays in the clear so writing a
     /// secret never needs an unlock. The caller decides which wraps to add.
-    pub fn init(&self) -> Result<x25519::Identity> {
+    pub(crate) fn init(&self) -> Result<x25519::Identity> {
         if self.is_initialised() {
             bail!("{} is already initialised", self.dir.display());
         }
@@ -144,75 +150,48 @@ impl Store {
         Ok(key)
     }
 
-    pub fn has_recovery_wrap(&self) -> bool {
+    #[cfg(feature = "host")]
+    pub(crate) fn has_recovery_wrap(&self) -> bool {
         self.recovery_path().exists()
     }
 
     /// A wrap that opens the store away from this Mac. Sync is worth nothing without one.
-    pub fn has_portable_wrap(&self) -> bool {
+    #[cfg(feature = "host")]
+    pub(crate) fn has_portable_wrap(&self) -> bool {
         self.has_recovery_wrap() || self.has_yubikey_wrap()
     }
 
     /* The passphrase wrap is the only thing that opens the store away from this Mac, which makes
     it both what syncing needs and the one file worth attacking in a synced copy. It is written
-    when the user asks for sync, never before. */
-    pub fn create_recovery_wrap(
-        &self,
-        key: &x25519::Identity,
-        passphrase: SecretString,
-    ) -> Result<()> {
-        self.create_recovery_wrap_with_factor(key, passphrase, None)
-    }
+    when the user asks for sync, never before.
 
-    /* The age crate calibrates scrypt to about a second of work on this machine, which is the
+    The age crate calibrates scrypt to about a second of work on this machine, which is the
     right default and the wrong thing to pay sixty times over in a test suite. `log_n` lowers it,
     and only a debug build will read the environment variable that asks for that. */
-    pub fn create_recovery_wrap_with_factor(
+    pub(crate) fn create_recovery_wrap_with_factor(
         &self,
         key: &x25519::Identity,
         passphrase: SecretString,
         log_n: Option<u8>,
     ) -> Result<()> {
-        let mut recipient = age::scrypt::Recipient::new(passphrase);
+        let mut recipient = scrypt::Recipient::new(passphrase);
         if let Some(log_n) = log_n {
             recipient.set_work_factor(log_n);
         }
-        self.write_recovery_wrap(key, recipient, &self.recovery_path())
-    }
-
-    /// The same wrap written wherever the caller wants it, for a backup that never syncs
-    pub fn export_recovery_wrap(
-        &self,
-        key: &x25519::Identity,
-        passphrase: SecretString,
-        to: &Path,
-        log_n: Option<u8>,
-    ) -> Result<()> {
-        let mut recipient = age::scrypt::Recipient::new(passphrase);
-        if let Some(log_n) = log_n {
-            recipient.set_work_factor(log_n);
-        }
-        self.write_recovery_wrap(key, recipient, to)
-    }
-
-    fn write_recovery_wrap(
-        &self,
-        key: &x25519::Identity,
-        recipient: age::scrypt::Recipient,
-        to: &Path,
-    ) -> Result<()> {
         let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
         let wrapped = crypto::encrypt(text.as_bytes(), &[Box::new(recipient)])?;
         text.zeroize();
-        write_private(to, &wrapped)
+        write_private(&self.recovery_path(), &wrapped)
     }
 
     /// Recipients are public, so they sit in the clear beside the wrap they opened
-    pub fn yubikey_recipients_path(&self) -> PathBuf {
+    #[cfg(feature = "host")]
+    pub(crate) fn yubikey_recipients_path(&self) -> PathBuf {
         self.wraps_dir().join("yubikey.recipients")
     }
 
-    pub fn yubikey_recipients(&self) -> Vec<String> {
+    #[cfg(feature = "host")]
+    pub(crate) fn yubikey_recipients(&self) -> Vec<String> {
         fs::read_to_string(self.yubikey_recipients_path())
             .map(|raw| {
                 raw.lines()
@@ -227,7 +206,11 @@ impl Store {
     /* age takes any number of recipients, so a second token is added to the same wrap rather
     than replacing it. Adding one re-encrypts to every recipient, which is why it needs the key. */
     #[cfg(feature = "host")]
-    pub fn add_yubikey_recipient(&self, key: &x25519::Identity, recipient: &str) -> Result<usize> {
+    pub(crate) fn add_yubikey_recipient(
+        &self,
+        key: &x25519::Identity,
+        recipient: &str,
+    ) -> Result<usize> {
         let mut all = self.yubikey_recipients();
         let recipient = recipient.trim().to_string();
         if !all.contains(&recipient) {
@@ -236,7 +219,7 @@ impl Store {
 
         let mut to = Vec::new();
         for text in &all {
-            to.push(crate::yubikey::recipient(text)?);
+            to.push(yubikey::recipient(text)?);
         }
 
         let mut plain = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
@@ -250,50 +233,50 @@ impl Store {
 
     /// The token prompts for a touch itself, so passbox raises nothing here
     #[cfg(feature = "host")]
-    pub fn unlock_with_yubikey(&self) -> Result<x25519::Identity> {
+    pub(crate) fn unlock_with_yubikey(&self) -> Result<x25519::Identity> {
         let wrapped = fs::read(self.yubikey_wrap_path()).context("no YubiKey wrap")?;
-        let raw = crypto::decrypt(&wrapped, &[crate::yubikey::identity()?])
+        let raw = crypto::decrypt(&wrapped, &[yubikey::identity()?])
             .context("the YubiKey refused, or it is not the one this was wrapped to")?;
         key_from_bytes(&raw)
     }
 
-    pub fn recipient(&self) -> Result<x25519::Recipient> {
+    pub(crate) fn recipient(&self) -> Result<x25519::Recipient> {
         let raw = fs::read_to_string(self.recipient_path())
             .with_context(|| format!("no store at {}, run `passbox init`", self.dir.display()))?;
         x25519::Recipient::from_str(raw.trim()).map_err(|e| anyhow!("bad recipient file: {e}"))
     }
 
-    pub fn unlock_with_passphrase(&self, passphrase: SecretString) -> Result<x25519::Identity> {
+    pub(crate) fn unlock_with_passphrase(
+        &self,
+        passphrase: SecretString,
+    ) -> Result<x25519::Identity> {
         let wrapped = fs::read(self.recovery_path()).context("no recovery wrap")?;
-        let raw = crypto::decrypt(
-            &wrapped,
-            &[Box::new(age::scrypt::Identity::new(passphrase))],
-        )
-        .context("wrong passphrase")?;
+        let raw = crypto::decrypt(&wrapped, &[Box::new(scrypt::Identity::new(passphrase))])
+            .context("wrong passphrase")?;
         key_from_bytes(&raw)
     }
 
     /// Bind the store key to this Mac's Secure Enclave. Neither step raises a prompt.
     #[cfg(feature = "host")]
-    pub fn create_se_wrap(&self, key: &x25519::Identity) -> Result<()> {
+    pub(crate) fn create_se_wrap(&self, key: &x25519::Identity) -> Result<()> {
         let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
-        let wrap = crate::se::wrap(text.as_bytes())?;
+        let wrap = se::wrap(text.as_bytes())?;
         text.zeroize();
         write_private(&self.se_wrap_path(), &serde_json::to_vec(&wrap)?)
     }
 
     /// Raise a Touch ID prompt worded by `reason`, then open the store key.
     #[cfg(feature = "host")]
-    pub fn unlock_with_se(&self, reason: &str) -> Result<x25519::Identity> {
+    pub(crate) fn unlock_with_se(&self, reason: &str) -> Result<x25519::Identity> {
         let raw =
             fs::read(self.se_wrap_path()).context("no Secure Enclave wrap on this machine")?;
-        let wrap: crate::se::SeWrap = serde_json::from_slice(&raw)?;
-        let plain = crate::se::unwrap(&wrap, reason)?;
+        let wrap: se::SeWrap = serde_json::from_slice(&raw)?;
+        let plain = se::unwrap(&wrap, reason)?;
         key_from_bytes(&plain)
     }
 
     /// Ids with a secret file and no tombstone.
-    pub fn ids(&self) -> Result<Vec<String>> {
+    pub(crate) fn ids(&self) -> Result<Vec<String>> {
         let mut out = self.ids_with_files()?;
         out.retain(|id| !self.tomb_path(id).exists());
         Ok(out)
@@ -301,7 +284,7 @@ impl Store {
 
     /// Every id that still has a file, tombstoned or not. A delete that arrived through a
     /// sync leaves the file in place, so undeleting it is a matter of dropping the tombstone.
-    pub fn ids_with_files(&self) -> Result<Vec<String>> {
+    pub(crate) fn ids_with_files(&self) -> Result<Vec<String>> {
         let mut out = Vec::new();
         let dir = self.secrets_dir();
         if !dir.exists() {
@@ -320,7 +303,7 @@ impl Store {
         Ok(out)
     }
 
-    pub fn untomb(&self, id: &str) -> Result<()> {
+    pub(crate) fn untomb(&self, id: &str) -> Result<()> {
         let tomb = self.tomb_path(id);
         if tomb.exists() {
             fs::remove_file(tomb)?;
@@ -328,27 +311,20 @@ impl Store {
         Ok(())
     }
 
-    pub fn secret_path(&self, id: &str) -> PathBuf {
+    pub(crate) fn secret_path(&self, id: &str) -> PathBuf {
         self.secrets_dir().join(format!("{id}.age"))
     }
-    pub fn tomb_path(&self, id: &str) -> PathBuf {
+    pub(crate) fn tomb_path(&self, id: &str) -> PathBuf {
         self.secrets_dir().join(format!("{id}.tomb"))
     }
 
-    pub fn load(&self, id: &str, key: &x25519::Identity) -> Result<Secret> {
-        self.load_path(&self.secret_path(id), key)
-    }
-
-    pub fn load_path(&self, path: &Path, key: &x25519::Identity) -> Result<Secret> {
-        let raw = fs::read(path)?;
-        let mut plain = crypto::decrypt(&raw, &[Box::new(key.clone())])?;
-        let secret = serde_json::from_slice(&plain).context("secret file is not valid json");
-        plain.zeroize();
-        secret
+    pub(crate) fn load(&self, id: &str, key: &x25519::Identity) -> Result<Secret> {
+        load_path(&self.secret_path(id), key)
     }
 
     /// A hash of the secret file's bytes, which changes whenever the entry is rewritten
-    pub fn stamp(&self, id: &str) -> Result<u64> {
+    #[cfg(feature = "host")]
+    pub(crate) fn stamp(&self, id: &str) -> Result<u64> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         fs::read(self.secret_path(id))?.hash(&mut hasher);
@@ -356,11 +332,16 @@ impl Store {
     }
 
     /// True while the id has a file, no tombstone and the bytes it had when stamped
-    pub fn is_current(&self, id: &str, stamp: u64) -> bool {
+    #[cfg(feature = "host")]
+    pub(crate) fn is_current(&self, id: &str, stamp: u64) -> bool {
         !self.tomb_path(id).exists() && self.stamp(id).is_ok_and(|now| now == stamp)
     }
 
-    pub fn find(&self, name: &str, key: &x25519::Identity) -> Result<Option<(String, Secret)>> {
+    pub(crate) fn find(
+        &self,
+        name: &str,
+        key: &x25519::Identity,
+    ) -> Result<Option<(String, Secret)>> {
         for id in self.ids()? {
             let secret = self.load(&id, key)?;
             if secret.name == name {
@@ -373,11 +354,11 @@ impl Store {
     /* A host to ask instead of a local broker. One line, `machine:port`, which a client writes
     once. A machine with no Enclave has nothing to unlock and no sensor to ask, so asking a
     machine that has both is the only thing it can usefully do. */
-    pub fn host_path(&self) -> PathBuf {
+    pub(crate) fn host_path(&self) -> PathBuf {
         self.dir.join("host")
     }
 
-    pub fn host(&self) -> Option<String> {
+    pub(crate) fn host(&self) -> Option<String> {
         if let Ok(from_env) = std::env::var("PASSBOX_HOST")
             && !from_env.is_empty()
         {
@@ -389,7 +370,7 @@ impl Store {
     }
 
     /// Versions before 0.13.43 kept every name in the clear here, so remove what they left
-    pub fn remove_name_index(&self) -> Result<()> {
+    pub(crate) fn remove_name_index(&self) -> Result<()> {
         match fs::remove_file(self.dir.join("names")) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
@@ -398,7 +379,7 @@ impl Store {
 
     /* serde skips a field the struct does not name without building it, so the value is never
     copied out of the decrypted buffer, which wipes itself when dropped. */
-    pub fn names(&self, key: &x25519::Identity) -> Result<Vec<String>> {
+    pub(crate) fn names(&self, key: &x25519::Identity) -> Result<Vec<String>> {
         #[derive(Deserialize)]
         struct NameOnly {
             name: String,
@@ -416,7 +397,12 @@ impl Store {
     }
 
     /// Encrypt and write, keeping the previous file as a version.
-    pub fn put(&self, id: &str, secret: &Secret, recipient: &x25519::Recipient) -> Result<()> {
+    pub(crate) fn put(
+        &self,
+        id: &str,
+        secret: &Secret,
+        recipient: &x25519::Recipient,
+    ) -> Result<()> {
         private_dir(&self.secrets_dir())?;
         let json = serde_json::to_vec(secret)?;
         let ct = crypto::encrypt(&json, &[Box::new(recipient.clone())])?;
@@ -429,8 +415,8 @@ impl Store {
         Ok(())
     }
 
-    /// Move the current file into `.versions`, trimming to the newest KEEP_VERSIONS.
-    pub fn keep_version(&self, id: &str) -> Result<()> {
+    /// Move the current file into `.versions`, trimming to the newest `KEEP_VERSIONS`.
+    pub(crate) fn keep_version(&self, id: &str) -> Result<()> {
         let current = self.secret_path(id);
         if !current.exists() {
             return Ok(());
@@ -452,7 +438,7 @@ impl Store {
     }
 
     /// Versions for an id, oldest first.
-    pub fn versions(&self, id: &str) -> Result<Vec<(u64, PathBuf)>> {
+    pub(crate) fn versions(&self, id: &str) -> Result<Vec<(u64, PathBuf)>> {
         let dir = self.versions_dir().join(id);
         let mut out = Vec::new();
         if !dir.exists() {
@@ -473,13 +459,13 @@ impl Store {
     }
 
     /// Version the current file, then leave a tombstone so the delete survives a sync.
-    pub fn delete(&self, id: &str) -> Result<()> {
+    pub(crate) fn delete(&self, id: &str) -> Result<()> {
         self.keep_version(id)?;
         write_private(&self.tomb_path(id), now().to_string().as_bytes())
     }
 
     /// Drop tombstones older than the TTL, along with the versions they guard.
-    pub fn prune_tombs(&self) -> Result<usize> {
+    pub(crate) fn prune_tombs(&self) -> Result<usize> {
         let dir = self.secrets_dir();
         if !dir.exists() {
             return Ok(0);
@@ -516,7 +502,7 @@ fn home() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("HOME is not set"))
 }
 
-pub fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     std::process::Command::new("hostname")
         .arg("-s")
         .output()
@@ -532,14 +518,23 @@ fn key_from_bytes(raw: &[u8]) -> Result<x25519::Identity> {
     x25519::Identity::from_str(text.trim()).map_err(|e| anyhow!("bad store key: {e}"))
 }
 
-pub fn private_dir(path: &Path) -> Result<()> {
+pub(crate) fn private_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
 
 /// Write through a temporary file so a crash cannot leave a half written secret.
-pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+/// One encrypted secret file, wherever it sits, such as an earlier version
+pub(crate) fn load_path(path: &Path, key: &x25519::Identity) -> Result<Secret> {
+    let raw = fs::read(path)?;
+    let mut plain = crypto::decrypt(&raw, &[Box::new(key.clone())])?;
+    let secret = serde_json::from_slice(&plain).context("secret file is not valid json");
+    plain.zeroize();
+    secret
+}
+
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, bytes)?;
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
@@ -563,6 +558,7 @@ mod tests {
         store.remove_name_index().unwrap();
     }
 
+    #[cfg(feature = "host")]
     #[test]
     fn a_stamp_goes_stale_when_the_entry_is_rewritten_or_deleted() {
         let (_tmp, store, key) = store();
@@ -675,7 +671,7 @@ mod tests {
         store.put(&id, &secret("db", "v"), &r).unwrap();
         store.delete(&id).unwrap();
 
-        assert!(store.ids().unwrap().is_empty());
+        assert_eq!(store.ids().unwrap(), Vec::<String>::new());
         assert!(store.tomb_path(&id).exists());
         assert_eq!(store.versions(&id).unwrap().len(), 1);
     }
@@ -818,10 +814,11 @@ mod tests {
         assert!(store.unlock_with_passphrase(pass).is_err());
     }
 
+    #[cfg(feature = "host")]
     #[test]
     fn yubikey_recipients_accumulate_on_disk() {
         let (_tmp, store, _key) = store();
-        assert!(store.yubikey_recipients().is_empty());
+        assert_eq!(store.yubikey_recipients(), Vec::<String>::new());
 
         write_private(
             &store.yubikey_recipients_path(),
@@ -834,6 +831,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "host")]
     #[test]
     fn a_yubikey_wrap_counts_as_a_way_off_this_mac() {
         let (_tmp, store, _key) = store();

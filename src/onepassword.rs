@@ -1,5 +1,6 @@
 //! Bring items across from 1Password through the `op` CLI, which the user has signed in
 
+use crate::ssh;
 use crate::store::{Secret, Store, new_id, now};
 use age::x25519;
 use anyhow::{Context, Result, bail};
@@ -7,20 +8,20 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Deserialize)]
-pub struct Vault {
+pub(crate) struct Vault {
     pub id: String,
     pub name: String,
 }
 
 #[derive(Deserialize)]
-pub struct Summary {
+pub(crate) struct Summary {
     pub id: String,
     #[serde(default)]
     pub title: String,
 }
 
 #[derive(Deserialize, Default)]
-pub struct Item {
+pub(crate) struct Item {
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -32,7 +33,7 @@ pub struct Item {
 }
 
 #[derive(Deserialize, Default)]
-pub struct Field {
+pub(crate) struct Field {
     #[serde(default)]
     pub id: String,
     #[serde(default, rename = "type")]
@@ -50,23 +51,23 @@ pub struct Field {
 }
 
 #[derive(Deserialize, Default)]
-pub struct Section {
+pub(crate) struct Section {
     #[serde(default)]
     pub label: String,
 }
 
 #[derive(Deserialize, Default)]
-pub struct SshFormats {
+pub(crate) struct SshFormats {
     pub openssh: Option<Format>,
 }
 
 #[derive(Deserialize, Default)]
-pub struct Format {
+pub(crate) struct Format {
     pub value: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
-pub struct Url {
+pub(crate) struct Url {
     #[serde(default)]
     pub href: String,
     #[serde(default)]
@@ -74,7 +75,7 @@ pub struct Url {
 }
 
 /// What one item becomes. Notes name parts of an imported item that were left out
-pub enum Plan {
+pub(crate) enum Plan {
     Value(String, Vec<String>),
     SshKey(String),
     Document,
@@ -101,30 +102,30 @@ fn op_json<T: for<'a> Deserialize<'a>>(args: &[&str]) -> Result<T> {
         .with_context(|| format!("op {} gave unexpected JSON", args[..2].join(" ")))
 }
 
-pub fn vaults() -> Result<Vec<Vault>> {
+pub(crate) fn vaults() -> Result<Vec<Vault>> {
     op_json(&["vault", "list", "--format", "json"])
 }
 
-pub fn items(vault: &Vault) -> Result<Vec<Summary>> {
+pub(crate) fn items(vault: &Vault) -> Result<Vec<Summary>> {
     let mut all: Vec<Summary> =
         op_json(&["item", "list", "--vault", &vault.id, "--format", "json"])?;
     all.sort_by_key(|a| a.title.to_lowercase());
     Ok(all)
 }
 
-pub fn item(vault: &Vault, id: &str) -> Result<Item> {
+pub(crate) fn item(vault: &Vault, id: &str) -> Result<Item> {
     op_json(&["item", "get", id, "--vault", &vault.id, "--format", "json"])
 }
 
 /// `--vault` matches a vault's name, case aside, or its id
-pub fn pick<'a>(all: &'a [Vault], wanted: Option<&str>) -> Vec<&'a Vault> {
+pub(crate) fn pick<'a>(all: &'a [Vault], wanted: Option<&str>) -> Vec<&'a Vault> {
     all.iter()
         .filter(|v| wanted.is_none_or(|w| v.id == w || v.name.eq_ignore_ascii_case(w)))
         .collect()
 }
 
 /// Lowercase, with every run of characters that are not letters, digits, `.` or `_` made one `-`
-pub fn slug(text: &str) -> String {
+pub(crate) fn slug(text: &str) -> String {
     let mut out = String::new();
     for c in text.trim().chars().flat_map(char::to_lowercase) {
         if c.is_alphanumeric() || c == '.' || c == '_' {
@@ -136,7 +137,7 @@ pub fn slug(text: &str) -> String {
     out.trim_matches(['-', '.']).to_string()
 }
 
-pub fn name(prefix: Option<&str>, vault: &str, title: &str, id: &str) -> String {
+pub(crate) fn name(prefix: Option<&str>, vault: &str, title: &str, id: &str) -> String {
     let title = match slug(title) {
         t if t.is_empty() => id.to_lowercase(),
         t => t,
@@ -159,7 +160,7 @@ pub fn name(prefix: Option<&str>, vault: &str, title: &str, id: &str) -> String 
  * line, then a `key: value` line per field and URL, then the notes. A key that repeats gets its
  * section in front, then a number, so no field shadows another
  **/
-pub fn plan(item: &Item) -> Plan {
+pub(crate) fn plan(item: &Item) -> Plan {
     match item.category.as_str() {
         "SSH_KEY" => ssh_key(item),
         "DOCUMENT" => Plan::Document,
@@ -319,19 +320,19 @@ fn unique(taken: &mut HashSet<String>, key: &str, section: Option<&str>) -> Stri
     }
 }
 
-pub enum Outcome {
+pub(crate) enum Outcome {
     Imported(Vec<String>),
     Exists,
     Skipped(String),
 }
 
-pub struct Line {
+pub(crate) struct Line {
     pub item: String,
     pub name: String,
     pub outcome: Outcome,
 }
 
-pub struct Options<'a> {
+pub(crate) struct Options<'a> {
     pub vault: Option<&'a str>,
     pub prefix: Option<&'a str>,
     pub dry_run: bool,
@@ -339,9 +340,9 @@ pub struct Options<'a> {
 
 /// Values go from `op` to the store in this process and are never printed. A dry run reads the
 /// same items, so its skips are the real ones, and writes nothing
-pub fn import(
+pub(crate) fn import(
     store: &Store,
-    options: &Options,
+    options: &Options<'_>,
     key: Option<&x25519::Identity>,
 ) -> Result<Vec<Line>> {
     let all = vaults()?;
@@ -399,7 +400,7 @@ pub fn import(
                             blob,
                         };
                         store.put(&new_id(), &secret, &recipient)?;
-                        crate::ssh::remember(store, &secret.value)?;
+                        ssh::remember(store, &secret.value)?;
                     }
                     Outcome::Imported(notes)
                 }
@@ -446,7 +447,7 @@ fn fetch(vault: &Vault, summary: &Summary) -> Result<Fetched> {
                 text
             };
             let text = text.trim_end_matches('\n').to_string();
-            if crate::ssh::parse(&text).is_some() {
+            if ssh::parse(&text).is_some() {
                 Ok((text, Vec::new(), true))
             } else {
                 Err("the SSH agent signs with unencrypted Ed25519 or P-256 keys only".into())
