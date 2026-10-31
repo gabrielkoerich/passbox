@@ -62,7 +62,7 @@ passbox copy github/token     # to the clipboard, cleared after 20 seconds
 
 `get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. No flag overrides that. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after 20 seconds, or after `--clear N` seconds up to 60. For a command use `exec`.
 
-`add` refuses a name that already exists. To change a value, `passbox rm` it and add it again. The old value stays in its versions, so `passbox restore` brings it back.
+`add` refuses a name that already exists. To change a value, use `passbox add NAME --replace`, which keeps a blob a blob, or `passbox rm` it and add it again. The old value stays in its versions, so `passbox restore` brings it back.
 
 ### Alfred
 
@@ -782,6 +782,19 @@ passbox copy db/prod --field username # that one, to the clipboard
 At a terminal, `passbox add db/prod --field username --field url` asks for the password hidden and twice, as usual, then asks for each field by name. `-m` then reads more fields and notes one per line until an empty line. Field values and notes show as you type. Without either, `add` asks for the password alone. Piped input is stored whole.
 
 Reading one field hands a caller the password without the note beside it.
+
+### Whole text: certificates, JSON keys, recovery codes
+
+A value that spans lines and is not `key: value` fields, such as a PEM, a service account JSON file or a list of recovery codes, goes in as a blob. A blob is never parsed, so a header like `Proc-Type: 4,ENCRYPTED` stays part of the text.
+
+```bash
+passbox add tls/key --blob                    # paste, then Ctrl-D
+passbox add gcp/key --file service.json       # or read a file
+passbox exec --env KEY=tls/key -- ./deploy    # the whole text in the variable
+passbox exec --file GOOGLE_APPLICATION_CREDENTIALS=gcp/key -- ./job
+```
+
+`--file VAR=name` writes the value to a private temporary file, sets `VAR` to its path and removes the file when the child exits. Use it for tools that only take a path. The pasted text echoes at a terminal, and `--blob` and `--file` refuse `--field` and `-m`. Do not use `--field` on a blob, since it would still parse the text.
 
 ### Using it from a program
 

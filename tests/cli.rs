@@ -2758,3 +2758,90 @@ fn yubikey_add_with_a_recipient_never_lists_tokens() {
     assert!(!calls.contains("--list"), "{calls}");
     assert!(err.contains("hello is not an age recipient"), "{err}");
 }
+
+const PEM: &str = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,ABCD\n\nbm90IGEga2V5\n-----END RSA PRIVATE KEY-----";
+
+#[test]
+fn a_blob_keeps_every_line_and_injects_whole() {
+    let cli = Cli::new();
+    cli.run(&["add", "tls/key", "--blob"], Some(&format!("{PEM}\n")))
+        .unwrap();
+
+    assert_eq!(cli.read("tls/key").unwrap(), PEM);
+}
+
+#[test]
+fn a_blob_is_read_from_a_file() {
+    let cli = Cli::new();
+    let source = cli.path().join("service.json");
+    std::fs::write(
+        &source,
+        "{\n  \"type\": \"service_account\",\n  \"id\": 1\n}\n",
+    )
+    .unwrap();
+    cli.run(
+        &["add", "gcp/key", "--file", source.to_str().unwrap()],
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        cli.read("gcp/key").unwrap(),
+        "{\n  \"type\": \"service_account\",\n  \"id\": 1\n}"
+    );
+}
+
+#[test]
+fn a_blob_cannot_also_take_fields() {
+    let cli = Cli::new();
+    let err = cli
+        .run(&["add", "tls/key", "--blob", "--field", "user"], Some("x"))
+        .unwrap_err();
+    assert!(err.contains("cannot be used with"), "{err}");
+}
+
+#[test]
+fn exec_file_hands_the_child_a_path_and_removes_it_afterwards() {
+    let cli = Cli::new();
+    cli.run(&["add", "tls/key", "--blob"], Some(PEM)).unwrap();
+
+    let marker = cli.path().join("path");
+    let script = format!(
+        "cat \"$KEY\" > {out}.copy; printf %s \"$KEY\" > {out}",
+        out = marker.display()
+    );
+    cli.run(
+        &["exec", "--file", "KEY=tls/key", "--", "sh", "-c", &script],
+        None,
+    )
+    .unwrap();
+
+    let copy = std::fs::read_to_string(format!("{}.copy", marker.display())).unwrap();
+    assert_eq!(copy, format!("{PEM}\n"));
+    let path = std::fs::read_to_string(&marker).unwrap();
+    assert!(!Path::new(&path).exists(), "{path} outlived the child");
+}
+
+#[test]
+fn replace_keeps_a_blob_whole() {
+    let cli = Cli::new();
+    cli.run(&["add", "tls/key", "--blob"], Some(PEM)).unwrap();
+    cli.run(&["add", "tls/key", "--replace"], Some("new: 1\nline two\n"))
+        .unwrap();
+
+    let got = cli
+        .run(
+            &[
+                "exec",
+                "--env",
+                "K=tls/key",
+                "--",
+                "sh",
+                "-c",
+                "printf %s \"$K\"",
+            ],
+            None,
+        )
+        .unwrap();
+    assert!(got.contains("new: 1\nline two"), "{got}");
+}

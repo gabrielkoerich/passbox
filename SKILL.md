@@ -46,6 +46,7 @@ passbox ls                                  # tree of names, needs a prompt
 ```bash
 passbox exec --env GITHUB_TOKEN=github/token -- gh api /user
 passbox exec --stdin docker/token -- docker login -u me --password-stdin
+passbox exec --file GOOGLE_APPLICATION_CREDENTIALS=gcp/key -- ./job   # a multi-line value, as a temporary file the child reads
 ```
 
 `--stdin` is the safer of the two: any process running as you can read a child's environment with `ps eww`.
