@@ -152,7 +152,7 @@ Every SSH signature prompts, so a job that connects to hosts while the owner is 
 
 ## Fields in one entry
 
-The first line is the secret, later `key: value` lines are fields. This is the `pass` layout, which `import-pass` keeps.
+The first line is the secret, later `key: value` lines are fields. This is the `pass` layout, which `import pass` keeps.
 
 ```bash
 passbox get db/prod                   # the whole thing

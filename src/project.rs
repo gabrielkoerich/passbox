@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-pub const MANIFEST: &str = ".passbox.toml";
+pub(crate) const MANIFEST: &str = ".passbox.toml";
 const DEFAULT_GRANT_SECS: u64 = 3600;
 const MAX_GRANT_SECS: u64 = 12 * 3600;
 
@@ -24,7 +24,7 @@ struct ManifestFile {
     window_secs: Option<u64>,
 }
 
-pub struct Manifest {
+pub(crate) struct Manifest {
     pub dir: PathBuf,
     pub secrets: Vec<String>,
     pub window_secs: u64,
@@ -32,7 +32,7 @@ pub struct Manifest {
 }
 
 /// Walk up from `from`, so running in a subdirectory of the project still finds it
-pub fn find(from: &Path) -> Option<Manifest> {
+pub(crate) fn find(from: &Path) -> Option<Manifest> {
     let mut dir = from;
     loop {
         let candidate = dir.join(MANIFEST);
@@ -59,12 +59,12 @@ fn read(path: &Path) -> Result<Manifest> {
     })
 }
 
-pub fn hash(bytes: &[u8]) -> String {
+pub(crate) fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct Grant {
+pub(crate) struct Grant {
     pub dir: String,
     pub hash: String,
     pub secrets: Vec<String>,
@@ -73,7 +73,7 @@ pub struct Grant {
 
 impl Grant {
     /// A grant covers a secret only while the manifest it was approved for is unchanged
-    pub fn covers(&self, manifest: &Manifest, secret: &str, now: u64) -> bool {
+    pub(crate) fn covers(&self, manifest: &Manifest, secret: &str, now: u64) -> bool {
         self.until > now
             && self.hash == manifest.hash
             && self.dir == manifest.dir.to_string_lossy()
@@ -85,7 +85,7 @@ pub(crate) fn path(store: &Store) -> PathBuf {
     store.dir.join(format!("grants-{}.age", store::hostname()))
 }
 
-pub fn load(store: &Store, key: &x25519::Identity) -> Vec<Grant> {
+pub(crate) fn load(store: &Store, key: &x25519::Identity) -> Vec<Grant> {
     let Ok(raw) = std::fs::read(path(store)) else {
         return Vec::new();
     };
@@ -100,7 +100,7 @@ pub fn load(store: &Store, key: &x25519::Identity) -> Vec<Grant> {
 }
 
 /// Encrypting needs only the public recipient, so recording a grant costs no extra unlock
-pub fn save(store: &Store, grants: &[Grant]) -> Result<()> {
+pub(crate) fn save(store: &Store, grants: &[Grant]) -> Result<()> {
     let recipient = store.recipient()?;
     let json = serde_json::to_vec(grants)?;
     let sealed = crypto::encrypt(&json, &[Box::new(recipient)])?;

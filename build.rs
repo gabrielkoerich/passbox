@@ -1,3 +1,5 @@
+//! Builds and signs the Secure Enclave helper, and embeds the Info.plist the calendar plugin needs.
+
 use std::path::PathBuf;
 use std::process::Command;
 

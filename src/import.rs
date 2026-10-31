@@ -1,196 +1,152 @@
-//! Bring entries across from `pass`, decrypting through GPG and re-encrypting to the store key.
+//! Copying secrets across from another password manager: one loop, and a `Source` for each manager.
 
+mod onepassword;
+mod pass;
+
+pub(crate) use onepassword::OnePassword;
+pub(crate) use pass::Pass;
+
+use crate::ssh;
 use crate::store::{Secret, Store, new_id, now};
 use age::x25519;
-use anyhow::{Context, Result, bail};
-use std::path::{Path, PathBuf};
-use zeroize::Zeroize;
+use anyhow::Result;
+use std::collections::{HashMap, HashSet};
 
-pub fn store_dir() -> PathBuf {
-    if let Some(set) = std::env::var_os("PASSWORD_STORE_DIR") {
-        return PathBuf::from(set);
-    }
-    std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join(".password-store"))
-        .unwrap_or_default()
+/// A password manager passbox can copy secrets out of
+pub(crate) trait Source {
+    /// What the source needs to read one entry's value later
+    type Handle;
+
+    /// How the unlock prompt names the source, such as `1Password`
+    fn name(&self) -> &'static str;
+
+    /// Every entry `from` selects, named as it lands in the store under `prefix`. Reads no value
+    fn entries(&self, from: Option<&str>, prefix: Option<&str>)
+    -> Result<Vec<Entry<Self::Handle>>>;
+
+    /// One entry's value, read only when it is about to be written
+    fn fetch(&self, handle: &Self::Handle) -> Result<Fetched>;
 }
 
-/// Entry names are paths under the store with the `.gpg` taken off, which is how pass names them
-pub fn entries(dir: &Path) -> Result<Vec<String>> {
-    let mut found = Vec::new();
-    walk(dir, dir, &mut found)?;
-    found.sort();
-    Ok(found)
+/// One entry a source offers
+pub(crate) struct Entry<H> {
+    /// How the source shows it, such as `Personal/GitHub`
+    pub(crate) label: String,
+    /// The name it gets in the store
+    pub(crate) name: String,
+    pub(crate) handle: H,
 }
 
-fn walk(root: &Path, at: &Path, out: &mut Vec<String>) -> Result<()> {
-    if !at.exists() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(at)? {
-        let path = entry?.path();
-        let name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        if name.starts_with('.') {
-            continue;
-        }
-        if path.is_dir() {
-            walk(root, &path, out)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("gpg")
-            && let Ok(relative) = path.strip_prefix(root)
-        {
-            out.push(relative.with_extension("").to_string_lossy().to_string());
-        }
-    }
-    Ok(())
+/// What a fetch found: a value to store, or why the entry stays behind
+pub(crate) enum Fetched {
+    /// Notes name parts of the entry that were left out. A blob is a whole text, such as a key
+    Value {
+        value: String,
+        notes: Vec<String>,
+        blob: bool,
+    },
+    Skip(String),
 }
 
-/// No prefix takes everything. A prefix takes that entry, or the namespace under it.
-pub use crate::store::select;
-
-/* The whole body is kept, not just the first line. pass entries commonly carry `key: value` lines
-under the password, and `get --field` reads them, so trimming to line one would lose data. */
-fn show(entry: &str) -> Result<String> {
-    let out = std::process::Command::new("pass")
-        .arg("show")
-        .arg(entry)
-        .output()
-        .context("pass is not on PATH")?;
-
-    if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    let body = String::from_utf8(out.stdout).context("entry is not text")?;
-    Ok(body.trim_end_matches('\n').to_string())
+pub(crate) enum Outcome {
+    Imported(Vec<String>),
+    Exists,
+    Skipped(String),
 }
 
-pub struct Report {
-    pub imported: usize,
-    pub skipped: usize,
+/// What happened to one entry, for the report
+pub(crate) struct Line {
+    pub(crate) item: String,
+    pub(crate) name: String,
+    pub(crate) outcome: Outcome,
 }
 
-pub fn import(store: &Store, names: &[String], key: Option<&x25519::Identity>) -> Result<Report> {
-    let recipient = store.recipient()?;
-    let mut report = Report {
-        imported: 0,
-        skipped: 0,
+/// Whether the import writes, or only reports what it would write
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Write,
+    DryRun,
+}
+
+/// Values go from the source to the store in this process and are never printed. A dry run reads
+/// the same values, so its skips are the real ones, and writes nothing
+pub(crate) fn import<S: Source>(
+    store: &Store,
+    source: &S,
+    entries: Vec<Entry<S::Handle>>,
+    mode: Mode,
+    key: Option<&x25519::Identity>,
+) -> Result<Vec<Line>> {
+    let taken: HashSet<String> = match key {
+        Some(key) => store.names(key)?.into_iter().collect(),
+        None => HashSet::new(),
     };
+    // Names this run gave out, so a second entry that maps to the same name is not reported as in the store
+    let mut claimed: HashMap<String, String> = HashMap::new();
+    let recipient = store.recipient()?;
+    let mut report = Vec::new();
 
-    for name in names {
-        let existing = match key {
-            Some(key) => store.find(name, key)?,
-            None => None,
-        };
-        if existing.is_some() {
-            eprintln!("skipping {name}, already in the store");
-            report.skipped += 1;
+    for entry in entries {
+        let Entry {
+            label,
+            name,
+            handle,
+        } = entry;
+        if taken.contains(&name) {
+            report.push(Line {
+                item: label,
+                name,
+                outcome: Outcome::Exists,
+            });
             continue;
         }
 
-        let mut value = show(name)?;
-        let secret = Secret {
-            name: name.clone(),
-            value: value.clone(),
-            created: now(),
-            updated: now(),
-            blob: false,
-        };
-        value.zeroize();
+        if let Some(first) = claimed.get(&name) {
+            report.push(Line {
+                outcome: Outcome::Skipped(format!("{name} is already taken by {first}")),
+                item: label,
+                name,
+            });
+            continue;
+        }
 
-        store.put(&new_id(), &secret, &recipient)?;
-        crate::ssh::remember(store, &secret.value)?;
-        report.imported += 1;
+        let outcome = match source.fetch(&handle) {
+            Err(e) => Outcome::Skipped(format!("{e:#}")),
+            Ok(Fetched::Skip(reason)) => Outcome::Skipped(reason),
+            Ok(Fetched::Value { value, notes, blob }) => {
+                if mode == Mode::Write {
+                    let secret = Secret {
+                        name: name.clone(),
+                        value,
+                        created: now(),
+                        updated: now(),
+                        blob,
+                    };
+                    store.put(&new_id(), &secret, &recipient)?;
+                    ssh::remember(store, &secret.value)?;
+                }
+                Outcome::Imported(notes)
+            }
+        };
+        if matches!(outcome, Outcome::Imported(_)) {
+            claimed.insert(name.clone(), label.clone());
+        }
+        report.push(Line {
+            item: label,
+            name,
+            outcome,
+        });
     }
     Ok(report)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn touch(path: &Path) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"x").unwrap();
-    }
-
-    #[test]
-    fn entry_names_mirror_the_pass_layout() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join("api-key.gpg"));
-        touch(&root.join("acme/signing-key.gpg"));
-        touch(&root.join("r2/storage/access-key-id.gpg"));
-
-        let found = entries(root).unwrap();
-        assert_eq!(
-            found,
-            vec!["acme/signing-key", "api-key", "r2/storage/access-key-id"]
-        );
-    }
-
-    /// The git directory and the gpg-id file are not entries
-    #[test]
-    fn housekeeping_files_are_not_entries() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join("real.gpg"));
-        touch(&root.join(".gpg-id"));
-        touch(&root.join(".git/objects/ab/cdef.gpg"));
-        touch(&root.join("README.md"));
-
-        assert_eq!(entries(root).unwrap(), vec!["real"]);
-    }
-
-    fn names() -> Vec<String> {
-        [
-            "acme/signing-key",
-            "acme/api-key",
-            "acmecorp/other",
-            "r2/storage/id",
-            "top",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
-    }
-
-    #[test]
-    fn no_prefix_takes_everything() {
-        assert_eq!(select(&names(), None).len(), 5);
-    }
-
-    /// `acme` must not drag in `acmecorp`, which is why the match is on a trailing slash
-    #[test]
-    fn a_namespace_does_not_match_a_longer_name() {
-        let picked = select(&names(), Some("acme"));
-        assert_eq!(picked, vec!["acme/signing-key", "acme/api-key"]);
-    }
-
-    #[test]
-    fn a_full_entry_name_takes_just_that_one() {
-        assert_eq!(select(&names(), Some("top")), vec!["top"]);
-        assert_eq!(
-            select(&names(), Some("r2/storage/id")),
-            vec!["r2/storage/id"]
-        );
-    }
-
-    #[test]
-    fn a_trailing_slash_is_tolerated() {
-        assert_eq!(select(&names(), Some("acme/")).len(), 2);
-    }
-
-    #[test]
-    fn an_unknown_prefix_selects_nothing() {
-        assert!(select(&names(), Some("nope")).is_empty());
-    }
-
-    #[test]
-    fn an_empty_store_is_not_an_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(entries(tmp.path()).unwrap().is_empty());
+/// The name an entry gets under `prefix`, with no empty segment however the prefix is written
+pub(crate) fn under(prefix: Option<&str>, name: &str) -> String {
+    match prefix
+        .map(|p| p.trim_matches('/'))
+        .filter(|p| !p.is_empty())
+    {
+        Some(p) => format!("{p}/{name}"),
+        None => name.to_string(),
     }
 }

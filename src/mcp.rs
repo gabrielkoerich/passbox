@@ -4,17 +4,22 @@ A `get_secret` tool would be the obvious shape and the wrong one: an MCP result 
 model's context, where it is logged, cached and sent onward. These tools run the command for the
 agent and hand back only its output, so the value never enters the transcript. */
 
+#[cfg(feature = "host")]
+use crate::broker;
+#[cfg(feature = "host")]
+use crate::plugin;
 use crate::store::Store;
 use crate::{agent_read_secret, run_child};
 #[cfg(feature = "host")]
 use anyhow::Context;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::io::{BufRead, Write};
 
 const PROTOCOL: &str = "2025-06-18";
 
-pub fn serve(store: Store) -> Result<()> {
+pub(crate) fn serve(store: &Store) -> Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     let mut agent = "mcp".to_string();
@@ -48,8 +53,8 @@ pub fn serve(store: Store) -> Result<()> {
                 }
                 Ok(initialize(&params))
             }
-            "tools/list" => Ok(tools(&store)),
-            "tools/call" => Ok(call(&store, &agent, &params)),
+            "tools/list" => Ok(tools(store)),
+            "tools/call" => Ok(call(store, &agent, &params)),
             "ping" => Ok(json!({})),
             other => Err((-32601, format!("no method named {other}"))),
         };
@@ -90,7 +95,10 @@ fn initialize(params: &Value) -> Value {
 
 fn tools(store: &Store) -> Value {
     let _ = store;
-    #[cfg_attr(not(feature = "host"), allow(unused_mut))]
+    #[cfg_attr(
+        not(feature = "host"),
+        expect(unused_mut, reason = "only the host build adds plugin tools")
+    )]
     let mut list = vec![
         json!({
             "name": "list_secrets",
@@ -123,7 +131,7 @@ fn tools(store: &Store) -> Value {
         }),
     ];
     #[cfg(feature = "host")]
-    for manifest in crate::plugin::installed(store).unwrap_or_default() {
+    for manifest in plugin::installed(store).unwrap_or_default() {
         for tool in &manifest.tools {
             list.push(plugin_tool_schema(&manifest.name, tool));
         }
@@ -132,7 +140,7 @@ fn tools(store: &Store) -> Value {
 }
 
 #[cfg(feature = "host")]
-fn plugin_tool_schema(plugin: &str, tool: &crate::plugin::Tool) -> Value {
+fn plugin_tool_schema(plugin: &str, tool: &plugin::Tool) -> Value {
     let mut properties = serde_json::Map::new();
     let mut required = Vec::new();
     for param in &tool.params {
@@ -188,20 +196,19 @@ fn plugin_call(store: &Store, agent: &str, name: &str, args: &Value) -> Result<S
     let (plugin, action) = name
         .split_once('.')
         .ok_or_else(|| anyhow!("no tool named {name}"))?;
-    let manifest = crate::plugin::load(store, plugin)?;
+    let manifest = plugin::load(store, plugin)?;
     let mut bound = std::collections::HashMap::new();
     if let Some(object) = args.as_object() {
         for (key, value) in object {
             let text = value
                 .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| value.to_string());
+                .map_or_else(|| value.to_string(), str::to_string);
             bound.insert(key.clone(), text);
         }
     }
     if manifest.stdin.is_some() {
         let pairs: Vec<(String, String)> = bound.into_iter().collect();
-        return crate::broker::plugin_run_remote(store, plugin, action, &pairs, agent);
+        return broker::plugin_run_remote(store, plugin, action, &pairs, agent);
     }
 
     let tool = manifest
@@ -213,7 +220,7 @@ fn plugin_call(store: &Store, agent: &str, name: &str, args: &Value) -> Result<S
         command.current_dir(store.plugins_dir().join(plugin));
     }
     // The same params the command was built from, so the prompt shows what runs
-    crate::broker::plugin_approve(store, plugin, action, &bound, agent)?;
+    broker::plugin_approve(store, plugin, action, &bound, agent)?;
     let output = command
         .output()
         .with_context(|| format!("could not run {name}"))?;
@@ -235,7 +242,7 @@ fn render_output(output: &std::process::Output) -> String {
         text.push_str(&stderr);
     }
     if !output.status.success() {
-        text.push_str(&format!("\nexit: {}", output.status.code().unwrap_or(1)));
+        let _ = write!(text, "\nexit: {}", output.status.code().unwrap_or(1));
     }
     text
 }

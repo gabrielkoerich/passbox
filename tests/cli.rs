@@ -1,6 +1,10 @@
 //! Drives the built binary, so it covers what unit tests cannot: argument handling and exit codes.
+#![expect(
+    clippy::unwrap_used,
+    reason = "allow-unwrap-in-tests does not reach an integration test crate's helpers"
+)]
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -623,6 +627,59 @@ fn sync_is_refused_until_it_is_enabled() {
     assert_eq!(std::fs::read_dir(remote.path()).unwrap().count(), 0);
 }
 
+/// `--enable` asks where copies go, then syncs there in the same run
+#[test]
+fn sync_enable_picks_a_directory_and_copies_into_it() {
+    let remote = tempfile::tempdir().unwrap();
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+
+    let answers = format!("2\n{}\n", remote.path().display());
+    let err = cli.note(&["sync", "--enable"], Some(&answers));
+
+    assert!(err.contains("already has a wrap"), "{err}");
+    assert!(err.contains("copies go to"), "{err}");
+    assert!(
+        std::fs::read_dir(remote.path()).unwrap().count() > 0,
+        "nothing was copied: {err}"
+    );
+}
+
+/// A git remote makes the store a repo and pushes it, and a second `--enable` asks before changing it
+#[test]
+fn sync_enable_picks_a_git_remote_and_pushes_the_store() {
+    let remote = tempfile::tempdir().unwrap();
+    let bare = remote.path().join("store.git");
+    let made = Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .arg(&bare)
+        .status()
+        .unwrap();
+    assert!(made.success(), "could not make the bare repo");
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+
+    let err = cli.note(
+        &["sync", "--enable"],
+        Some(&format!("3\n{}\n", bare.display())),
+    );
+    assert!(err.contains("copies go to"), "{err}");
+    let log = Command::new("git")
+        .arg("-C")
+        .arg(&bare)
+        .args(["log", "--oneline"])
+        .output()
+        .unwrap();
+    assert!(
+        log.status.success() && !log.stdout.is_empty(),
+        "nothing was pushed: {err}"
+    );
+
+    let again = cli.note(&["sync", "--enable"], Some("n\n"));
+    assert!(again.contains("copies currently go to"), "{again}");
+    assert!(again.contains("Change that?"), "{again}");
+}
+
 #[test]
 fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     let cli = Cli::new();
@@ -682,40 +739,16 @@ the import has to keep the whole body rather than the first line. */
 #[test]
 fn importing_from_pass_keeps_the_whole_entry() {
     let cli = Cli::new();
-    let fake = tempfile::tempdir().unwrap();
-    let store = tempfile::tempdir().unwrap();
+    let pass = FakePass::new(
+        &["bean/hl-mainnet-pk", "bean/fred-api-key", "beanstalk/other"],
+        "topsecret\\nlogin: gb\\nurl: https://example.com",
+    );
 
-    for name in ["bean/hl-mainnet-pk", "bean/fred-api-key", "beanstalk/other"] {
-        let path = store.path().join(format!("{name}.gpg"));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"x").unwrap();
-    }
-
-    let shim = fake.path().join("pass");
-    std::fs::write(
-        &shim,
-        "#!/bin/sh\nprintf 'topsecret\\nlogin: gb\\nurl: https://example.com'\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-
-    let out = cli
-        .cmd(PASSPHRASE)
-        .env("PASSWORD_STORE_DIR", store.path())
-        .env(
-            "PATH",
-            format!(
-                "{}:{}",
-                fake.path().display(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        )
-        .args(["import-pass", "bean"])
-        .output()
-        .unwrap();
-    let note = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{note}");
-    assert!(note.contains("importing 2 of 3"), "{note}");
+    let note = pass.import(&cli, &["bean"]);
+    assert!(
+        note.contains("imported 2, skipped 0, refused 0 already there"),
+        "{note}"
+    );
 
     // The namespace filter must not have dragged in beanstalk
     assert_eq!(
@@ -730,35 +763,87 @@ fn importing_from_pass_keeps_the_whole_entry() {
 #[test]
 fn importing_twice_skips_what_is_already_there() {
     let cli = Cli::new();
-    let fake = tempfile::tempdir().unwrap();
-    let store = tempfile::tempdir().unwrap();
-    std::fs::write(store.path().join("solo.gpg"), b"x").unwrap();
+    let pass = FakePass::new(&["solo"], "value");
 
-    let shim = fake.path().join("pass");
-    std::fs::write(&shim, "#!/bin/sh\nprintf 'value'\n").unwrap();
-    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let first = pass.import(&cli, &[]);
+    assert!(
+        first.contains("imported 1, skipped 0, refused 0 already there"),
+        "{first}"
+    );
+    let second = pass.import(&cli, &[]);
+    assert!(
+        second.contains("refused solo, already in the store"),
+        "{second}"
+    );
+    assert!(
+        second.contains("imported 0, skipped 0, refused 1 already there"),
+        "{second}"
+    );
+}
 
-    let run = || {
+/// A dry run names what each entry would become and writes nothing, and a prefix moves every name
+#[test]
+fn importing_from_pass_takes_a_prefix_and_a_dry_run() {
+    let cli = Cli::new();
+    let pass = FakePass::new(&["bean/key", "other"], "v");
+
+    let dry = pass.import(&cli, &["bean", "--prefix", "old/", "--dry-run"]);
+    assert!(dry.contains("bean/key -> old/bean/key"), "{dry}");
+    assert!(
+        dry.contains("would import 1, skipped 0, refused 0 already there"),
+        "{dry}"
+    );
+    assert_eq!(cli.run(&["ls"], None).unwrap(), "");
+
+    pass.import(&cli, &["--prefix", "old"]);
+    assert_eq!(cli.run(&["ls"], None).unwrap(), "old/bean/key\nold/other\n");
+}
+
+/// A pass store with these entries, and a `pass` on PATH that shows `body` for any of them
+struct FakePass {
+    store: tempfile::TempDir,
+    bin: tempfile::TempDir,
+}
+
+impl FakePass {
+    fn new(names: &[&str], body: &str) -> Self {
+        let pass = FakePass {
+            store: tempfile::tempdir().unwrap(),
+            bin: tempfile::tempdir().unwrap(),
+        };
+        for name in names {
+            let path = pass.store.path().join(format!("{name}.gpg"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"x").unwrap();
+        }
+        let shim = pass.bin.path().join("pass");
+        std::fs::write(&shim, format!("#!/bin/sh\nprintf '{body}'\n")).unwrap();
+        std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        pass
+    }
+
+    /// `passbox import pass` with these arguments, which must succeed, and what it printed
+    fn import(&self, cli: &Cli, args: &[&str]) -> String {
         let out = cli
             .cmd(PASSPHRASE)
-            .env("PASSWORD_STORE_DIR", store.path())
+            .env("PASSWORD_STORE_DIR", self.store.path())
             .env(
                 "PATH",
                 format!(
                     "{}:{}",
-                    fake.path().display(),
+                    self.bin.path().display(),
                     std::env::var("PATH").unwrap_or_default()
                 ),
             )
-            .arg("import-pass")
+            .args(["import", "pass"])
+            .args(args)
             .output()
             .unwrap();
-        String::from_utf8_lossy(&out.stderr).to_string()
-    };
-
-    assert!(run().contains("imported 1, skipped 0"));
-    let second = run();
-    assert!(second.contains("imported 0, skipped 1"), "{second}");
+        let note = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{note}");
+        note
+    }
 }
 
 #[test]
@@ -893,7 +978,7 @@ fn a_write_commits_and_mirrors_without_copying_the_repo() {
 
     let mirrored: Vec<_> = std::fs::read_dir(remote.path().join("store"))
         .expect("the mirror should hold a store")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "age"))
         .collect();
     assert_eq!(mirrored.len(), 1, "the write should reach the mirror");
@@ -907,7 +992,7 @@ fn a_write_commits_and_mirrors_without_copying_the_repo() {
     cli.run(&["rm", "one/secret"], None).expect("rm");
     let tombs = std::fs::read_dir(remote.path().join("store"))
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "tomb"))
         .count();
     assert_eq!(tombs, 1, "a delete should reach the mirror as a tombstone");
@@ -942,7 +1027,7 @@ fn autosync_can_be_turned_off() {
     );
 }
 
-/// The Mac's broker as a client with PASSBOX_HOST reaches it, on loopback. Each connection is one
+/// The Mac's broker as a client with `PASSBOX_HOST` reaches it, on loopback. Each connection is one
 /// request, answered by `answer` and handed back so a test can check what the client asked for
 fn fake_host(
     answer: impl Fn(&serde_json::Value) -> Result<String, String> + Send + 'static,
@@ -1101,7 +1186,7 @@ fn a_token_on_stdin_needs_a_first_line_and_no_newline_after_it() {
             assert!(stderr.contains("--token-stdin read no token"), "{stderr}");
         }
     }
-    assert!(ops(&requests).is_empty());
+    assert_eq!(ops(&requests), Vec::<serde_json::Value>::new());
 
     let (ok, stdout, stderr) = on_host_stdin(&cli, &host, "parent-tok", &grant);
     assert!(ok, "{stderr}");
@@ -1327,6 +1412,84 @@ fn mcp_run_with_secret_never_hands_the_token_or_the_passphrase_to_the_agent() {
     );
 }
 
+/// One session as a client runs it: every request gets an answer, a notification gets none
+#[test]
+fn an_mcp_session_answers_every_request_and_lists_names_only() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v-secret")).unwrap();
+
+    let session = [
+        "not json".to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "clientInfo": {"name": "test-agent"}
+        }})
+        .to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "list_secrets"}})
+        .to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "nope"}})
+        .to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 5, "method": "bogus/method"}).to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 6, "method": "ping"}).to_string(),
+    ];
+    let mut child = cli
+        .cmd(PASSPHRASE)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{}", session.join("\n")).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let replies: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let by_id = |id: i64| {
+        replies
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no reply to {id}: {replies:?}"))
+    };
+
+    assert_eq!(
+        replies.len(),
+        7,
+        "the notification got a reply: {replies:?}"
+    );
+    assert_eq!(replies[0]["id"], serde_json::Value::Null);
+    assert_eq!(replies[0]["error"]["code"], -32700);
+    assert_eq!(by_id(1)["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(by_id(1)["result"]["serverInfo"]["name"], "passbox");
+
+    let tools: Vec<&str> = by_id(2)["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(tools.contains(&"list_secrets"), "{tools:?}");
+    assert!(tools.contains(&"run_with_secret"), "{tools:?}");
+    assert!(
+        !tools.iter().any(|t| t.contains("get")),
+        "a tool can hand back a value: {tools:?}"
+    );
+
+    let listed = &by_id(3)["result"];
+    assert_eq!(listed["content"][0]["text"], "a/b");
+    assert!(
+        !listed.to_string().contains("v-secret"),
+        "a listing held a value: {listed}"
+    );
+    assert_eq!(by_id(4)["result"]["isError"], true);
+    assert_eq!(by_id(5)["error"]["code"], -32601);
+    assert_eq!(by_id(6)["result"], serde_json::json!({}));
+}
+
 /// A TOML basic string holding `text`, so a shell script with quotes survives the manifest
 fn toml_string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
@@ -1343,13 +1506,13 @@ fn a_test_can_never_reach_the_secure_enclave() {
         .arg("init")
         .stdin(Stdio::null());
     // No controlling terminal, so the passphrase init falls back to cannot wait on a keyboard
-    // SAFETY: setsid is async-signal-safe and touches nothing in this process
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
+    let detach = || {
+        // SAFETY: setsid only moves the child into a session of its own
+        unsafe { libc::setsid() };
+        Ok(())
+    };
+    // SAFETY: the hook only calls setsid, which is async-signal-safe and touches nothing in this process
+    unsafe { cmd.pre_exec(detach) };
     let out = cmd.output().unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -2186,7 +2349,7 @@ fn agent_round_trip(kind: &str) {
         .arg(&path)
         .status()
         .unwrap();
-    assert!(made.success());
+    assert!(made.success(), "ssh-keygen could not make a {kind} key");
     let private = std::fs::read_to_string(&path).unwrap();
     bound.run(&["add", "ssh/test"], Some(&private)).unwrap();
     // Starts the broker, which serves the agent socket beside its own
@@ -2197,7 +2360,8 @@ fn agent_round_trip(kind: &str) {
     let public = std::fs::read_to_string(path.with_extension("pub")).unwrap();
     assert_eq!(
         String::from_utf8_lossy(&listed.stdout).trim(),
-        public.trim()
+        public.trim(),
+        "ssh-add -L does not list the stored key"
     );
     assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
 
@@ -2247,7 +2411,10 @@ fn agent_round_trip(kind: &str) {
     );
 
     bound.deny("all");
-    assert!(!sign(&keys.path().join("refused")).status.success());
+    assert!(
+        !sign(&keys.path().join("refused")).status.success(),
+        "a refused prompt still signed"
+    );
     let log = bound.audit();
     assert!(decided(&log, "ssh/test", "signed"), "{log}");
     assert!(decided(&log, "ssh:test@passbox.dev", "denied"), "{log}");
@@ -2666,20 +2833,25 @@ fn copy_clears_within_a_minute_and_refuses_anything_longer() {
 
 /* A fake age-plugin-yubikey on a PATH without the real one, ykman or brew, so no test reaches a
 token. It logs its arguments, and every case here stops before the store key is unlocked */
-fn yubikey_add(cli: &Cli, list: &str, exit: u8, args: &[&str]) -> (bool, String, String) {
+/// A stand-in `age-plugin-yubikey` that lists `list`, logs every call, and exits `exit` for --list
+fn fake_yubikey(list: &str, exit: u8) -> tempfile::TempDir {
     let fake = tempfile::tempdir().unwrap();
-    let log = fake.path().join("calls");
     let shim = fake.path().join("age-plugin-yubikey");
     std::fs::write(
         &shim,
         format!(
             "#!/bin/sh\necho \"$@\" >> '{}'\n[ \"$1\" = --list ] || exit 0\nprintf '%s' '{list}'\necho 'pcsc: no reader' >&2\nexit {exit}\n",
-            log.display()
+            fake.path().join("calls").display()
         ),
     )
     .unwrap();
     std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fake
+}
 
+fn yubikey_add(cli: &Cli, list: &str, exit: u8, args: &[&str]) -> (bool, String, String) {
+    let fake = fake_yubikey(list, exit);
+    let log = fake.path().join("calls");
     let out = cli
         .cmd(PASSPHRASE)
         .env("PATH", format!("{}:/usr/bin:/bin", fake.path().display()))
@@ -2897,7 +3069,7 @@ fn import_1password(cli: &Cli, fake: &tempfile::TempDir, args: &[&str]) -> Strin
                 std::env::var("PATH").unwrap_or_default()
             ),
         )
-        .arg("import-1password")
+        .args(["import", "1password"])
         .args(args)
         .output()
         .unwrap();
@@ -2929,7 +3101,7 @@ fn importing_from_1password_maps_each_item_and_says_why_it_skipped() {
     assert!(!dry.contains("hunter2"), "a dry run printed a value: {dry}");
     assert_eq!(cli.run(&["ls"], None).unwrap(), "");
 
-    let out = import_1password(&cli, &fake, &["--vault", "personal"]);
+    let out = import_1password(&cli, &fake, &["personal"]);
     assert!(
         out.contains("TOTP seed, passbox has no TOTP support"),
         "{out}"
@@ -2990,4 +3162,386 @@ esac
     assert!(!out.contains("already in the store"), "{out}");
     assert!(out.contains("imported 1, skipped 1, refused 0"), "{out}");
     assert_eq!(cli.read("dev/github").unwrap(), "one");
+}
+
+/// One passbox command on a pseudo-terminal, so it prompts as it does for a person at a keyboard
+struct Term {
+    master: std::fs::File,
+    child: std::process::Child,
+    seen: std::sync::Arc<std::sync::Mutex<String>>,
+    // Where the last expected prompt ended, so a prompt asked twice is waited for twice
+    cursor: usize,
+}
+
+impl Term {
+    fn spawn(mut cmd: Command) -> Self {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+
+        let (mut master, mut slave) = (0, 0);
+        // SAFETY: openpty writes two descriptors and reads only the null name, termios and size
+        let opened = unsafe {
+            libc::openpty(
+                &raw mut master,
+                &raw mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0, "no pseudo-terminal");
+        // SAFETY: openpty just opened this descriptor and nothing else owns it
+        let master = unsafe { OwnedFd::from_raw_fd(master) };
+        // SAFETY: as above
+        let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+
+        cmd.stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave);
+        // rpassword reads /dev/tty, which is the terminal of the child's own session
+        let controlling = || {
+            // SAFETY: stdin is the slave, which login_tty makes the terminal of a new session
+            unsafe { libc::login_tty(0) };
+            Ok(())
+        };
+        // SAFETY: the hook only calls login_tty, which touches nothing but this child's session
+        unsafe { cmd.pre_exec(controlling) };
+        let child = cmd.spawn().unwrap();
+        drop(cmd);
+
+        let master = std::fs::File::from(master);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let mut reader = master.try_clone().unwrap();
+        let sink = std::sync::Arc::clone(&seen);
+        // Linux answers EIO once the child closes the terminal, so any error ends the output
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n @ 1..) = reader.read(&mut buf) {
+                sink.lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        });
+        Term {
+            master,
+            child,
+            seen,
+            cursor: 0,
+        }
+    }
+
+    /// Waits for `prompt`, then types `line` and Enter
+    fn answer(&mut self, prompt: &str, line: &str) {
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            let seen = self.seen.lock().unwrap().clone();
+            if let Some(at) = seen[self.cursor..].find(prompt) {
+                self.cursor += at + prompt.len();
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "no {prompt:?} on the terminal: {seen}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        writeln!(self.master, "{line}").unwrap();
+    }
+
+    /// Whether the command succeeded, and everything it wrote to the terminal
+    fn wait(mut self) -> (bool, String) {
+        let until = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() > until {
+                let _ = self.child.kill();
+                panic!("the command never finished: {}", self.seen.lock().unwrap());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // The reader drains what the child wrote just before it exited
+        std::thread::sleep(Duration::from_millis(200));
+        let seen = self.seen.lock().unwrap().clone();
+        (status.success(), seen)
+    }
+}
+
+#[test]
+fn add_at_a_terminal_asks_twice_then_for_each_field_and_the_notes() {
+    let cli = Cli::new();
+    let mut cmd = cli.cmd(PASSPHRASE);
+    cmd.args(["add", "db/pass", "--multiline", "--field", "username"]);
+    let mut term = Term::spawn(cmd);
+    term.answer("value: ", "s3cret");
+    term.answer("again: ", "s3cret");
+    term.answer("username: ", "admin");
+    term.answer("empty line to finish", "rotated quarterly");
+    term.answer("rotated quarterly", "");
+    let (ok, out) = term.wait();
+
+    assert!(ok, "{out}");
+    assert!(
+        !out.contains("s3cret"),
+        "the value echoed on the terminal: {out}"
+    );
+    assert_eq!(
+        cli.read("db/pass").unwrap(),
+        "s3cret\nusername: admin\nrotated quarterly"
+    );
+}
+
+#[test]
+fn add_at_a_terminal_refuses_two_values_that_differ() {
+    let cli = Cli::new();
+    let mut cmd = cli.cmd(PASSPHRASE);
+    cmd.args(["add", "db/pass"]);
+    let mut term = Term::spawn(cmd);
+    term.answer("value: ", "one");
+    term.answer("again: ", "two");
+    let (ok, out) = term.wait();
+
+    assert!(!ok, "two different values were stored");
+    assert!(out.contains("values do not match"), "{out}");
+    assert!(cli.read("db/pass").is_err(), "something was stored");
+}
+
+/// A pick of 2 reaches the wrap with the second token, whose fake recipient then fails to parse
+#[test]
+fn yubikey_add_at_a_terminal_picks_one_of_several_new_tokens() {
+    let cli = Cli::new();
+    let fake = fake_yubikey(
+        "#  Serial: 1, Slot: 1\nage1yubikey1aaa\n#  Serial: 2, Slot: 1\nage1yubikey1bbb\n",
+        0,
+    );
+    for (pick, expected) in [
+        ("2", "age1yubikey1bbb is not an age recipient"),
+        ("7", "expected 1 to 2, got 7"),
+    ] {
+        let mut cmd = cli.cmd(PASSPHRASE);
+        cmd.env("PATH", format!("{}:/usr/bin:/bin", fake.path().display()))
+            .arg("yubikey-add");
+        let mut term = Term::spawn(cmd);
+        term.answer("Which? [1-2] ", pick);
+        let (ok, out) = term.wait();
+
+        assert!(!ok, "{out}");
+        assert!(
+            out.contains("2) Serial: 2, Slot: 1  age1yubikey1bbb"),
+            "{out}"
+        );
+        assert!(out.contains(expected), "{out}");
+    }
+    let calls = std::fs::read_to_string(fake.path().join("calls")).unwrap();
+    assert!(
+        !calls.contains("--generate"),
+        "a test generated on a token: {calls}"
+    );
+}
+
+/// A store bound to this Mac has no way in elsewhere, so `--enable` offers a passphrase. It is
+/// typed twice at the terminal and must then open the store on its own
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn sync_enable_at_a_terminal_sets_a_recovery_passphrase_and_a_directory() {
+    let bound = Bound::new();
+    let remote = tempfile::tempdir().unwrap();
+    let phrase = "a long recovery phrase";
+
+    let mut cmd = bound.cmd();
+    cmd.args(["sync", "--enable"]);
+    let mut term = Term::spawn(cmd);
+    term.answer("Which? [1/2] ", "2");
+    term.answer("recovery passphrase: ", "short");
+    let (ok, out) = term.wait();
+    assert!(!ok, "a short passphrase was accepted");
+    assert!(out.contains("use at least 12 characters"), "{out}");
+    assert!(!bound.cli.path().join("wraps/recovery.age").exists());
+
+    let mut cmd = bound.cmd();
+    cmd.args(["sync", "--enable"]);
+    let mut term = Term::spawn(cmd);
+    term.answer("Which? [1/2] ", "2");
+    term.answer("recovery passphrase: ", phrase);
+    term.answer("again: ", phrase);
+    term.answer("Which? [1/2/3/4] ", "2");
+    term.answer("directory: ", &remote.path().display().to_string());
+    let (ok, out) = term.wait();
+
+    assert!(ok, "{out}");
+    assert!(!out.contains(phrase), "the passphrase echoed: {out}");
+    assert!(bound.cli.path().join("wraps/recovery.age").exists());
+    assert!(
+        std::fs::read_dir(remote.path()).unwrap().count() > 0,
+        "nothing was copied: {out}"
+    );
+    assert_eq!(bound.cli.read_as(phrase, "demo/one").unwrap(), "value-one");
+}
+
+/// Whether ssh says an agent connection was forwarded, the last byte of a session bind
+#[derive(Clone, Copy)]
+enum Hop {
+    Direct,
+    Forwarded,
+}
+
+/// One length-prefixed field of the SSH agent protocol
+fn wire(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend(u32::try_from(bytes.len()).unwrap().to_be_bytes());
+    out.extend(bytes);
+}
+
+/// Sends one agent message and returns the type byte of the reply
+fn agent_send(stream: &mut std::os::unix::net::UnixStream, body: &[u8]) -> u8 {
+    let mut message = Vec::new();
+    wire(&mut message, body);
+    stream.write_all(&message).unwrap();
+    let mut len = [0u8; 4];
+    stream.read_exact(&mut len).unwrap();
+    let mut reply = vec![0; usize::try_from(u32::from_be_bytes(len)).unwrap()];
+    stream.read_exact(&mut reply).unwrap();
+    reply[0]
+}
+
+/// A login as OpenSSH 8.9 makes one: bind the agent connection to the host key that signed the
+/// session id, then ask for a signature over a publickey login for that same session
+fn agent_login(
+    bound: &Bound,
+    host: &ssh_key::PrivateKey,
+    user: &[u8],
+    session: &[u8],
+    hop: Hop,
+) -> u8 {
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(bound.cli.path().join("ssh-agent.sock")).unwrap();
+    let signature: ssh_key::Signature = signature::Signer::try_sign(host, session).unwrap();
+    let mut bind = vec![27];
+    wire(&mut bind, b"session-bind@openssh.com");
+    wire(&mut bind, &host.public_key().to_bytes().unwrap());
+    wire(&mut bind, session);
+    wire(&mut bind, &Vec::<u8>::try_from(signature).unwrap());
+    bind.push(u8::from(matches!(hop, Hop::Forwarded)));
+    assert_eq!(
+        agent_send(&mut stream, &bind),
+        6,
+        "the agent refused the bind"
+    );
+
+    let mut login = Vec::new();
+    wire(&mut login, session);
+    login.push(50);
+    for field in [&b"git"[..], b"ssh-connection", b"publickey"] {
+        wire(&mut login, field);
+    }
+    login.push(1);
+    wire(&mut login, b"ssh-ed25519");
+    wire(&mut login, user);
+    let mut sign = vec![13];
+    wire(&mut sign, user);
+    wire(&mut sign, &login);
+    sign.extend(0u32.to_be_bytes());
+    agent_send(&mut stream, &sign)
+}
+
+/// One prompt covers later logins with the same key to the same host key. The window is pinned to
+/// the host key the connection proved, so a forwarded agent or another host still prompts
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_signing_window_covers_later_logins_to_the_same_host_key_and_nothing_else() {
+    use ssh_key::private::{Ed25519Keypair, KeypairData};
+    use ssh_key::{HashAlg, PrivateKey, PublicKey};
+
+    const SIGNED: u8 = 14;
+    let bound = Bound::new();
+    let keys = tempfile::tempdir().unwrap();
+    let path = keys.path().join("id");
+    let made = Command::new("ssh-keygen")
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "test@passbox.dev",
+            "-f",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success(), "ssh-keygen could not make a key");
+    let private = std::fs::read_to_string(&path).unwrap();
+    bound.run(&["add", "ssh/test"], Some(&private)).unwrap();
+    bound.run(&["ls"], None).unwrap();
+    bound.forget_prompts();
+
+    let public = std::fs::read_to_string(path.with_extension("pub")).unwrap();
+    let user = PublicKey::from_openssh(&public)
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    let host = |seed: u8| {
+        let pair = Ed25519Keypair::from_seed(&[seed; 32]);
+        PrivateKey::new(KeypairData::from(pair), "host").unwrap()
+    };
+    let (legion, other) = (host(7), host(8));
+    let listed = legion.public_key().fingerprint(HashAlg::Sha256).to_string();
+    std::fs::write(
+        bound.cli.path().join("config.toml"),
+        format!("[ssh.windows]\n\"{listed}\" = \"1h\"\n"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        agent_login(&bound, &legion, &user, b"session-1", Hop::Direct),
+        SIGNED
+    );
+    let prompts = bound.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].starts_with("allow SSH windows"), "{prompts:?}");
+    assert!(
+        prompts[0].contains(&format!("an SSH login as git to {listed}")),
+        "{prompts:?}"
+    );
+    assert!(
+        prompts[0].ends_with(&format!("and its logins to {listed} for 1h without asking")),
+        "{prompts:?}"
+    );
+
+    assert_eq!(
+        agent_login(&bound, &legion, &user, b"session-2", Hop::Direct),
+        SIGNED
+    );
+    assert_eq!(
+        bound.prompts().len(),
+        1,
+        "a login inside the window prompted: {:?}",
+        bound.prompts()
+    );
+
+    assert_eq!(
+        agent_login(&bound, &legion, &user, b"session-3", Hop::Forwarded),
+        SIGNED
+    );
+    assert_eq!(
+        bound.prompts().len(),
+        2,
+        "a forwarded agent used the window"
+    );
+    assert_eq!(
+        agent_login(&bound, &other, &user, b"session-4", Hop::Direct),
+        SIGNED
+    );
+    assert_eq!(bound.prompts().len(), 3, "another host key used the window");
+
+    let log = bound.audit();
+    assert_eq!(count(&log, "ssh/test", "by window"), 1, "{log}");
+    assert!(log.contains(", window 1h"), "{log}");
 }

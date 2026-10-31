@@ -1,10 +1,12 @@
 //! The SSH agent protocol, and which secrets it offers. The broker owns the socket and the prompt
 
 use crate::store::{self, Store};
+use crate::{broker, plugin, project, sync};
 use age::x25519;
 use anyhow::{Context, Result, bail};
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey, PublicKey, Signature};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 
 const FAILURE: u8 = 5;
@@ -23,7 +25,7 @@ const MAX_MESSAGE: usize = 256 * 1024;
 const HEADER: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
 
 /// A secret is an SSH key when its value is an unencrypted Ed25519 or P-256 OpenSSH key
-pub fn parse(value: &str) -> Option<PrivateKey> {
+pub(crate) fn parse(value: &str) -> Option<PrivateKey> {
     if !value.trim_start().starts_with(HEADER) {
         return None;
     }
@@ -39,7 +41,7 @@ pub fn parse(value: &str) -> Option<PrivateKey> {
 }
 
 /// Every SSH key in the store, with the name it is stored under
-pub fn keys(store: &Store, key: &x25519::Identity) -> Result<Vec<(String, PrivateKey)>> {
+pub(crate) fn keys(store: &Store, key: &x25519::Identity) -> Result<Vec<(String, PrivateKey)>> {
     let mut out = Vec::new();
     for id in store.ids()? {
         let secret = store.load(&id, key)?;
@@ -55,11 +57,11 @@ pub fn keys(store: &Store, key: &x25519::Identity) -> Result<Vec<(String, Privat
  * the clear. Each carries the key's own comment and never the secret's name, which stays inside
  * the ciphertext. Rebuilt whenever the store key is open, which also drops a removed key
  **/
-pub fn refresh(store: &Store, keys: &[(String, PrivateKey)]) -> Result<()> {
+pub(crate) fn refresh(store: &Store, keys: &[(String, PrivateKey)]) -> Result<()> {
     write(store, keys.iter().map(|(_, k)| k.public_key().clone()))
 }
 
-pub fn rebuild(store: &Store, key: &x25519::Identity) -> Result<()> {
+pub(crate) fn rebuild(store: &Store, key: &x25519::Identity) -> Result<()> {
     refresh(store, &keys(store, key)?)
 }
 
@@ -72,7 +74,7 @@ fn write(store: &Store, keys: impl Iterator<Item = PublicKey>) -> Result<()> {
     store::write_private(&store.ssh_keys_path(), text.as_bytes())
 }
 
-pub fn offered(store: &Store) -> Vec<PublicKey> {
+pub(crate) fn offered(store: &Store) -> Vec<PublicKey> {
     std::fs::read_to_string(store.ssh_keys_path())
         .unwrap_or_default()
         .lines()
@@ -81,7 +83,7 @@ pub fn offered(store: &Store) -> Vec<PublicKey> {
 }
 
 /// Called by `add`, which has the value in hand, so a new key is offered before the next unlock
-pub fn remember(store: &Store, value: &str) -> Result<()> {
+pub(crate) fn remember(store: &Store, value: &str) -> Result<()> {
     if !value.trim_start().starts_with(HEADER) {
         return Ok(());
     }
@@ -102,7 +104,7 @@ pub fn remember(store: &Store, value: &str) -> Result<()> {
 }
 
 /// How a prompt names a key: its comment, or its fingerprint when it has none
-pub fn label(key: &PublicKey) -> String {
+pub(crate) fn label(key: &PublicKey) -> String {
     if key.comment().is_empty() {
         key.fingerprint(HashAlg::Sha256).to_string()
     } else {
@@ -115,7 +117,7 @@ pub fn label(key: &PublicKey) -> String {
  * for a commit, and a login carries the user after the session id. The caller writes both strings,
  * so anything that is not short printable text reads as unrecognised
  **/
-pub fn purpose(data: &[u8]) -> String {
+pub(crate) fn purpose(data: &[u8]) -> String {
     if let Some(mut rest) = data.strip_prefix(b"SSHSIG") {
         return match take(&mut rest).ok().and_then(printable) {
             Some(namespace) => format!("a {namespace} signature"),
@@ -145,7 +147,7 @@ fn printable(bytes: &[u8]) -> Option<String> {
 
 /// The `[ssh.windows]` section of config.toml: hosts a key may sign logins to without a prompt
 #[derive(Default, Debug)]
-pub struct Windows {
+pub(crate) struct Windows {
     /// Seconds a key stays open for one host key after an approved login to it
     pub hosts: BTreeMap<String, u64>,
     /// Covers every host and length, so editing either one asks again
@@ -154,24 +156,24 @@ pub struct Windows {
 
 impl Windows {
     /// As the approval prompt lists them, such as `legion 12h, m1 12h`
-    pub fn shown(&self) -> String {
+    pub(crate) fn shown(&self) -> String {
         self.hosts
             .iter()
-            .map(|(host, secs)| format!("{host} {}", crate::plugin::span(*secs)))
+            .map(|(host, secs)| format!("{host} {}", plugin::span(*secs)))
             .collect::<Vec<_>>()
             .join(", ")
     }
 
-    /// The listed name a host key goes by, read from known_hosts or given as its own fingerprint
-    pub fn listed(&self, host: &PublicKey, known_hosts: &str) -> Option<(String, u64)> {
+    /// The listed name a host key goes by, read from `known_hosts` or given as its own fingerprint
+    pub(crate) fn listed(&self, host: &PublicKey, known_hosts: &str) -> Option<(String, u64)> {
         std::iter::once(host.fingerprint(HashAlg::Sha256).to_string())
             .chain(known_names(known_hosts, host))
             .find_map(|name| self.hosts.get(&name).map(|secs| (name, *secs)))
     }
 }
 
-pub fn windows(store: &Store) -> Result<Windows> {
-    let path = crate::sync::config_path(store);
+pub(crate) fn windows(store: &Store) -> Result<Windows> {
+    let path = sync::config_path(store);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(Windows::default());
     };
@@ -207,13 +209,13 @@ pub(crate) fn parse_windows(text: &str) -> Result<Windows> {
         let span = value
             .as_str()
             .with_context(|| format!("{host} must be a duration such as \"12h\""))?;
-        let secs = crate::plugin::duration(span)
+        let secs = plugin::duration(span)
             .with_context(|| host.clone())?
-            .min(crate::broker::MAX_GRANT_SECS);
-        hashed.push_str(&format!("{host}={secs}\n"));
+            .min(broker::MAX_GRANT_SECS);
+        let _ = writeln!(hashed, "{host}={secs}");
         out.hosts.insert(host.clone(), secs);
     }
-    out.hash = crate::project::hash(hashed.as_bytes());
+    out.hash = project::hash(hashed.as_bytes());
     Ok(out)
 }
 
@@ -221,26 +223,26 @@ pub(crate) fn parse_windows(text: &str) -> Result<Windows> {
 pub(crate) fn approval_path(store: &Store) -> std::path::PathBuf {
     store
         .dir
-        .join(format!("windows-ssh-{}.json", crate::store::hostname()))
+        .join(format!("windows-ssh-{}.json", store::hostname()))
 }
 
-pub fn approved(store: &Store) -> Option<crate::plugin::Approval> {
-    crate::plugin::approved_at(&approval_path(store))
+pub(crate) fn approved(store: &Store) -> Option<plugin::Approval> {
+    plugin::approved_at(&approval_path(store))
 }
 
-pub fn approve(store: &Store, key: &x25519::Identity, hash: &str) -> Result<()> {
-    crate::plugin::approve_at(&approval_path(store), "ssh", key, hash)
+pub(crate) fn approve(store: &Store, key: &x25519::Identity, hash: &str) -> Result<()> {
+    plugin::approve_at(&approval_path(store), "ssh", key, hash)
 }
 
-pub fn known_hosts() -> String {
+pub(crate) fn known_hosts() -> String {
     std::env::var_os("HOME")
         .map(|home| std::path::Path::new(&home).join(".ssh/known_hosts"))
         .and_then(|path| std::fs::read_to_string(path).ok())
         .unwrap_or_default()
 }
 
-/// The names known_hosts gives a host key. A hashed name cannot be read back, so it is skipped
-pub fn known_names(known_hosts: &str, host: &PublicKey) -> Vec<String> {
+/// The names `known_hosts` gives a host key. A hashed name cannot be read back, so it is skipped
+pub(crate) fn known_names(known_hosts: &str, host: &PublicKey) -> Vec<String> {
     let mut out = Vec::new();
     for line in known_hosts.lines().map(str::trim) {
         // `@cert-authority` and `@revoked` lines vouch for other keys, they name no host
@@ -276,13 +278,13 @@ pub fn known_names(known_hosts: &str, host: &PublicKey) -> Vec<String> {
 }
 
 /// One length-prefixed message, or None once the client hangs up
-pub fn read_message(stream: &mut impl Read) -> Result<Option<Vec<u8>>> {
+pub(crate) fn read_message(stream: &mut impl Read) -> Result<Option<Vec<u8>>> {
     let mut len = [0u8; 4];
     match stream.read_exact(&mut len) {
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         other => other?,
     }
-    let len = u32::from_be_bytes(len) as usize;
+    let len = usize::try_from(u32::from_be_bytes(len))?;
     if len > MAX_MESSAGE {
         bail!("a {len} byte message is too long");
     }
@@ -291,7 +293,7 @@ pub fn read_message(stream: &mut impl Read) -> Result<Option<Vec<u8>>> {
     Ok(Some(body))
 }
 
-pub fn write_message(stream: &mut impl Write, body: &[u8]) -> Result<()> {
+pub(crate) fn write_message(stream: &mut impl Write, body: &[u8]) -> Result<()> {
     put(stream, body)?;
     Ok(stream.flush()?)
 }
@@ -305,7 +307,7 @@ struct Binding {
 
 /// What one agent connection has proved so far. ssh binds it before it asks for a signature
 #[derive(Default)]
-pub struct Connection {
+pub(crate) struct Connection {
     binds: Vec<Binding>,
 }
 
@@ -316,7 +318,7 @@ impl Connection {
      * signature is no use to any other server. A forwarded agent or a second bind proves nothing
      * about the last hop, so neither names a host
      **/
-    pub fn destination(&self, data: &[u8]) -> Option<&PublicKey> {
+    pub(crate) fn destination(&self, data: &[u8]) -> Option<&PublicKey> {
         let [bind] = self.binds.as_slice() else {
             return None;
         };
@@ -354,7 +356,7 @@ impl Connection {
  * The reply to one request. `sign` raises the prompt, and runs only for a key on offer. It gets the
  * host key the signature goes to when the connection proves one, see `Connection::destination`
  **/
-pub fn answer(
+pub(crate) fn answer(
     request: &[u8],
     offered: &[PublicKey],
     connection: &mut Connection,
@@ -378,7 +380,7 @@ fn reply(
     match kind {
         REQUEST_IDENTITIES => {
             out.push(IDENTITIES_ANSWER);
-            out.extend((offered.len() as u32).to_be_bytes());
+            out.extend(u32::try_from(offered.len())?.to_be_bytes());
             for key in offered {
                 put(&mut out, &key.to_bytes()?)?;
                 put(&mut out, key.comment().as_bytes())?;
@@ -405,7 +407,7 @@ fn reply(
 }
 
 fn put(out: &mut impl Write, bytes: &[u8]) -> Result<()> {
-    out.write_all(&(bytes.len() as u32).to_be_bytes())?;
+    out.write_all(&u32::try_from(bytes.len())?.to_be_bytes())?;
     Ok(out.write_all(bytes)?)
 }
 
@@ -413,7 +415,7 @@ fn take<'a>(rest: &mut &'a [u8]) -> Result<&'a [u8]> {
     let (len, tail) = rest
         .split_first_chunk::<4>()
         .context("a truncated request")?;
-    let len = u32::from_be_bytes(*len) as usize;
+    let len = usize::try_from(u32::from_be_bytes(*len))?;
     let (field, tail) = tail.split_at_checked(len).context("a truncated request")?;
     *rest = tail;
     Ok(field)
@@ -435,15 +437,22 @@ mod tests {
         PrivateKey::new(KeypairData::from(pair), comment).unwrap()
     }
 
+    /// Whether ssh says the agent connection was forwarded, the last byte of a bind
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Hop {
+        Direct,
+        Forwarded,
+    }
+
     /// A `session-bind@openssh.com` request as ssh sends it, signed by `signer`
-    fn bind(host: &PrivateKey, signer: &PrivateKey, session: &[u8], forwarding: bool) -> Vec<u8> {
+    fn bind(host: &PrivateKey, signer: &PrivateKey, session: &[u8], hop: Hop) -> Vec<u8> {
         let signature: Signature = signature::Signer::try_sign(signer, session).unwrap();
         let mut out = vec![EXTENSION];
         put(&mut out, SESSION_BIND).unwrap();
         put(&mut out, &host.public_key().to_bytes().unwrap()).unwrap();
         put(&mut out, session).unwrap();
         put(&mut out, &Vec::<u8>::try_from(signature).unwrap()).unwrap();
-        out.push(forwarding as u8);
+        out.push(u8::from(hop == Hop::Forwarded));
         out
     }
 
@@ -507,7 +516,7 @@ mod tests {
         assert_eq!(u32::from_be_bytes(*count), 1);
         assert_eq!(take(&mut rest).unwrap(), public.to_bytes().unwrap());
         assert_eq!(take(&mut rest).unwrap(), b"test@passbox.dev");
-        assert!(rest.is_empty());
+        assert_eq!(rest.len(), 0, "bytes left after the last key");
     }
 
     #[test]
@@ -605,7 +614,7 @@ mod tests {
         let mut c = Connection::default();
         assert_eq!(
             answer(
-                &bind(&host, &host, b"sid", false),
+                &bind(&host, &host, b"sid", Hop::Direct),
                 &[],
                 &mut c,
                 |_, _, _| unreachable!()
@@ -629,7 +638,7 @@ mod tests {
         let liar = seeded(2, "evil");
         let mut forged = Connection::default();
         let out = answer(
-            &bind(&host, &liar, b"sid", false),
+            &bind(&host, &liar, b"sid", Hop::Direct),
             &[],
             &mut forged,
             |_, _, _| unreachable!(),
@@ -639,7 +648,7 @@ mod tests {
 
         let mut forwarded = Connection::default();
         answer(
-            &bind(&host, &host, b"sid", true),
+            &bind(&host, &host, b"sid", Hop::Forwarded),
             &[],
             &mut forwarded,
             |_, _, _| unreachable!(),
@@ -648,13 +657,13 @@ mod tests {
 
         let mut chained = Connection::default();
         answer(
-            &bind(&host, &host, b"sid", false),
+            &bind(&host, &host, b"sid", Hop::Direct),
             &[],
             &mut chained,
             |_, _, _| unreachable!(),
         );
         answer(
-            &bind(&liar, &liar, b"sid2", false),
+            &bind(&liar, &liar, b"sid2", Hop::Direct),
             &[],
             &mut chained,
             |_, _, _| unreachable!(),
@@ -666,7 +675,7 @@ mod tests {
     fn a_window_names_one_host_and_lasts_at_most_a_day() {
         let parsed = parse_windows("[ssh.windows]\nlegion = \"12h\"\nm1 = \"48h\"\n").unwrap();
         assert_eq!(parsed.hosts["legion"], 12 * 3600);
-        assert_eq!(parsed.hosts["m1"], crate::broker::MAX_GRANT_SECS);
+        assert_eq!(parsed.hosts["m1"], broker::MAX_GRANT_SECS);
         assert_eq!(parsed.shown(), "legion 12h, m1 24h");
         for host in ["\"*\"", "\"*.ts.net\"", "\"a,b\"", "\"!legion\"", "\"\""] {
             let err = parse_windows(&format!("[ssh.windows]\n{host} = \"1h\"\n")).unwrap_err();
@@ -750,8 +759,8 @@ mod tests {
             dir: tmp.path().to_path_buf(),
         };
         let key = x25519::Identity::generate();
-        crate::plugin::approve(&store, &key, "h").unwrap();
-        std::fs::copy(crate::plugin::approval_path(&store), approval_path(&store)).unwrap();
+        plugin::approve(&store, &key, "h").unwrap();
+        std::fs::copy(plugin::approval_path(&store), approval_path(&store)).unwrap();
         let copied = approved(&store).unwrap();
         assert!(!copied.verify_for("ssh", &key));
         approve(&store, &key, "h").unwrap();
@@ -768,7 +777,7 @@ mod tests {
             [REQUEST_IDENTITIES]
         );
         assert!(read_message(&mut reader).unwrap().is_none());
-        let huge = (MAX_MESSAGE as u32 + 1).to_be_bytes();
+        let huge = (u32::try_from(MAX_MESSAGE).unwrap() + 1).to_be_bytes();
         assert!(read_message(&mut huge.as_slice()).is_err());
     }
 }

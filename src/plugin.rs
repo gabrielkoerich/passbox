@@ -5,16 +5,19 @@ names a command template. The broker prompts and audits a call; the caller runs 
 it keeps the caller's GUI session and the broker never drives an app itself. A plugin with `stdin`
 is the exception: it reads a secret, so it runs only inside the broker and only as its bundled copy. */
 
-use crate::store::Store;
+use crate::store::{Store, hostname, write_private};
+use crate::{broker, project, sync};
+use age::x25519;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 #[derive(Deserialize)]
-pub struct Manifest {
+pub(crate) struct Manifest {
     pub name: String,
     pub description: String,
     /// Bumped when the plugin's behaviour changes, so a stale install can be spotted
@@ -37,7 +40,7 @@ pub struct Manifest {
 }
 
 #[derive(Deserialize)]
-pub struct Tool {
+pub(crate) struct Tool {
     pub name: String,
     #[serde(default)]
     pub description: String,
@@ -54,7 +57,7 @@ pub struct Tool {
 /// `{ max = 50 }`, `{ max_len = 200 }`, `{ digits = true }` or `{ date = true }` for YYYY-MM-DD
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Limit {
+pub(crate) struct Limit {
     #[serde(default)]
     pub max: Option<u64>,
     #[serde(default)]
@@ -105,13 +108,12 @@ fn on_path(command: &str) -> bool {
         return std::path::Path::new(command).exists();
     }
     std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(command).exists()))
-        .unwrap_or(false)
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(command).exists()))
 }
 
 impl Manifest {
     /// Refuse before prompting when a declared command is missing, and say how to get it
-    pub fn ensure_available(&self) -> Result<()> {
+    pub(crate) fn ensure_available(&self) -> Result<()> {
         if let Some(command) = &self.requires
             && !on_path(command)
         {
@@ -129,29 +131,34 @@ impl Manifest {
     }
 
     /// Whether tools run where they were invoked rather than in the plugin directory
-    pub fn runs_in_caller_dir(&self) -> bool {
+    pub(crate) fn runs_in_caller_dir(&self) -> bool {
         self.cwd.as_deref() == Some("caller")
     }
 
-    pub fn version(&self) -> &str {
+    pub(crate) fn version(&self) -> &str {
         self.version.as_deref().unwrap_or("0")
     }
 
-    pub fn tool(&self, action: &str) -> Option<&Tool> {
+    pub(crate) fn tool(&self, action: &str) -> Option<&Tool> {
         self.tools.iter().find(|t| t.name == action)
     }
 
     /// The prompt text, which names the arguments and the secret the run releases
-    pub fn approval(&self, action: &str, agent: &str, args: &HashMap<String, String>) -> String {
+    pub(crate) fn approval(
+        &self,
+        action: &str,
+        agent: &str,
+        args: &HashMap<String, String>,
+    ) -> String {
         let mut text = format!("run plugin:{}.{action}", self.name);
         let shown = self.tool(action).map(|t| t.shown(args)).unwrap_or_default();
         if !shown.is_empty() {
             text.push(' ');
             text.push_str(&shown);
         }
-        text.push_str(&format!(" for {agent}"));
+        let _ = write!(text, " for {agent}");
         if let Some(secret) = &self.stdin {
-            text.push_str(&format!(", releasing {secret}"));
+            let _ = write!(text, ", releasing {secret}");
         }
         text
     }
@@ -182,7 +189,7 @@ impl Tool {
     }
 
     /// `query="invoice" mailbox="INBOX"`, in printable ASCII with quotes escaped and long values cut
-    pub fn shown(&self, args: &HashMap<String, String>) -> String {
+    pub(crate) fn shown(&self, args: &HashMap<String, String>) -> String {
         let parts: Vec<String> = self
             .bound(args)
             .filter(|(_, value)| !value.is_empty())
@@ -202,10 +209,10 @@ impl Tool {
     }
 
     /// The exact call a window is bound to, as a hash of the values sorted by name
-    pub fn call(&self, args: &HashMap<String, String>) -> String {
+    pub(crate) fn call(&self, args: &HashMap<String, String>) -> String {
         let mut pairs: Vec<_> = self.bound(args).collect();
-        pairs.sort();
-        crate::project::hash(&serde_json::to_vec(&pairs).expect("strings serialise"))
+        pairs.sort_unstable();
+        project::hash(&serde_json::to_vec(&pairs).expect("strings serialise"))
     }
 
     fn required(&self) -> impl Iterator<Item = &str> {
@@ -222,12 +229,12 @@ impl Tool {
     /* Build the command with `{param}` placeholders filled from `args`. A missing required
     parameter or an unknown one is refused, so a typo fails here rather than running a command
     with an empty value spliced in. */
-    pub fn command(&self, args: &HashMap<String, String>) -> Result<Command> {
+    pub(crate) fn command(&self, args: &HashMap<String, String>) -> Result<Command> {
         self.command_with(args, &[])
     }
 
     /// As `command`, with a literal argument naming one of `scripts` swapped for that file's bytes
-    pub fn command_with(
+    pub(crate) fn command_with(
         &self,
         args: &HashMap<String, String>,
         scripts: &[(&str, &str)],
@@ -290,7 +297,7 @@ impl Tool {
 /* Blank the secret, and its first line, from a run's output before it reaches an agent. Not
 every field, as `run_with_secret` does, since an account entry's user and host are what a mail
 tool prints */
-pub fn scrub(text: &str, secret: &str) -> String {
+pub(crate) fn scrub(text: &str, secret: &str) -> String {
     let mut out = text.to_string();
     for piece in [secret, secret.lines().next().unwrap_or_default()] {
         if piece.len() >= 4 {
@@ -301,7 +308,7 @@ pub fn scrub(text: &str, secret: &str) -> String {
 }
 
 /// stdout, then stderr and the exit code when the command failed
-pub fn render(output: &std::process::Output) -> String {
+pub(crate) fn render(output: &std::process::Output) -> String {
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     let err = String::from_utf8_lossy(&output.stderr);
     if !err.trim().is_empty() {
@@ -309,7 +316,7 @@ pub fn render(output: &std::process::Output) -> String {
         text.push_str(&err);
     }
     if !output.status.success() {
-        text.push_str(&format!("\nexit: {}", output.status.code().unwrap_or(1)));
+        let _ = write!(text, "\nexit: {}", output.status.code().unwrap_or(1));
     }
     text
 }
@@ -317,7 +324,7 @@ pub fn render(output: &std::process::Output) -> String {
 /* The command for a plugin with `stdin`, built from the copy bundled in this binary once every
 bundled file matches the installed one byte for byte. The script runs from the bundled bytes, so
 a file swapped on disk after the check never runs */
-pub fn fed_command(
+pub(crate) fn fed_command(
     store: &Store,
     name: &str,
     action: &str,
@@ -336,11 +343,11 @@ pub fn fed_command(
             return Err(refuse());
         }
     }
-    let (_, toml) = files
+    let (_, bundled) = files
         .iter()
         .find(|(file, _)| *file == "plugin.toml")
         .ok_or_else(refuse)?;
-    let manifest: Manifest = toml::from_str(toml).context("bundled manifest")?;
+    let manifest: Manifest = toml::from_str(bundled).context("bundled manifest")?;
     let tool = manifest
         .tool(action)
         .with_context(|| format!("{name} has no action {action}"))?;
@@ -350,12 +357,12 @@ pub fn fed_command(
     Ok((manifest, command))
 }
 
-pub fn missing(plugin: &str, secret: &str) -> anyhow::Error {
+pub(crate) fn missing(plugin: &str, secret: &str) -> anyhow::Error {
     anyhow!("the {plugin} plugin needs the secret {secret}, add it with `passbox add {secret}`")
 }
 
 /// Run a tool with `secret` on its stdin, never its env or argv, and return the scrubbed output
-pub fn run_fed(mut command: Command, secret: &str) -> Result<String> {
+pub(crate) fn run_fed(mut command: Command, secret: &str) -> Result<String> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -374,7 +381,7 @@ pub fn run_fed(mut command: Command, secret: &str) -> Result<String> {
 }
 
 /// A plugin name becomes a directory under the store, so it must not climb out of it
-pub fn valid_name(name: &str) -> Result<()> {
+pub(crate) fn valid_name(name: &str) -> Result<()> {
     let safe = !name.is_empty()
         && !name.contains("..")
         && name
@@ -386,7 +393,7 @@ pub fn valid_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn load(store: &Store, name: &str) -> Result<Manifest> {
+pub(crate) fn load(store: &Store, name: &str) -> Result<Manifest> {
     valid_name(name)?;
     let path = store.plugins_dir().join(name).join("plugin.toml");
     let text = std::fs::read_to_string(&path)
@@ -398,7 +405,7 @@ pub fn load(store: &Store, name: &str) -> Result<Manifest> {
     Ok(manifest)
 }
 
-pub fn installed(store: &Store) -> Result<Vec<Manifest>> {
+pub(crate) fn installed(store: &Store) -> Result<Vec<Manifest>> {
     let dir = store.plugins_dir();
     if !dir.exists() {
         return Ok(Vec::new());
@@ -419,7 +426,7 @@ pub fn installed(store: &Store) -> Result<Vec<Manifest>> {
 
 /// The `[plugins.windows]` section of config.toml, each tool checked against its manifest
 #[derive(Default)]
-pub struct Windows {
+pub(crate) struct Windows {
     /// Seconds a `<plugin>.<tool>` stays open after an approved call
     pub tools: BTreeMap<String, u64>,
     /// Covers each window and the command it names, so editing either one asks again
@@ -428,7 +435,7 @@ pub struct Windows {
 
 impl Windows {
     /// As the approval prompt lists them, such as `things3.logbook 24h, imap.search 1h`
-    pub fn shown(&self) -> String {
+    pub(crate) fn shown(&self) -> String {
         self.tools
             .iter()
             .map(|(tool, secs)| format!("{tool} {}", span(*secs)))
@@ -446,8 +453,8 @@ pub(crate) fn span(secs: u64) -> String {
     }
 }
 
-pub fn windows(store: &Store) -> Result<Windows> {
-    let path = crate::sync::config_path(store);
+pub(crate) fn windows(store: &Store) -> Result<Windows> {
+    let path = sync::config_path(store);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(Windows::default());
     };
@@ -510,37 +517,36 @@ fn parse_windows(text: &str, manifest: impl Fn(&str) -> Result<Manifest>) -> Res
             .with_context(|| format!("{key} must be a duration such as \"30m\""))?;
         let secs = duration(span)
             .with_context(|| key.clone())?
-            .min(crate::broker::MAX_GRANT_SECS);
+            .min(broker::MAX_GRANT_SECS);
         let manifest = manifest(plugin)
             .with_context(|| format!("{key} names a plugin that is not installed"))?;
         let tool = manifest
             .tool(action)
             .with_context(|| format!("{key}: {plugin} has no tool {action}"))?;
-        hashed.push_str(&format!(
-            "{key}={secs} stdin={:?} run={:?}\n",
+        let _ = writeln!(
+            hashed,
+            "{key}={secs} stdin={:?} run={:?}",
             manifest.stdin, tool.run
-        ));
+        );
         out.tools.insert(key.clone(), secs);
     }
-    out.hash = crate::project::hash(hashed.as_bytes());
+    out.hash = project::hash(hashed.as_bytes());
     Ok(out)
 }
 
 // Plain text like the section, so a MAC under the store key stops a process forging its own
 #[derive(Serialize, Deserialize)]
-pub struct Approval {
+pub(crate) struct Approval {
     pub hash: String,
     mac: String,
 }
 
 pub(crate) fn approval_path(store: &Store) -> std::path::PathBuf {
-    store
-        .dir
-        .join(format!("windows-{}.json", crate::store::hostname()))
+    store.dir.join(format!("windows-{}.json", hostname()))
 }
 
 /// The domain keeps a record for one section from passing as a record for the other
-fn mac(key: &age::x25519::Identity, domain: &str, hash: &str) -> String {
+fn mac(key: &x25519::Identity, domain: &str, hash: &str) -> String {
     use age::secrecy::ExposeSecret;
     let mut digest = Sha256::new();
     digest.update(format!("passbox {domain} windows\n").as_bytes());
@@ -551,11 +557,11 @@ fn mac(key: &age::x25519::Identity, domain: &str, hash: &str) -> String {
 }
 
 /// Read before the prompt to word it, and trusted only once `verify` passes
-pub fn approved(store: &Store) -> Option<Approval> {
+pub(crate) fn approved(store: &Store) -> Option<Approval> {
     approved_at(&approval_path(store))
 }
 
-pub fn approve(store: &Store, key: &age::x25519::Identity, hash: &str) -> Result<()> {
+pub(crate) fn approve(store: &Store, key: &x25519::Identity, hash: &str) -> Result<()> {
     approve_at(&approval_path(store), "plugin", key, hash)
 }
 
@@ -566,22 +572,22 @@ pub(crate) fn approved_at(path: &std::path::Path) -> Option<Approval> {
 pub(crate) fn approve_at(
     path: &std::path::Path,
     domain: &str,
-    key: &age::x25519::Identity,
+    key: &x25519::Identity,
     hash: &str,
 ) -> Result<()> {
     let record = Approval {
         hash: hash.to_string(),
         mac: mac(key, domain, hash),
     };
-    crate::store::write_private(path, &serde_json::to_vec(&record)?)
+    write_private(path, &serde_json::to_vec(&record)?)
 }
 
 impl Approval {
-    pub fn verify(&self, key: &age::x25519::Identity) -> bool {
+    pub(crate) fn verify(&self, key: &x25519::Identity) -> bool {
         self.verify_for("plugin", key)
     }
 
-    pub(crate) fn verify_for(&self, domain: &str, key: &age::x25519::Identity) -> bool {
+    pub(crate) fn verify_for(&self, domain: &str, key: &x25519::Identity) -> bool {
         self.mac == mac(key, domain, &self.hash)
     }
 }
@@ -707,6 +713,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one case per first-party tool, read as one table"
+    )]
     fn every_first_party_tool_builds_the_expected_command() {
         fn built(plugin: &str, action: &str, pairs: &[(&str, &str)]) -> Vec<String> {
             let text = std::fs::read_to_string(format!("plugins/{plugin}/plugin.toml")).unwrap();
@@ -912,11 +922,15 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one case per limit, read as one table"
+    )]
     fn a_value_over_each_kind_of_limit_is_refused_and_one_inside_passes() {
+        type Case<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>, Option<&'a str>);
         let long = |n: usize| "q".repeat(n);
         let (q200, q201, m100, m101) = (long(200), long(201), long(100), long(101));
-        type Case<'a> = (&'a str, &'a str, Vec<(&'a str, &'a str)>, Option<&'a str>);
-        let cases: Vec<Case> = vec![
+        let cases: Vec<Case<'_>> = vec![
             ("imap", "recent", vec![("count", "50")], None),
             (
                 "imap",
@@ -1157,7 +1171,7 @@ mod tests {
     #[test]
     fn a_window_is_capped_at_a_day_and_shown_as_set() {
         let w = parsed("\"demo.read\" = \"48h\"").unwrap();
-        assert_eq!(w.tools["demo.read"], crate::broker::MAX_GRANT_SECS);
+        assert_eq!(w.tools["demo.read"], broker::MAX_GRANT_SECS);
         assert_eq!(w.shown(), "demo.read 24h");
         assert_eq!(
             parsed("\"demo.read\" = \"30m\"").unwrap().shown(),
@@ -1189,15 +1203,15 @@ mod tests {
         let store = Store {
             dir: tmp.path().to_path_buf(),
         };
-        let key = age::x25519::Identity::generate();
+        let key = x25519::Identity::generate();
         approve(&store, &key, "h1").unwrap();
         let record = approved(&store).unwrap();
         assert_eq!(record.hash, "h1");
         assert!(record.verify(&key));
-        assert!(!record.verify(&age::x25519::Identity::generate()));
+        assert!(!record.verify(&x25519::Identity::generate()));
         let forged = Approval {
             hash: "h2".into(),
-            mac: record.mac.clone(),
+            mac: record.mac,
         };
         assert!(!forged.verify(&key));
     }
