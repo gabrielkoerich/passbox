@@ -1,6 +1,6 @@
 //! The broker process: its sockets, one thread per connection, and the watchdog that ends it.
 
-use super::audit::append_audit_to;
+use super::audit::{Entry, append_audit_to};
 use super::caller::{ancestry, caller_cwd, peer_pid, prompt_agent, remote_agent, ssh_requester};
 use super::tokens::{Tokens, mint_child, token_value};
 use super::{Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Request, Response, TAILNET_PORT};
@@ -107,12 +107,14 @@ fn reply<S: std::io::Read + Write>(
                         append_audit_to(
                             &shared.store,
                             &to,
-                            &request.agent,
-                            &request.name,
-                            "by token",
-                            caller,
-                            &grant,
-                            "",
+                            &Entry {
+                                agent: &request.agent,
+                                secret: &request.name,
+                                decision: "by token",
+                                caller,
+                                grant: &grant,
+                                ..Entry::default()
+                            },
                         )
                     })
                     .map(|()| value),

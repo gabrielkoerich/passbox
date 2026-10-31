@@ -33,7 +33,7 @@ use age::x25519;
 #[cfg(feature = "host")]
 use anyhow::{Result, bail};
 #[cfg(feature = "host")]
-use audit::append_audit_to;
+use audit::{Entry, append_audit_to};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "host")]
 use server::{Origin, clock};
@@ -313,12 +313,14 @@ impl Broker {
             append_audit_to(
                 &self.store,
                 &to,
-                &request.agent,
-                name,
-                "granted",
-                caller,
-                &grant,
-                "",
+                &Entry {
+                    agent: &request.agent,
+                    secret: name,
+                    decision: "granted",
+                    caller,
+                    grant: &grant,
+                    ..Entry::default()
+                },
             )?;
         }
         Ok(format!("{token}\n{}", granted.join("\n")))
@@ -342,12 +344,14 @@ impl Broker {
             append_audit_to(
                 &self.store,
                 &to,
-                &request.agent,
-                &request.name,
-                "by token",
-                caller,
-                &grant,
-                "",
+                &Entry {
+                    agent: &request.agent,
+                    secret: &request.name,
+                    decision: "by token",
+                    caller,
+                    grant: &grant,
+                    ..Entry::default()
+                },
             )?;
             return Ok(value);
         }

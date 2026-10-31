@@ -1,14 +1,38 @@
 //! SSH signatures: the prompt, or the signing window that covers one key and one host key.
 
 use super::Broker;
-use super::audit::append_audit_to;
+use super::audit::{Entry, append_audit_to};
 use super::server::clock;
-use super::windows::{SshWindow, fingerprint, ssh_window_open};
+use super::windows::{SshWindow, SshWindowKey, fingerprint, ssh_window_open};
 use crate::{plugin, ssh, store};
 use anyhow::{Result, anyhow, bail};
 use std::fmt::Write as _;
 
 impl Broker {
+    /// The signature a live window covers, made with no prompt and no store key
+    fn signed_by_window(
+        &self,
+        policy: &ssh::Windows,
+        window_key: &SshWindowKey,
+        data: &[u8],
+        agent: &str,
+        caller: &str,
+    ) -> Option<Result<ssh_key::Signature>> {
+        let window = ssh_window_open(
+            &self.ssh_windows,
+            policy,
+            self.ssh_approved.as_deref(),
+            window_key,
+            store::now(),
+        )?;
+        let to = format!("to {} {}", window.host, window_key.1);
+        let signed = signature::Signer::try_sign(&*window.private, data);
+        Some(
+            self.audit_by(agent, &window.name, "by window", caller, &to)
+                .and_then(|()| signed.map_err(|e| anyhow!("could not sign: {e}"))),
+        )
+    }
+
     /* A signature prompts unless a window from `[ssh.windows]` covers this key and host key. The
     prompt names the key by its comment, since its secret name is inside the ciphertext the prompt
     opens, and the store decides which key signs, not the list */
@@ -30,18 +54,9 @@ impl Broker {
         });
         let window_key = host.map(|h| (fingerprint(wanted), fingerprint(h)));
         if let Some(window_key) = &window_key
-            && let Some(window) = ssh_window_open(
-                &self.ssh_windows,
-                &policy,
-                self.ssh_approved.as_deref(),
-                window_key,
-                store::now(),
-            )
+            && let Some(signed) = self.signed_by_window(&policy, window_key, data, agent, caller)
         {
-            let to = format!("to {} {}", window.host, window_key.1);
-            let signed = signature::Signer::try_sign(&*window.private, data);
-            self.audit_by(agent, &window.name, "by window", caller, &to)?;
-            return signed.map_err(|e| anyhow!("could not sign: {e}"));
+            return signed;
         }
 
         let known = host.map(|_| ssh::known_hosts()).unwrap_or_default();
@@ -122,7 +137,18 @@ impl Broker {
             );
         }
         let to = key.to_public();
-        append_audit_to(&self.store, &to, agent, name, "signed", caller, "", &args)?;
+        append_audit_to(
+            &self.store,
+            &to,
+            &Entry {
+                agent,
+                secret: name,
+                decision: "signed",
+                caller,
+                args: &args,
+                ..Entry::default()
+            },
+        )?;
         signature::Signer::try_sign(private, data).map_err(|e| anyhow!("could not sign: {e}"))
     }
 }

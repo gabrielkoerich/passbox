@@ -1,7 +1,7 @@
 //! Tokens: what one approval opens, for whom, until when, and the children minted from it.
 
 use super::Request;
-use super::audit::append_audit_to;
+use super::audit::{Entry, append_audit_to};
 use super::server::Shared;
 use crate::store::{self, Store};
 use anyhow::{Result, anyhow, bail};
@@ -136,12 +136,14 @@ pub(super) fn mint_child(
         if let Err(e) = append_audit_to(
             &shared.store,
             &to,
-            &request.agent,
-            name,
-            "delegated",
-            caller,
-            &grant,
-            "",
+            &Entry {
+                agent: &request.agent,
+                secret: name,
+                decision: "delegated",
+                caller,
+                grant: &grant,
+                ..Entry::default()
+            },
         ) {
             return Some(Err(e));
         }
