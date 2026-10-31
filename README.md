@@ -104,6 +104,27 @@ passbox import-pass acme/token  # one entry
 
 passbox decrypts each entry through GPG and re-encrypts it to the store key. It keeps the whole body, so the `key: value` lines many pass entries carry under the password survive. It skips entries already in the store, and it changes or removes nothing in `pass`.
 
+### Coming from 1Password
+
+```bash
+passbox import-1password --dry-run           # what each item becomes, no values
+passbox import-1password                     # every vault
+passbox import-1password --vault Work --prefix 1p
+```
+
+It reads through the `op` CLI, so sign in with `op signin` first and passbox never sees the 1Password account password. Each item becomes `<vault>/<title>`, lowercased with spaces and punctuation made `-`, and `--prefix` puts every name under one namespace. Values go from `op` to the store inside the passbox process and are never printed or written to a file. One approval covers the whole import.
+
+| 1Password | passbox |
+|---|---|
+| Login, password, and any item with a concealed field | the password on the first line, the username, URLs and other fields as `key: value` lines, then the notes |
+| Secure note | its text, kept whole |
+| Document | its text, or skipped when it is binary |
+| SSH key | the OpenSSH key, which the agent offers when it is unencrypted Ed25519 or P-256, otherwise skipped |
+| One-time password | skipped, passbox has no TOTP support |
+| A field with more than one line | skipped |
+
+A name already in the store is refused, as `add` refuses it, and listed at the end. Nothing is overwritten. The report lists every skip and why, and the import changes nothing in 1Password.
+
 ### Giving a secret to an agent
 
 The value goes into one child process and never into the agent.
