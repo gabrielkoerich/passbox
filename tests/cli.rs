@@ -645,6 +645,41 @@ fn sync_enable_picks_a_directory_and_copies_into_it() {
     );
 }
 
+/// A git remote makes the store a repo and pushes it, and a second `--enable` asks before changing it
+#[test]
+fn sync_enable_picks_a_git_remote_and_pushes_the_store() {
+    let remote = tempfile::tempdir().unwrap();
+    let bare = remote.path().join("store.git");
+    let made = Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .arg(&bare)
+        .status()
+        .unwrap();
+    assert!(made.success(), "could not make the bare repo");
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+
+    let err = cli.note(
+        &["sync", "--enable"],
+        Some(&format!("3\n{}\n", bare.display())),
+    );
+    assert!(err.contains("copies go to"), "{err}");
+    let log = Command::new("git")
+        .arg("-C")
+        .arg(&bare)
+        .args(["log", "--oneline"])
+        .output()
+        .unwrap();
+    assert!(
+        log.status.success() && !log.stdout.is_empty(),
+        "nothing was pushed: {err}"
+    );
+
+    let again = cli.note(&["sync", "--enable"], Some("n\n"));
+    assert!(again.contains("copies currently go to"), "{again}");
+    assert!(again.contains("Change that?"), "{again}");
+}
+
 #[test]
 fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     let cli = Cli::new();
@@ -1347,6 +1382,84 @@ fn mcp_run_with_secret_never_hands_the_token_or_the_passphrase_to_the_agent() {
         !reply.contains(PASSPHRASE),
         "the passphrase reached the agent: {reply}"
     );
+}
+
+/// One session as a client runs it: every request gets an answer, a notification gets none
+#[test]
+fn an_mcp_session_answers_every_request_and_lists_names_only() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v-secret")).unwrap();
+
+    let session = [
+        "not json".to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "clientInfo": {"name": "test-agent"}
+        }})
+        .to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "list_secrets"}})
+        .to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "nope"}})
+        .to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 5, "method": "bogus/method"}).to_string(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 6, "method": "ping"}).to_string(),
+    ];
+    let mut child = cli
+        .cmd(PASSPHRASE)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{}", session.join("\n")).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let replies: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let by_id = |id: i64| {
+        replies
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no reply to {id}: {replies:?}"))
+    };
+
+    assert_eq!(
+        replies.len(),
+        7,
+        "the notification got a reply: {replies:?}"
+    );
+    assert_eq!(replies[0]["id"], serde_json::Value::Null);
+    assert_eq!(replies[0]["error"]["code"], -32700);
+    assert_eq!(by_id(1)["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(by_id(1)["result"]["serverInfo"]["name"], "passbox");
+
+    let tools: Vec<&str> = by_id(2)["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(tools.contains(&"list_secrets"), "{tools:?}");
+    assert!(tools.contains(&"run_with_secret"), "{tools:?}");
+    assert!(
+        !tools.iter().any(|t| t.contains("get")),
+        "a tool can hand back a value: {tools:?}"
+    );
+
+    let listed = &by_id(3)["result"];
+    assert_eq!(listed["content"][0]["text"], "a/b");
+    assert!(
+        !listed.to_string().contains("v-secret"),
+        "a listing held a value: {listed}"
+    );
+    assert_eq!(by_id(4)["result"]["isError"], true);
+    assert_eq!(by_id(5)["error"]["code"], -32601);
+    assert_eq!(by_id(6)["result"], serde_json::json!({}));
 }
 
 /// A TOML basic string holding `text`, so a shell script with quotes survives the manifest
