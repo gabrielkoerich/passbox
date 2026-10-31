@@ -46,6 +46,8 @@ class Passbox < Formula
       Install rclone only if you choose an rclone remote. iCloud Drive, a plain
       directory and a git remote need no extra tools.
 
+      After an upgrade, refresh the agent skill with `passbox skill install`.
+
       To keep the broker running, start it as a user service, not with sudo:
         brew services start passbox
       A sudo service runs with no login session and cannot raise Touch ID.

@@ -11,6 +11,7 @@ mod plugin;
 mod project;
 #[cfg(feature = "host")]
 mod se;
+mod skill;
 #[cfg(feature = "host")]
 mod ssh;
 mod store;
@@ -298,6 +299,11 @@ enum Command {
     },
     /// Serve MCP over stdio, so an agent asks through tools rather than a shell
     Mcp,
+    /// Install or check the agent skill that matches this version of passbox
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
     /// Run git inside the store, for `passbox git init`, `remote add`, `log` and the rest
     Git {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
@@ -307,6 +313,20 @@ enum Command {
     #[cfg(feature = "host")]
     #[command(hide = true)]
     Broker,
+}
+
+#[derive(Subcommand)]
+enum SkillAction {
+    /// Write the SKILL.md for this version, to ~/.claude/skills/passbox by default
+    Install {
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
+    /// Exit 1 if the installed SKILL.md is missing, older or different from this version's
+    Check {
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[cfg(all(feature = "mock-enclave", not(debug_assertions)))]
@@ -343,6 +363,12 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    if let Command::Skill { action } = cli.command {
+        return match action {
+            SkillAction::Install { dir } => skill::install(dir),
+            SkillAction::Check { dir } => skill::check(dir),
+        };
+    }
     let store = Store::open()?;
     store.remove_name_index()?;
 
@@ -426,6 +452,7 @@ fn run() -> Result<()> {
         Command::Plugin { args } => plugin_cmd(&store, &args),
         Command::Mcp => mcp::serve(store),
         Command::Git { args } => git(&store, &args),
+        Command::Skill { .. } => unreachable!("handled before the store opens"),
         #[cfg(feature = "host")]
         Command::Broker => broker::serve(store),
     }
