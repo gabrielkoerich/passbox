@@ -507,6 +507,7 @@ mod tests {
             value: value.to_string(),
             created: now(),
             updated: now(),
+            blob: false,
         }
     }
 
