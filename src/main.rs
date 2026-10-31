@@ -3,7 +3,6 @@ mod crypto;
 #[cfg(feature = "host")]
 mod import;
 mod mcp;
-mod skill;
 #[cfg(feature = "host")]
 mod onepassword;
 #[cfg(feature = "host")]
@@ -12,6 +11,7 @@ mod plugin;
 mod project;
 #[cfg(feature = "host")]
 mod se;
+mod skill;
 #[cfg(feature = "host")]
 mod ssh;
 mod store;

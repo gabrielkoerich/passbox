@@ -44,7 +44,10 @@ pub fn check(dir: Option<PathBuf>) -> Result<()> {
     let text = match std::fs::read_to_string(&file) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("no skill at {}, run `passbox skill install`", file.display())
+            bail!(
+                "no skill at {}, run `passbox skill install`",
+                file.display()
+            )
         }
         Err(e) => return Err(e).with_context(|| format!("read {}", file.display())),
     };
@@ -85,9 +88,10 @@ mod tests {
         install(Some(dir.clone())).unwrap();
         check(Some(dir.clone())).unwrap();
         let file = dir.join("SKILL.md");
-        let old = std::fs::read_to_string(&file)
-            .unwrap()
-            .replace(&format!("passbox_version: {VERSION}"), "passbox_version: 0.0.1");
+        let old = std::fs::read_to_string(&file).unwrap().replace(
+            &format!("passbox_version: {VERSION}"),
+            "passbox_version: 0.0.1",
+        );
         std::fs::write(&file, old).unwrap();
         assert!(check(Some(dir.clone())).is_err());
         let _ = std::fs::remove_dir_all(&dir);
