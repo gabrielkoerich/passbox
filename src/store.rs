@@ -344,6 +344,19 @@ impl Store {
         secret
     }
 
+    /// A hash of the secret file's bytes, which changes whenever the entry is rewritten
+    pub fn stamp(&self, id: &str) -> Result<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        fs::read(self.secret_path(id))?.hash(&mut hasher);
+        Ok(hasher.finish())
+    }
+
+    /// True while the id has a file, no tombstone and the bytes it had when stamped
+    pub fn is_current(&self, id: &str, stamp: u64) -> bool {
+        !self.tomb_path(id).exists() && self.stamp(id).is_ok_and(|now| now == stamp)
+    }
+
     pub fn find(&self, name: &str, key: &x25519::Identity) -> Result<Option<(String, Secret)>> {
         for id in self.ids()? {
             let secret = self.load(&id, key)?;
@@ -545,6 +558,27 @@ mod tests {
         store.remove_name_index().unwrap();
         assert!(!dir.path().join("names").exists());
         store.remove_name_index().unwrap();
+    }
+
+    #[test]
+    fn a_stamp_goes_stale_when_the_entry_is_rewritten_or_deleted() {
+        let (_tmp, store, key) = store();
+        let secret = |v: &str| Secret {
+            name: "a/b".into(),
+            value: v.into(),
+            created: 0,
+            updated: 0,
+        };
+        store.put("id1", &secret("one"), &key.to_public()).unwrap();
+        let stamp = store.stamp("id1").unwrap();
+        assert!(store.is_current("id1", stamp));
+
+        store.delete("id1").unwrap();
+        assert!(!store.is_current("id1", stamp));
+
+        store.put("id1", &secret("two"), &key.to_public()).unwrap();
+        assert!(!store.is_current("id1", stamp));
+        assert!(store.is_current("id1", store.stamp("id1").unwrap()));
     }
 
     fn store() -> (tempfile::TempDir, Store, x25519::Identity) {
