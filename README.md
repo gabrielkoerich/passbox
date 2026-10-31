@@ -92,7 +92,26 @@ export SSH_AUTH_SOCK=~/.passbox/ssh-agent.sock   # in ~/.zshrc
 ssh-add -L                                        # lists it, no prompt
 ```
 
-The agent takes unencrypted Ed25519 and P-256 keys only. Remove a passphrase with `ssh-keygen -p -f KEY`, then delete the file once the key is in the store. The prompt says what is signed and with which key, such as "sign an SSH login as git with SSH key you@mac for ssh". A key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
+The agent takes unencrypted Ed25519 and P-256 keys only. Remove a passphrase with `ssh-keygen -p -f KEY`, then delete the file once the key is in the store. The prompt says what is signed, where to and with which key, such as "sign an SSH login as git to github.com with SSH key you@mac for ssh". A key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
+
+### Signing windows
+
+A job that connects to the same hosts every half hour cannot answer a prompt while you are away from the Mac. `~/.passbox/config.toml` can list hosts that a key may sign logins to for a while:
+
+```toml
+[ssh.windows]
+"legion" = "12h"
+"m1" = "12h"
+"vpsbr" = "4h"
+```
+
+The first login to a listed host prompts, such as "sign an SSH login as gb to legion with SSH key you@mac for ssh, and its logins to legion for 12h without asking". Later logins with that key to that host skip the prompt until the window ends, also while the screen is locked, and each is audited as `by window`. A host not listed prompts every time.
+
+- A host is named as `~/.ssh/known_hosts` lists it, or by its host key fingerprint, such as `"SHA256:..."`, which is the only way to name a host whose known_hosts entry is hashed. `*`, `a,b` and any other pattern are refused.
+- The window is bound to the host key, not the name. ssh 8.9 and later proves the host key to the agent (`session-bind@openssh.com`), and a login signs that session. Another server that claims the name gets a prompt of its own. A host with only an RSA host key, a forwarded agent, and commit signing with `gpg.format ssh` always prompt.
+- A window is capped at 24 hours, lives in the broker's memory and ends on a restart. It holds the private key, so a key removed from the store keeps signing for that host until its window ends.
+- Every program on the Mac shares one window, as with [plugin windows](#approval-windows). The audit log shows which program signed.
+- An edit to the section takes effect after one prompt that lists it, such as `allow SSH windows legion 12h, m1 12h for ssh, then ...`. Approving it ends the windows opened under the old section.
 
 ### Coming from pass
 
@@ -732,8 +751,9 @@ passbox restore github/token --index 0  # put the newest one back
   wraps/se-<host>.json      the store key under that Mac's Secure Enclave
   audit-<host>.log          one encrypted record per line
   grants-<host>.age         project approvals, never synced
-  config.toml               where sync copies to and the plugin windows, never synced
+  config.toml               where sync copies to and the plugin and SSH windows, never synced
   windows-<host>.json       the hash of the approved plugin windows, never synced
+  windows-ssh-<host>.json   the hash of the approved SSH windows, never synced
   plugins/                  installed plugins, never synced
   ssh-keys.pub              the public halves the SSH agent lists, never synced
   broker.sock               the approval socket, never synced
