@@ -21,6 +21,9 @@ pub struct Secret {
     pub value: String,
     pub created: u64,
     pub updated: u64,
+    /// The value is the whole text, such as a certificate, never read as `key: value` fields
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blob: bool,
 }
 
 impl Drop for Secret {
@@ -566,6 +569,7 @@ mod tests {
             value: value.to_string(),
             created: now(),
             updated: now(),
+            blob: false,
         }
     }
 
@@ -814,5 +818,21 @@ mod tests {
     fn init_refuses_twice() {
         let (_tmp, store, _key) = store();
         assert!(store.init().is_err());
+    }
+
+    #[test]
+    fn a_blob_flag_survives_and_an_old_entry_reads_as_not_a_blob() {
+        let (_tmp, store, key) = store();
+        let r = store.recipient().unwrap();
+        let mut blob = secret("tls/key", "a\nb: c");
+        blob.blob = true;
+        store.put("id1", &blob, &r).unwrap();
+        store.put("id2", &secret("plain", "x"), &r).unwrap();
+
+        assert!(store.load("id1", &key).unwrap().blob);
+        assert!(!store.load("id2", &key).unwrap().blob);
+        let old: Secret =
+            serde_json::from_str(r#"{"name":"n","value":"v","created":1,"updated":1}"#).unwrap();
+        assert!(!old.blob);
     }
 }

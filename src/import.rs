@@ -96,6 +96,7 @@ pub fn import(store: &Store, names: &[String], key: Option<&x25519::Identity>) -
             value: value.clone(),
             created: now(),
             updated: now(),
+            blob: false,
         };
         value.zeroize();
 

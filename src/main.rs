@@ -175,6 +175,13 @@ enum Command {
         /// After the value, ask for this field, such as `username`. Repeatable
         #[arg(long = "field", value_name = "NAME")]
         fields: Vec<String>,
+        /// Store the whole text, such as a certificate or a JSON key, and never read it as fields.
+        /// At a terminal, paste it and end with Ctrl-D
+        #[arg(long, conflicts_with_all = ["multiline", "fields"])]
+        blob: bool,
+        /// Store this file as a blob
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["multiline", "fields"])]
+        file: Option<std::path::PathBuf>,
     },
     /// Print a secret
     Get {
@@ -233,6 +240,10 @@ enum Command {
         /// Secret to pipe to the child on stdin
         #[arg(long)]
         stdin: Option<String>,
+        /// VAR=secret, written to a temporary file the child reads by path, removed when it exits.
+        /// Repeatable
+        #[arg(long = "file", value_name = "VAR=SECRET")]
+        files: Vec<String>,
         /// Read a token from the first line of stdin, so it is never in an environment
         #[arg(long)]
         token_stdin: bool,
@@ -322,7 +333,10 @@ fn run() -> Result<()> {
             name,
             multiline,
             fields,
-        } => add(&store, &name, multiline, &fields).inspect(|()| written(&store, "add a secret")),
+            blob,
+            file,
+        } => add(&store, &name, multiline, &fields, blob, file.as_deref())
+            .inspect(|()| written(&store, "add a secret")),
         Command::Get { name, field } => get(&store, &name, field.as_deref()),
         Command::Copy { name, field, clear } => copy(&store, &name, field.as_deref(), clear),
         Command::Grant {
@@ -347,13 +361,14 @@ fn run() -> Result<()> {
         Command::Exec {
             envs,
             stdin,
+            files,
             token_stdin,
             command,
         } => {
             if token_stdin {
                 take_stdin_token()?;
             }
-            exec(&store, &envs, stdin.as_deref(), &command)
+            exec(&store, &envs, &files, stdin.as_deref(), &command)
         }
         #[cfg(feature = "host")]
         Command::Audit { tail } => audit(&store, tail),
@@ -600,21 +615,73 @@ fn batch_token(store: &Store, names: &[&str]) -> Option<String> {
     answer.lines().next().map(str::to_string)
 }
 
-fn exec(store: &Store, envs: &[String], stdin: Option<&str>, command: &[String]) -> Result<()> {
+/// A private directory holding injected values as files. It is wiped and removed on drop
+struct SecretFiles {
+    dir: std::path::PathBuf,
+}
+
+impl SecretFiles {
+    fn new() -> Result<Self> {
+        let dir = std::env::temp_dir().join(format!("passbox-{}", store::new_id()));
+        store::private_dir(&dir)?;
+        Ok(SecretFiles { dir })
+    }
+
+    fn write(&self, index: usize, value: &str) -> Result<std::path::PathBuf> {
+        let path = self.dir.join(index.to_string());
+        let mut bytes = value.as_bytes().to_vec();
+        if !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        store::write_private(&path, &bytes)?;
+        zeroize::Zeroize::zeroize(&mut bytes);
+        Ok(path)
+    }
+}
+
+impl Drop for SecretFiles {
+    fn drop(&mut self) {
+        if let Ok(entries) = std::fs::read_dir(&self.dir) {
+            for entry in entries.flatten() {
+                let len = entry.metadata().map(|m| m.len() as usize).unwrap_or(0);
+                let _ = std::fs::write(entry.path(), vec![0u8; len]);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn split_pairs(pairs: &[String]) -> Result<Vec<(&str, &str)>> {
+    pairs
+        .iter()
+        .map(|pair| {
+            pair.split_once('=')
+                .with_context(|| format!("expected VAR=secret, got {pair}"))
+        })
+        .collect()
+}
+
+fn exec(
+    store: &Store,
+    envs: &[String],
+    files: &[String],
+    stdin: Option<&str>,
+    command: &[String],
+) -> Result<()> {
     let (program, args) = command.split_first().context("no command to run")?;
     let mut child = std::process::Command::new(program);
     // Before the injected secrets, so an explicit --env PASSBOX_TOKEN=name still reaches the child
     without_credentials(&mut child).args(args);
 
-    let mut pairs = Vec::new();
-    for pair in envs {
-        let (var, name) = pair
-            .split_once('=')
-            .with_context(|| format!("expected VAR=secret, got {pair}"))?;
-        pairs.push((var, name));
-    }
+    let pairs = split_pairs(envs)?;
+    let file_pairs = split_pairs(files)?;
 
-    let names: Vec<&str> = pairs.iter().map(|(_, name)| *name).chain(stdin).collect();
+    let names: Vec<&str> = pairs
+        .iter()
+        .chain(&file_pairs)
+        .map(|(_, name)| *name)
+        .chain(stdin)
+        .collect();
     let token = batch_token(store, &names);
     let read = |name: &str| match &token {
         Some(token) => broker::request_token(store, name, &agent(), token),
@@ -623,6 +690,15 @@ fn exec(store: &Store, envs: &[String], stdin: Option<&str>, command: &[String])
 
     for (var, name) in pairs {
         child.env(var, read(name)?);
+    }
+
+    // Held until the child exits, so the files are gone whatever the child does
+    let secret_files = SecretFiles::new()?;
+    for (index, (var, name)) in file_pairs.into_iter().enumerate() {
+        let mut value = read(name)?;
+        let path = secret_files.write(index, &value);
+        zeroize::Zeroize::zeroize(&mut value);
+        child.env(var, path?);
     }
 
     let piped = match stdin {
@@ -648,6 +724,8 @@ fn exec(store: &Store, envs: &[String], stdin: Option<&str>, command: &[String])
     }
 
     let status = running.wait()?;
+    // exit skips destructors, so the files go first
+    drop(secret_files);
     std::process::exit(status.code().unwrap_or(1));
 }
 
@@ -1008,9 +1086,21 @@ fn ask(prompt: &str) -> Result<String> {
     }
 }
 
-fn add(store: &Store, name: &str, multiline: bool, fields: &[String]) -> Result<()> {
+fn add(
+    store: &Store,
+    name: &str,
+    multiline: bool,
+    fields: &[String],
+    blob: bool,
+    file: Option<&std::path::Path>,
+) -> Result<()> {
     let recipient = store.recipient()?;
-    let value = read_value(multiline, fields)?;
+    let blob = blob || file.is_some();
+    let value = match file {
+        Some(path) => read_file(path)?,
+        None if blob => read_blob()?,
+        None => read_value(multiline, fields)?,
+    };
     if value.is_empty() {
         bail!("refusing to store an empty value");
     }
@@ -1032,6 +1122,7 @@ fn add(store: &Store, name: &str, multiline: bool, fields: &[String]) -> Result<
         value,
         created: store::now(),
         updated: store::now(),
+        blob,
     };
     store.put(&id, &secret, &recipient)?;
     eprintln!("stored {name}");
@@ -1643,6 +1734,22 @@ fn find_deleted(store: &Store, name: &str, key: &age::x25519::Identity) -> Resul
         }
     }
     bail!("no secret named {name}")
+}
+
+fn read_file(path: &std::path::Path) -> Result<String> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("could not read {}", path.display()))?;
+    Ok(text.trim_end_matches('\n').to_string())
+}
+
+/// The whole of stdin. At a terminal the text echoes as it is pasted, and Ctrl-D ends it
+fn read_blob() -> Result<String> {
+    if std::io::stdin().is_terminal() {
+        eprintln!("paste the value, then press Ctrl-D on an empty line:");
+    }
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    Ok(buf.trim_end_matches('\n').to_string())
 }
 
 fn read_value(multiline: bool, fields: &[String]) -> Result<String> {

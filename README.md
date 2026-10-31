@@ -783,6 +783,19 @@ At a terminal, `passbox add db/prod --field username --field url` asks for the p
 
 Reading one field hands a caller the password without the note beside it.
 
+### Whole text: certificates, JSON keys, recovery codes
+
+A value that spans lines and is not `key: value` fields, such as a PEM, a service account JSON file or a list of recovery codes, goes in as a blob. A blob is never parsed, so a header like `Proc-Type: 4,ENCRYPTED` stays part of the text.
+
+```bash
+passbox add tls/key --blob                    # paste, then Ctrl-D
+passbox add gcp/key --file service.json       # or read a file
+passbox exec --env KEY=tls/key -- ./deploy    # the whole text in the variable
+passbox exec --file GOOGLE_APPLICATION_CREDENTIALS=gcp/key -- ./job
+```
+
+`--file VAR=name` writes the value to a private temporary file, sets `VAR` to its path and removes the file when the child exits. Use it for tools that only take a path. The pasted text echoes at a terminal, and `--blob` and `--file` refuse `--field` and `-m`. Do not use `--field` on a blob, since it would still parse the text.
+
 ### Using it from a program
 
 Launch the program under `passbox exec` and read the environment. It needs no library and no dependency:
