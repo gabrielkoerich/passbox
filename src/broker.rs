@@ -76,6 +76,8 @@ fn token_lookup(
 #[cfg(feature = "host")]
 struct TokenGrant {
     values: HashMap<String, String>,
+    // The secret file each value came from, so a read after an update or delete is not served stale
+    stamps: HashMap<String, (String, u64)>,
     expires: u64,
     // Shared by a grant and every child of it, so each read traces back to the one fingerprint
     grant: String,
@@ -103,8 +105,12 @@ fn delegate(
     }
 
     let mut values = HashMap::new();
+    let mut stamps = HashMap::new();
     for name in names {
         values.insert(name.clone(), parent.values.get(name)?.clone());
+        if let Some(stamp) = parent.stamps.get(name) {
+            stamps.insert(name.clone(), stamp.clone());
+        }
     }
     // The count takes in the root grant itself, which is live while any child is
     let live = tokens
@@ -119,6 +125,7 @@ fn delegate(
 
     Some(Ok(TokenGrant {
         values,
+        stamps,
         expires,
         grant: parent.grant.clone(),
     }))
@@ -231,10 +238,24 @@ type Tokens = std::sync::Arc<std::sync::Mutex<HashMap<String, TokenGrant>>>;
 
 /// A token answers only for what it was granted, and only until it expires. The grant id comes too
 #[cfg(feature = "host")]
-fn token_value(tokens: &Tokens, token: &str, name: &str) -> Option<(String, String)> {
+fn token_value(
+    tokens: &Tokens,
+    store: &Store,
+    token: &str,
+    name: &str,
+) -> Option<(String, String)> {
     let now = store::now();
     let mut tokens = tokens.lock().expect("tokens");
     tokens.retain(|_, g| now < g.expires);
+    // A secret changed or deleted since the grant is no longer the one approved, so the read falls through to a prompt
+    for grant in tokens.values_mut() {
+        if let Some((id, stamp)) = grant.stamps.get(name)
+            && !store.is_current(id, *stamp)
+        {
+            grant.values.remove(name);
+            grant.stamps.remove(name);
+        }
+    }
     let value = token_lookup(&tokens, token, name, now)?;
     Some((value, tokens[token].grant.clone()))
 }
@@ -652,10 +673,12 @@ impl Broker {
         wanted.dedup();
 
         let mut values = HashMap::new();
+        let mut stamps = HashMap::new();
         for name in &wanted {
-            let Some((_, secret)) = self.store.find(name, &key)? else {
+            let Some((id, secret)) = self.store.find(name, &key)? else {
                 continue;
             };
+            stamps.insert(name.clone(), (id.clone(), self.store.stamp(&id)?));
             values.insert(name.clone(), secret.value.clone());
         }
         if values.is_empty() {
@@ -669,6 +692,7 @@ impl Broker {
             token.clone(),
             TokenGrant {
                 values,
+                stamps,
                 expires: store::now() + ttl,
                 grant: grant.clone(),
             },
@@ -690,7 +714,7 @@ impl Broker {
     }
 
     fn value_for_token(&self, token: &str, name: &str) -> Option<(String, String)> {
-        token_value(&self.tokens, token, name)
+        token_value(&self.tokens, &self.store, token, name)
     }
 
     fn handle_get(
@@ -928,7 +952,7 @@ fn reply<S: std::io::Read + Write>(
             }
             // A token read or a child grant needs no key and no prompt, so it never waits behind one
             let by_token = (request.op == Op::Get && !request.token.is_empty())
-                .then(|| token_value(&shared.tokens, &request.token, &request.name))
+                .then(|| token_value(&shared.tokens, &shared.store, &request.token, &request.name))
                 .flatten();
             let child = (request.op == Op::Grant && !request.token.is_empty())
                 .then(|| mint_child(shared, &request, caller))
@@ -1654,6 +1678,7 @@ mod tests {
             "t".into(),
             TokenGrant {
                 values: HashMap::from([("a/b".into(), "v".into())]),
+                stamps: HashMap::new(),
                 expires: store::now() + 43_200,
                 grant: "g".into(),
             },
@@ -1694,6 +1719,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            stamps: HashMap::new(),
             expires,
             grant: "root".into(),
         }
