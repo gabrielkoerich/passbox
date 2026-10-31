@@ -182,6 +182,9 @@ enum Command {
         /// Store this file as a blob
         #[arg(long, value_name = "PATH", conflicts_with_all = ["multiline", "fields"])]
         file: Option<std::path::PathBuf>,
+        /// Replace an existing secret. A blob stays a blob
+        #[arg(long)]
+        replace: bool,
     },
     /// Print a secret
     Get {
@@ -335,8 +338,17 @@ fn run() -> Result<()> {
             fields,
             blob,
             file,
-        } => add(&store, &name, multiline, &fields, blob, file.as_deref())
-            .inspect(|()| written(&store, "add a secret")),
+            replace,
+        } => add(
+            &store,
+            &name,
+            multiline,
+            &fields,
+            blob,
+            file.as_deref(),
+            replace,
+        )
+        .inspect(|()| written(&store, "add a secret")),
         Command::Get { name, field } => get(&store, &name, field.as_deref()),
         Command::Copy { name, field, clear } => copy(&store, &name, field.as_deref(), clear),
         Command::Grant {
@@ -1112,25 +1124,46 @@ fn add(
     fields: &[String],
     blob: bool,
     file: Option<&std::path::Path>,
+    replace: bool,
 ) -> Result<()> {
     let recipient = store.recipient()?;
-    let blob = blob || file.is_some();
-    let value = match file {
-        Some(path) => read_file(path)?,
-        None if blob => read_blob()?,
-        None => read_value(multiline, fields)?,
+    let mut blob = blob || file.is_some();
+    // A replace opens the store first, to learn whether the old entry is a blob
+    let mut existing = None;
+    let mut key = None;
+    if replace {
+        let k = unlock(store, &format!("replace {name}"))?;
+        let (id, old) = store
+            .find(name, &k)?
+            .with_context(|| format!("{name} does not exist, drop --replace to add it"))?;
+        blob = blob || old.blob;
+        existing = Some(id);
+        key = Some(k);
+    }
+    let value = if blob {
+        match file {
+            Some(path) => read_file(path)?,
+            None => read_blob()?,
+        }
+    } else {
+        read_value(multiline, fields)?
     };
     if value.is_empty() {
         bail!("refusing to store an empty value");
     }
 
     // Spotting a duplicate needs the name to id map, which only the key can produce
-    let id = if store.ids_with_files()?.is_empty() && !store.versions_dir().exists() {
+    let id = if let Some(id) = existing {
+        id
+    } else if store.ids_with_files()?.is_empty() && !store.versions_dir().exists() {
         store::new_id()
     } else {
-        let key = unlock(store, &format!("add {name}"))?;
+        let key = match key {
+            Some(key) => key,
+            None => unlock(store, &format!("add {name}"))?,
+        };
         if store.find(name, &key)?.is_some() {
-            bail!("{name} already exists, run `passbox rm {name}` first to replace it");
+            bail!("{name} already exists, use --replace or run `passbox rm {name}` first");
         }
         // A name added back after rm keeps its id, so restore still reaches the old versions
         find_deleted(store, name, &key).unwrap_or_else(|_| store::new_id())

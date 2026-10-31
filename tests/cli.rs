@@ -2821,3 +2821,27 @@ fn exec_file_hands_the_child_a_path_and_removes_it_afterwards() {
     let path = std::fs::read_to_string(&marker).unwrap();
     assert!(!Path::new(&path).exists(), "{path} outlived the child");
 }
+
+#[test]
+fn replace_keeps_a_blob_whole() {
+    let cli = Cli::new();
+    cli.run(&["add", "tls/key", "--blob"], Some(PEM)).unwrap();
+    cli.run(&["add", "tls/key", "--replace"], Some("new: 1\nline two\n"))
+        .unwrap();
+
+    let got = cli
+        .run(
+            &[
+                "exec",
+                "--env",
+                "K=tls/key",
+                "--",
+                "sh",
+                "-c",
+                "printf %s \"$K\"",
+            ],
+            None,
+        )
+        .unwrap();
+    assert!(got.contains("new: 1\nline two"), "{got}");
+}

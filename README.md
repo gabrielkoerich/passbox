@@ -62,7 +62,7 @@ passbox copy github/token     # to the clipboard, cleared after 20 seconds
 
 `get` writes the secret to stdout, so it refuses when stdout is not a terminal, where the value would land in a pipe, a file or an agent's context. No flag overrides that. For the clipboard use `copy`, which marks the entry so clipboard managers skip it and clears it after 20 seconds, or after `--clear N` seconds up to 60. For a command use `exec`.
 
-`add` refuses a name that already exists. To change a value, `passbox rm` it and add it again. The old value stays in its versions, so `passbox restore` brings it back.
+`add` refuses a name that already exists. To change a value, use `passbox add NAME --replace`, which keeps a blob a blob, or `passbox rm` it and add it again. The old value stays in its versions, so `passbox restore` brings it back.
 
 ### Alfred
 
