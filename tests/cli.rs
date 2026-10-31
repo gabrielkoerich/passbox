@@ -2961,3 +2961,33 @@ fn importing_from_1password_maps_each_item_and_says_why_it_skipped() {
     );
     assert_eq!(cli.read("work/aws-root").unwrap(), "AKIA");
 }
+
+#[test]
+fn two_1password_items_with_one_name_import_the_first_and_skip_the_second() {
+    let cli = Cli::new();
+    let fake = tempfile::tempdir().unwrap();
+    let shim = fake.path().join("op");
+    std::fs::write(
+        &shim,
+        r#"#!/bin/sh
+case "$1 $2 $3" in
+"vault list "*) printf '%s\n' '[{"id":"v1","name":"Dev"}]' ;;
+"item list --vault") printf '%s\n' '[{"id":"i1","title":"GitHub"},{"id":"i2","title":"github!"}]' ;;
+"item get i1") printf '%s\n' '{"id":"i1","category":"API_CREDENTIAL","fields":[{"id":"credential","type":"CONCEALED","value":"one"}]}' ;;
+"item get i2") printf '%s\n' '{"id":"i2","category":"API_CREDENTIAL","fields":[{"id":"credential","type":"CONCEALED","value":"two"}]}' ;;
+*) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let out = import_1password(&cli, &fake, &[]);
+    assert!(
+        out.contains("skipped Dev/github!, dev/github is already taken by Dev/GitHub"),
+        "{out}"
+    );
+    assert!(!out.contains("already in the store"), "{out}");
+    assert!(out.contains("imported 1, skipped 1, refused 0"), "{out}");
+    assert_eq!(cli.read("dev/github").unwrap(), "one");
+}

@@ -4,7 +4,7 @@ use crate::store::{Secret, Store, new_id, now};
 use age::x25519;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Deserialize)]
 pub struct Vault {
@@ -355,10 +355,12 @@ pub fn import(
         );
     }
 
-    let mut taken: HashSet<String> = match key {
+    let taken: HashSet<String> = match key {
         Some(key) => store.names(key)?.into_iter().collect(),
         None => HashSet::new(),
     };
+    // Names this run gave out, so a second item that slugs the same is not reported as in the store
+    let mut claimed: HashMap<String, String> = HashMap::new();
     let recipient = store.recipient()?;
     let mut report = Vec::new();
 
@@ -371,6 +373,15 @@ pub fn import(
                     item: label,
                     name,
                     outcome: Outcome::Exists,
+                });
+                continue;
+            }
+
+            if let Some(first) = claimed.get(&name) {
+                report.push(Line {
+                    outcome: Outcome::Skipped(format!("{name} is already taken by {first}")),
+                    item: label,
+                    name,
                 });
                 continue;
             }
@@ -394,7 +405,7 @@ pub fn import(
                 }
             };
             if matches!(outcome, Outcome::Imported(_)) {
-                taken.insert(name.clone());
+                claimed.insert(name.clone(), label.clone());
             }
             report.push(Line {
                 item: label,
