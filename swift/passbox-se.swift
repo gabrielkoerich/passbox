@@ -113,15 +113,32 @@ func unwrap(reason: String) {
             + "Touch ID keyboard will do this. Use the recovery passphrase, or open the lid.")
     }
 
-    var authError: Error?
-    let waiter = DispatchSemaphore(value: 0)
-    context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) {
-        _, error in
-        authError = error
-        waiter.signal()
-    }
-    waiter.wait()
-    if let authError {
+    // Focus moving to another window makes the system cancel the prompt, so raise it again
+    // until the owner touches the sensor or picks Deny
+    var dismissed = 0
+    while true {
+        var authError: Error?
+        let waiter = DispatchSemaphore(value: 0)
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) {
+            _, error in
+            authError = error
+            waiter.signal()
+        }
+        waiter.wait()
+        guard let authError else {
+            break
+        }
+
+        let code = (authError as? LAError)?.code
+        let system = code == .systemCancel || code == .appCancel
+        if system && dismissed < 50 {
+            dismissed += 1
+            Thread.sleep(forTimeInterval: 0.3)
+            continue
+        }
+        if system || code == .userCancel {
+            fail("denied: the Touch ID prompt was dismissed, nothing was read")
+        }
         fail("denied: \(authError.localizedDescription)")
     }
 
