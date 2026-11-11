@@ -6,6 +6,10 @@ Status: written and not yet run on a device. The protocol and both encryption fo
 
 There are no notifications yet. The app sees a request while it is open.
 
+![The four screens: not enrolled, connected, a request, and settings](mockups/screens.png)
+
+A mockup drawn from the SwiftUI layout, to be replaced by captures once the app has run.
+
 ## Build
 
 ```bash
