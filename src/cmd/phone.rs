@@ -16,7 +16,11 @@ pub(crate) fn phone_add(store: &Store) -> Result<()> {
     }
     let address = tailnet::address()
         .context("Tailscale is not up on this Mac, and the phone reaches the broker over it")?;
-    let this_mac = tailnet::whois(address).unwrap_or_else(|| address.to_string());
+    // The address first, since that is what gets typed into the phone
+    let this_mac = match tailnet::whois(address) {
+        Some(name) => format!("{address}   {name}"),
+        None => address.to_string(),
+    };
 
     let code = broker::phone_open(store)?;
     eprintln!("On the iPhone, open passbox and enter:");

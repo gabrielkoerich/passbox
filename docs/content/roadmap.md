@@ -281,7 +281,7 @@ Revisited 2026-11, and a narrower thing is being built. The decline above stands
 - The answer travels over the tailnet the broker already listens on, where `tailscale whois` names the phone.
 - The knock is an Apple push sent by the owner's own Mac while this is one person's tool. For anyone else it has to become CloudKit, which needs a signed app bundle, or a relay that sees a device token and an opaque id.
 
-Order: the Mac side with a phone written in the tests, which is built, then the app opened by hand, then the push. The design notes have it under "A phone as a second approver".
+Order: the Mac side with a phone written in the tests, which is built, then the app opened by hand, which is written and waiting for its first run on a device, then the push. The design notes have it under "A phone as a second approver".
 
 Cost: an iOS app is now part of passbox, which is the cost the decline named, paid for a smaller feature.
 

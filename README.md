@@ -742,7 +742,7 @@ Give the container a real tun device. `tailscaled --tun=userspace-networking` re
 
 ### An iPhone as a second approver
 
-Not usable yet: the Mac side below is built, the iOS app is not.
+Not ready to rely on: the Mac side below is built and tested, and the iPhone app in [`ios/`](ios) is written but has not yet run on a device. It has no notifications, so it sees a request only while it is open.
 
 ```bash
 passbox phone add     # shows a code, the phone dials in with it, a fingerprint here confirms

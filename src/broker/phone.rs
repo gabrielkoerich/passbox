@@ -13,7 +13,7 @@ use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
@@ -28,6 +28,8 @@ const DEFAULT_AFTER_SECS: u64 = 15;
 const DEFAULT_WAIT_SECS: u64 = 60;
 /// The helper's opening words when no prompt can be shown, as `swift/passbox-se.swift` writes them
 const NO_SENSOR: &str = "Touch ID is unavailable";
+/// The longest a phone may hold one `pending` call open, so an idle app is one connection in a while
+const MAX_HOLD_SECS: u64 = 30;
 /// What the audit log names in place of a secret for a line about the phone itself
 const SUBJECT: &str = "<phone>";
 
@@ -135,6 +137,8 @@ struct Enrolling {
 #[derive(Default)]
 pub(super) struct Phones {
     pending: Mutex<Option<Pending>>,
+    /// Signalled when a request appears, for a phone holding a `pending` call open
+    arrived: Condvar,
     enrolling: Mutex<Option<Enrolling>>,
 }
 
@@ -272,10 +276,26 @@ fn enroll(shared: &Shared, request: &Request, caller: &str) -> Result<String> {
         .enroll_phone(caller, public_key)
 }
 
-/// What the phone shows and what it needs to answer, or nothing when no prompt is waiting
+/* What the phone shows and what it needs to answer, or nothing when no prompt is waiting. With
+`wait` the call stays open that many seconds for a request to appear, so an open app hears of one
+at once without asking every second, which would also fill the broker's log. */
 fn pending(shared: &Shared, request: &Request, caller: &str) -> Result<String> {
     let wrap = enrolled(&shared.store, request, caller)?;
-    let slot = shared.phones.pending.lock().expect("pending");
+    let hold = match param(request, "wait") {
+        Ok(secs) => secs
+            .parse::<u64>()
+            .context("wait is not a number of seconds")?,
+        Err(_) => 0,
+    };
+    let (slot, _) = shared
+        .phones
+        .arrived
+        .wait_timeout_while(
+            shared.phones.pending.lock().expect("pending"),
+            Duration::from_secs(hold.min(MAX_HOLD_SECS)),
+            |slot| slot.is_none(),
+        )
+        .expect("pending");
     let Some(waiting) = slot.as_ref() else {
         return Ok(String::new());
     };
@@ -333,6 +353,7 @@ fn show(phones: &Phones, phone: &PhoneWrap, reason: &str, answer: Sender<Event>)
         secret: StaticSecret::from(rand::random::<[u8; 32]>()),
         answer,
     });
+    phones.arrived.notify_all();
     wake(phone);
 }
 
@@ -448,7 +469,13 @@ impl Broker {
         };
         write_private(&self.store.phone_wrap_path(), &serde_json::to_vec(&wrap)?)?;
         self.audit(&key, caller, SUBJECT, "enrolled", caller)?;
-        Ok(token)
+        // The names are for the phone to show its owner. Only the bearer is ever sent back
+        Ok(serde_json::json!({
+            "token": token,
+            "mac": store::hostname(),
+            "phone": caller,
+        })
+        .to_string())
     }
 
     /// One round with the phone alone, so a pairing that cannot approve fails while the owner is
@@ -534,6 +561,25 @@ mod tests {
         assert!(open_box(&other, "request-1", &ephemeral, &sealed).is_err());
         assert!(open_box(&secret, "request-1", &ephemeral[..31], &sealed).is_err());
         assert!(open_box(&secret, "request-1", &[0u8; 32], &sealed).is_err());
+    }
+
+    /* The bytes the iOS app produces from these fixed keys, pinned in its own tests as well, in
+    `ios/Core/Tests`. They came from a third implementation, Python's `cryptography`, so the app
+    and the broker are each checked against something neither of them wrote. */
+    #[test]
+    fn the_apps_answer_opens() {
+        let request = StaticSecret::from([0x11; 32]);
+        let ephemeral =
+            hex::decode("0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20")
+                .unwrap();
+        let sealed = hex::decode(
+            "81bfa93789e621bd66606d5110cb79bffa48ebcbdeec9e69278b8b7cffdcf951ff41f600f798d7",
+        )
+        .unwrap();
+        assert_eq!(
+            &open_box(&request, "request-1", &ephemeral, &sealed).unwrap()[..],
+            b"AGE-SECRET-KEY-1EXAMPLE"
+        );
     }
 
     #[test]

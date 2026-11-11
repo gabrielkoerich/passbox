@@ -3726,9 +3726,19 @@ impl Paired {
 
         // An uncompressed P-256 point by shape, which is all the fake enclave looks at
         let public = base64(&[&[4u8][..], &[7u8; 64][..]].concat());
-        self.token = self
-            .call("enroll", "", &[("code", &code), ("public_key", &public)])
-            .expect("enroll");
+        let enrolled: serde_json::Value = serde_json::from_str(
+            &self
+                .call("enroll", "", &[("code", &code), ("public_key", &public)])
+                .expect("enroll"),
+        )
+        .unwrap();
+        // What the app shows on its info screen: the Mac it paired with and its own tailnet name
+        assert_eq!(enrolled["phone"], PHONE, "the phone was told another name");
+        assert!(
+            !enrolled["mac"].as_str().unwrap().is_empty(),
+            "the Mac did not name itself"
+        );
+        self.token = enrolled["token"].as_str().unwrap().to_string();
         if proof == Proof::Give {
             let shown = self.pending();
             assert_eq!(
@@ -3821,7 +3831,7 @@ fn a_phone_enrolls_with_the_code_a_fingerprint_and_a_proof() {
     let (ok, said) = paired.add(Proof::Give);
     assert!(ok, "{said}");
     assert!(
-        said.contains("Mac   mac (me@example.com, 100.64.0.1)"),
+        said.contains("Mac   100.64.0.1   mac (me@example.com, 100.64.0.1)"),
         "{said}"
     );
     assert!(said.contains(&format!("{PHONE} can approve")), "{said}");
@@ -3911,6 +3921,43 @@ fn an_unanswered_prompt_reaches_the_phone_and_its_answer_releases_the_secret() {
     );
     assert_eq!(count(&log, "demo/one", "released"), 1, "{log}");
     assert_eq!(count(&log, "demo/two", "released"), 1, "{log}");
+}
+
+/* An open app holds one `pending` call open and hears of a request the moment it is shown, and a
+call with nothing to wait for comes back empty when its time is up. */
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_held_pending_call_returns_when_a_request_appears() {
+    let paired = Paired::new("after = 0");
+    let started = Instant::now();
+    assert_eq!(paired.call("pending", "", &[("wait", "1")]).unwrap(), "");
+    assert!(
+        started.elapsed() >= Duration::from_secs(1),
+        "an empty call returned early"
+    );
+
+    let _held = paired.bound.hold();
+    let asked = std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| {
+            let started = Instant::now();
+            let shown = paired.call("pending", "", &[("wait", "30")]).unwrap();
+            (shown, started.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        let read = paired.read_later("demo/one");
+        let (shown, took) = waiting.join().unwrap();
+        assert!(took < Duration::from_secs(20), "the call sat out its wait");
+        let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
+        paired.approve(&shown).unwrap();
+        read.join().unwrap()
+    });
+    assert_eq!(asked.unwrap(), "value-one");
+
+    let bad = paired.call("pending", "", &[("wait", "soon")]).unwrap_err();
+    assert!(bad.contains("not a number of seconds"), "{bad}");
 }
 
 #[test]

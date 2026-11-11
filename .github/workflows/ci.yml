@@ -200,6 +200,17 @@ jobs:
           got=$(docker run --rm --entrypoint passbox passbox-client --version)
           [ "$got" = "$want" ] || { echo "::error::image has $got, built $want"; exit 1; }
 
+  # The iPhone app's protocol and its two boxes, which need no Xcode. The image has the toolchain,
+  # and swift-crypto stands in for CryptoKit there. The screens are only ever built in Xcode
+  phone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: swift:6.0-noble
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test the phone core
+        run: swift test --package-path ios/Core
+
   # Launching the menu-bar app would ask for a listing, so CI checks its filter and that it bundles
   app:
     # main only, so a branch push, a dependency bump included, never runs on the M1
@@ -219,7 +230,7 @@ jobs:
   # The version has to be known before the binaries build, or every release ships a
   # binary stamped with the previous number.
   version:
-    needs: [lint, gitleaks, clippy, test, examples, app]
+    needs: [lint, gitleaks, clippy, test, examples, phone, app]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
@@ -324,7 +335,7 @@ jobs:
 
   # CI pays the build cost once so nobody installing has to. Public repos get free minutes.
   binaries:
-    needs: [lint, gitleaks, clippy, test, examples, app, version]
+    needs: [lint, gitleaks, clippy, test, examples, phone, app, version]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
     # The signing secrets live in this environment, which only main can use
     environment: macos-signing
@@ -468,7 +479,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [lint, gitleaks, clippy, test, examples, app, version, binaries]
+    needs: [lint, gitleaks, clippy, test, examples, phone, app, version, binaries]
     if: github.ref == 'refs/heads/main' && needs.version.outputs.skip == 'false'
     runs-on: ubuntu-latest
     permissions:
