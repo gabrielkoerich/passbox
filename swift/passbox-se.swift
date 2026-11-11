@@ -106,6 +106,7 @@ func unwrap(reason: String) {
     enrolled and an unlocked session are all still not enough: a MacBook running with the lid shut
     has its sensor inside the closed keyboard, and `evaluatePolicy` then fails with a cancellation
     that reads like the user refused. */
+    // The broker reads the first words of this failure to ask an enrolled phone at once, so they stay
     var reachable: NSError?
     if !context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &reachable) {
         let why = reachable?.localizedDescription ?? "unknown reason"

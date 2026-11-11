@@ -1226,8 +1226,11 @@ version = "2.1.1"
 dependencies = [
  "age",
  "anyhow",
+ "base64",
+ "chacha20poly1305",
  "clap",
  "hex",
+ "hkdf",
  "libc",
  "rand 0.10.3",
  "rpassword",
@@ -1239,6 +1242,7 @@ dependencies = [
  "ssh-key",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+ "x25519-dalek",
  "zeroize",
 ]
 
