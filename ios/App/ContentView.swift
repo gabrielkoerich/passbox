@@ -1,6 +1,6 @@
 /*
  Two tabs, and the first is the app. Status is black with the name in the middle and one thing
- under it: a line saying the Mac is being watched, or the sentence the Mac's own prompt shows
+ under it: whether the phone is enrolled and connected, or the sentence the Mac's own prompt shows
  with a button that asks for Face ID. Settings states the pairing and sets nothing.
  */
 
@@ -94,10 +94,10 @@ private struct PairedView: View {
                 Pill(dot: .green, text: "Approved")
                 caption("\(mac) has what it asked for.")
             } else if let trouble = model.trouble {
-                Pill(dot: .orange, text: "Cannot reach \(mac)")
+                Pill(dot: .orange, text: "Not connected to \(mac)")
                 caption(trouble)
             } else if model.reachable {
-                Pill(dot: .green, text: "Watching \(mac)")
+                Pill(dot: .green, text: "Connected to \(mac)")
                 caption("Nothing waiting.")
             } else {
                 ProgressView()
@@ -178,6 +178,8 @@ private struct PairView: View {
 
     var body: some View {
         VStack(spacing: 14) {
+            Pill(dot: .gray, text: "Not enrolled")
+                .padding(.bottom, 10)
             field("Mac address", text: $host)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
