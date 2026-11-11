@@ -1,13 +1,12 @@
 /*
- Facts about the pairing, and nothing to set. The one action is forgetting the Mac, which is how
- a phone is paired again or handed on.
+ The Settings tab: facts about the pairing, and nothing to set. The one action is forgetting the
+ Mac, which is how a phone is paired again or handed on.
  */
 
 import SwiftUI
 
 struct InfoView: View {
     @EnvironmentObject private var model: Model
-    @Environment(\.dismiss) private var dismiss
     @State private var confirmingForget = false
 
     var body: some View {
@@ -39,6 +38,11 @@ struct InfoView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                } else {
+                    Section("Mac") {
+                        Text("Not paired. Pair from the Status tab.")
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section {
@@ -53,27 +57,23 @@ struct InfoView: View {
                         """)
                 }
 
-                Section {
-                    Button("Forget this Mac", role: .destructive) {
-                        confirmingForget = true
+                if model.pairing != nil {
+                    Section {
+                        Button("Forget this Mac", role: .destructive) {
+                            confirmingForget = true
+                        }
+                    } footer: {
+                        Text(
+                            "Then run `passbox phone rm` on the Mac, so it stops asking this phone.")
                     }
-                } footer: {
-                    Text("Then run `passbox phone rm` on the Mac, so it stops asking this phone.")
                 }
             }
-            .navigationTitle("About this pairing")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
+            .navigationTitle("Settings")
             .confirmationDialog(
                 "Forget this Mac?", isPresented: $confirmingForget, titleVisibility: .visible
             ) {
                 Button("Forget", role: .destructive) {
                     model.forget()
-                    dismiss()
                 }
             } message: {
                 Text("This phone will no longer be able to approve for it.")

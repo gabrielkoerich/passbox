@@ -40,7 +40,7 @@ Tailscale has to be on, on both.
 | `App/Pairing.swift` | What the phone remembers, as one keychain item that stays on this device |
 | `App/Tailnet.swift` | One line to the broker and one line back |
 | `App/Model.swift` | The state the screens show, and the call held open to the Mac |
-| `App/ContentView.swift`, `App/InfoView.swift` | The screen and the sheet |
+| `App/ContentView.swift`, `App/InfoView.swift` | The Status tab and the Settings tab |
 
 ## Test
 

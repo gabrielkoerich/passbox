@@ -126,7 +126,7 @@ Wire format, one JSON line per connection to the tailnet port, replies as every 
 
 The app keeps the protocol and the boxes in a Swift package with no screen in it, which `swift test` runs on Linux with swift-crypto in place of CryptoKit. One sealed answer is pinned byte for byte in that package and in the broker's tests, and the bytes came from Python's `cryptography`. So the two sides are never tested against each other, each is tested against a third, and neither CI needs the other's toolchain.
 
-The app has one screen and one sheet. The screen shows the Mac's sentence word for word, so it can be compared with the dialog on the Mac. The sheet states the pairing and sets nothing. It keeps one keychain item that does not leave the device: the bearer, the Mac's address and the Enclave's blob for the key.
+The app has two tabs. Status is the name on black with one thing under it: a line saying the Mac is being watched, or the Mac's sentence word for word, so it can be compared with the dialog on the Mac, over a button that asks for Face ID. Settings states the pairing and sets nothing. It keeps one keychain item that does not leave the device: the bearer, the Mac's address and the Enclave's blob for the key.
 
 Cost: the Mac must be awake and the broker running in the login session, as for any tailnet client. The phone approves for a Mac that is on but unattended. It does nothing for one that is asleep.
 
