@@ -740,6 +740,27 @@ fly ssh console --pty -C "passbox get github/token"
 
 Give the container a real tun device. `tailscaled --tun=userspace-networking` reaches the tailnet only through a SOCKS proxy, so an ordinary `connect()` to a 100.x address times out with no hint why. The entrypoint uses `/dev/net/tun` when the platform provides one.
 
+### An iPhone as a second approver
+
+Not ready to rely on: the Mac side below is built and tested, and the iPhone app in [`ios/`](ios) is written but has not yet run on a device. It has no notifications, so it sees a request only while it is open.
+
+```bash
+passbox phone add     # shows a code, the phone dials in with it, a fingerprint here confirms
+passbox phone ls
+passbox phone rm      # the phone can then open nothing
+```
+
+Once a phone is enrolled, a Touch ID prompt that goes unanswered for 15 seconds is also shown on the phone, and whichever answers first decides. With the lid closed the phone is asked at once. Face ID opens the store key inside the phone's own Secure Enclave, so a sensor still stands behind every release. The phone reaches the broker over the tailnet, set up as above, and the audit log says which approvals came from it.
+
+```toml
+# ~/.passbox/config.toml
+[phone]
+after = 15    # seconds before the phone is asked too
+wait = 60     # seconds the phone has when the Mac cannot prompt at all
+```
+
+The reasoning is in [docs/content/design.md](docs/content/design.md#a-phone-as-a-second-approver).
+
 ### What this does not give you
 
 **The job is not identified.** The host comes from the control plane, but `PASSBOX_AGENT` is still whatever the caller claims.
@@ -771,9 +792,10 @@ passbox restore github/token --index 0  # put the newest one back
   wraps/yubikey.age         the store key under the YubiKeys, once one is added
   wraps/yubikey.recipients  the YubiKey recipients that wrap holds
   wraps/se-<host>.json      the store key under that Mac's Secure Enclave
+  wraps/phone-<host>.json   the store key under an enrolled iPhone's Secure Enclave, never synced
   audit-<host>.log          one encrypted record per line
   grants-<host>.age         project approvals, never synced
-  config.toml               where sync copies to and the plugin and SSH windows, never synced
+  config.toml               where sync copies to, the plugin and SSH windows and the phone delay, never synced
   windows-<host>.json       the hash of the approved plugin windows, never synced
   windows-ssh-<host>.json   the hash of the approved SSH windows, never synced
   plugins/                  installed plugins, never synced

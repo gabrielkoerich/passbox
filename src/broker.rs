@@ -4,6 +4,8 @@ mod audit;
 mod caller;
 mod client;
 #[cfg(feature = "host")]
+mod phone;
+#[cfg(feature = "host")]
 mod plugins;
 #[cfg(feature = "host")]
 mod server;
@@ -20,7 +22,11 @@ pub(crate) use caller::own_ancestry;
 pub(crate) use client::plugin_approve;
 pub(crate) use client::{grant, list, plugin_run_remote, request, request_token};
 #[cfg(feature = "host")]
-pub(crate) use server::serve;
+pub(crate) use client::{phone_open, phone_test};
+#[cfg(feature = "host")]
+pub(crate) use phone::{ENROLL_SECS, PhoneWrap, Timing};
+#[cfg(feature = "host")]
+pub(crate) use server::{SERVE, serve};
 
 #[cfg(feature = "host")]
 use crate::project::{self, Grant};
@@ -34,6 +40,8 @@ use age::x25519;
 use anyhow::{Result, bail};
 #[cfg(feature = "host")]
 use audit::{Entry, append_audit_to};
+#[cfg(feature = "host")]
+use phone::PhoneState;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "host")]
 use server::{Origin, clock};
@@ -62,6 +70,8 @@ pub(crate) enum Op {
     Grant,
     /// Approve one plugin action, named by `name` and `action`
     Plugin,
+    /// A step of approving from a phone, named by `action`: enrolling one, or its answer to a prompt
+    Phone,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -104,6 +114,8 @@ struct Broker {
     // Boxed, so dropping it frees a block the wiping allocator clears, where `take` would leave a copy
     key: Option<Box<x25519::Identity>>,
     tokens: Tokens,
+    /// The request an enrolled phone can see, shared so the phone reaches it past this lock
+    phones: PhoneState,
     key_at: u64,
     grants: Vec<Grant>,
     // In memory only, like tokens, so a restart ends every window
@@ -118,12 +130,13 @@ struct Broker {
 
 #[cfg(feature = "host")]
 impl Broker {
-    fn new(store: Store, tokens: Tokens) -> Self {
+    fn new(store: Store, tokens: Tokens, phones: PhoneState) -> Self {
         Broker {
             store,
             key: None,
             key_at: 0,
             tokens,
+            phones,
             grants: Vec::new(),
             windows: HashMap::new(),
             approved: None,
@@ -166,8 +179,12 @@ impl Broker {
         error
     }
 
+    // Touch ID, or the enrolled phone once Touch ID has gone unanswered, whichever answers first
     fn ask(&mut self, reason: &str) -> Result<()> {
-        let key = self.store.unlock_with_se(reason)?;
+        let (key, phone) = phone::unlock(&self.store, &self.phones, reason)?;
+        if let Some(node) = phone {
+            self.approved_on_phone(&key, &node, reason)?;
+        }
         self.grants = project::load(&self.store, &key);
         self.key = Some(Box::new(key));
         self.key_at = store::now();
@@ -235,6 +252,8 @@ impl Broker {
                 };
                 self.handle_plugin(request, caller, scope)
             }
+            // Answered in `reply`, since a phone must get through while a prompt holds this lock
+            Op::Phone => bail!("a phone step does not take the broker's lock"),
         }
     }
 

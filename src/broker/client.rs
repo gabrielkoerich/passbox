@@ -119,6 +119,37 @@ pub(crate) fn plugin_run_remote(
     )
 }
 
+/// One step of `passbox phone add`, which only this Mac's own broker answers
+#[cfg(feature = "host")]
+fn phone_step(store: &Store, action: &str) -> Result<String> {
+    ask_broker(
+        store,
+        &Request {
+            name: String::new(),
+            agent: "passbox".to_string(),
+            op: Op::Phone,
+            token: String::new(),
+            ttl: 0,
+            names: Vec::new(),
+            action: action.to_string(),
+            params: Vec::new(),
+            run: false,
+        },
+    )
+}
+
+/// Open the enrollment window, and get the code the phone has to send back
+#[cfg(feature = "host")]
+pub(crate) fn phone_open(store: &Store) -> Result<String> {
+    phone_step(store, "open")
+}
+
+/// Ask the enrolled phone to approve one request that releases nothing, and name it when it does
+#[cfg(feature = "host")]
+pub(crate) fn phone_test(store: &Store) -> Result<String> {
+    phone_step(store, "test")
+}
+
 /// Ask a running broker, starting one if the socket is dead.
 fn ask_broker(store: &Store, request: &Request) -> Result<String> {
     /* A configured host means this machine has no store of its own worth unlocking, so the

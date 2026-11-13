@@ -89,8 +89,11 @@ enum_glob_use = "allow"                  # use Enum::* inside a function that ma
 # so it cannot take over the Touch ID text, which is why it was dropped before.
 age = { version = "0.12.1", features = ["plugin", "cli-common"] }
 anyhow = "1.0.104"
+# The box a phone seals its answer in. age already builds all three, so nothing new is compiled
+chacha20poly1305 = "0.10.1"
 clap = { version = "4.6.7", features = ["derive"] }
 hex = "0.4.3"
+hkdf = "0.12.4"
 libc = "0.2.180"
 rand = "0.10.3"
 rpassword = "7.4.0"
@@ -102,7 +105,10 @@ signature = "2.2.0"
 # Ed25519 and P-256 only. RSA would pull in the `rsa` crate for a key type few still make
 ssh-key = { version = "0.6.7", default-features = false, features = ["std", "ed25519", "p256"] }
 toml = "0.9.8"
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 zeroize = "1.9.0"
 
 [dev-dependencies]
+# The test's phone speaks the wire format on its own, as the app will
+base64 = "0.22.1"
 tempfile = "3.24.0"

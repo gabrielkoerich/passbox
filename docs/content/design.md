@@ -28,7 +28,7 @@ Cost: listing names decrypts every file. At a few hundred secrets that is millis
 
 ## One store key, several wraps
 
-One age x25519 key encrypts every secret. It is never written unwrapped. Three kinds of wrap open it: one Secure Enclave key per machine, a YubiKey, and a recovery passphrase. The last two exist only once sync is on.
+One age x25519 key encrypts every secret. It is never written unwrapped. Three kinds of wrap open it: one Secure Enclave key per machine, a YubiKey, and a recovery passphrase. The last two exist only once sync is on. A fourth is optional and stays on the Mac that made it: the same key under an enrolled iPhone's Secure Enclave, see [A phone as a second approver](#a-phone-as-a-second-approver).
 
 ## Sync is off, and the passphrase comes with it
 
@@ -76,7 +76,7 @@ So passbox has no per-agent allowlists. They need verifiable identity, which mea
 
 ## The broker
 
-The broker is a single process serving a unix socket at 0600, with a thread per connection. A prompt holds the broker's lock, so only one dialog is ever on screen and the next request that needs one waits for it, as long as it takes, with no timeout and no retry. Tokens sit behind a lock of their own, so a token read is answered while a prompt waits. There is no async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so a local read needs no install step. `brew services start passbox` keeps it running as a LaunchAgent, which the SSH agent and tailnet clients need.
+The broker is a single process serving a unix socket at 0600, with a thread per connection. A prompt holds the broker's lock, so only one dialog is ever on screen and the next request that needs one waits for it, as long as it takes, with no timeout and no retry. With a phone enrolled the dialog still never times out, and the phone is asked beside it once it has gone unanswered. Tokens sit behind a lock of their own, so a token read is answered while a prompt waits. There is no async runtime, because a biometric prompt blocks anyway. The first command to need it starts it, so a local read needs no install step. `brew services start passbox` keeps it running as a LaunchAgent, which the SSH agent and tailnet clients need.
 
 It holds the store key for 300 seconds of inactivity and then drops it, and keeps running. Rejected: exiting to drop the key, which it did before the SSH agent. `SSH_AUTH_SOCK` must always reach a live socket, or every `ssh` and `git` call fails until something starts the broker again. Cost: the key is cleared in place, which relies on the wiping allocator below, where exiting handed the memory back to the kernel. It exits when the binary it was started as is replaced, as `brew upgrade` does, between requests, so launchd starts the new version. Rejected: a Homebrew `post_install` that restarts the LaunchAgent, which knows only that one install path. The cost is the same as any restart: live grants end.
 
@@ -91,6 +91,50 @@ Rejected: per-secret modes and a per-agent approval window. An earlier version l
 While the broker holds the key it is the boundary, so it is hardened to hold it. It refuses a same-user debugger with `PT_DENY_ATTACH`, takes no core dump, and runs under a global allocator that wipes every freed block, so a decrypted secret does not linger in freed memory. The binary and the Enclave helper are signed with the hardened runtime. The release binary carries a Developer ID signature, the helper and source builds are ad hoc.
 
 Cost: the broker holds the key in memory while it runs, so a grant can release its secrets without asking again. The hardening stops a reader running as the same user. Root still reaches the key.
+
+## A phone as a second approver
+
+`passbox phone add` enrolls one iPhone. After that, a Touch ID prompt nobody has answered for 15 seconds is also shown on the phone, and whichever answers first decides. With the lid closed no prompt can be raised, so the phone is asked at once.
+
+Status: the Mac side is built and tested against a phone written in the tests. The app is in `ios/`: its protocol and both boxes are tested against the same bytes the broker is, and its screens, Enclave key and network code have not yet run on a device. The push that wakes it is not built, so a request reaches the phone only while the app is open.
+
+**The phone is one more Enclave wrap.** The store key is sealed to a P-256 key the phone makes in its own Secure Enclave, gated by Face ID, with the same ECIES the Mac's wrap uses. So the phone cannot say yes, it can only open the store key, and a finger or a face on a sensor is still the one thing that releases anything.
+
+Rejected: a wrap the broker opens when the phone sends a signed yes. The key would then sit behind software on the Mac, and the rule that nothing is read without a sensor would hold only as long as that software did.
+
+**Enrollment** takes a code and a fingerprint. `phone add` opens a two minute window and prints six digits. The phone dials the broker over the tailnet with the code and its public key, and the Mac raises `passbox is trying to let <node> approve reads from now on`, with the node named by `tailscale whois`. The fingerprint opens the store key, the broker seals it to the phone's key and writes `wraps/phone-<mac>.json`. The phone gets back a random bearer, of which the file keeps only the hash. One approval on the phone that releases nothing then proves the pairing, and a phone that fails it is removed.
+
+The code is single use, and five wrong ones close the window. Cost: six digits and a fingerprint are all that stand between a tailnet node and approver status, so the prompt wording is what the owner has to read.
+
+**A request** is the prompt's own sentence. When the delay passes, the broker puts the reason, a request id and a one-time X25519 public key where the phone can fetch them. That state has its own lock, because the prompt it belongs to is holding the broker's. The phone opens its wrap after Face ID and returns the store key in a box made for that request: X25519 with a key of its own, HKDF-SHA256 salted with both public keys and bound to the request id, then ChaCha20-Poly1305 with the id as associated data. The broker checks the key against `wraps/recipient` before anything is released, so a wrong answer leaves the request up for a right one. The tailnet already encrypts the hop; the box is there so the answer can later travel some other way.
+
+**Every call from the phone is checked twice**: the node `tailscale whois` names must be the one that enrolled, and it must present the bearer. The first is what the control plane vouches for. The second is what a local user forging a PROXY header on loopback does not have. Neither gets past the store key check, which only the phone's Enclave can satisfy.
+
+An open app holds one `pending` call open with `wait`, and the broker answers it the moment a request appears. Rejected: asking every second or two, which is a `tailscale whois` and two log lines on the Mac each time, for as long as the app is on screen.
+
+The first answer wins. A release on the phone kills the helper holding the Touch ID dialog, and a fingerprint on the Mac withdraws the request from the phone. A refusal on either ends both. With a dialog on screen the request stays on the phone as long as the dialog stays up, since it is the same question. With no dialog, the phone has 60 seconds, because nothing on screen says a request is hanging. `[phone]` in `config.toml` sets both, as `after` and `wait` in seconds.
+
+The audit log gets `approved on phone` with the prompt's sentence, ahead of the usual line for what was released, and `enrolled` and `removed` for the phone itself.
+
+Wire format, one JSON line per connection to the tailnet port, replies as every other op: `{"op":"phone","agent":"","action":...}`.
+
+| `action` | Sends | Gets |
+|---|---|---|
+| `enroll` | `params`: `code`, `public_key` as base64 X9.63 | JSON with `token`, the bearer, and `mac` and `phone`, the two names to show |
+| `pending` | `token`, and optionally `params`: `wait` in seconds, at most 30 | empty, or JSON with `id`, `reason`, `since`, `key`, and the wrap's `ephemeral` and `ciphertext` |
+| `answer` | `token`, `name` as the id, `params`: `ephemeral` and `sealed` in base64, or `deny` | `ok` |
+
+The app keeps the protocol and the boxes in a Swift package with no screen in it, which `swift test` runs on Linux with swift-crypto in place of CryptoKit. One sealed answer is pinned byte for byte in that package and in the broker's tests, and the bytes came from Python's `cryptography`. So the two sides are never tested against each other, each is tested against a third, and neither CI needs the other's toolchain.
+
+The app has two tabs. Status is the name on black with one thing under it: a line saying the Mac is being watched, or the Mac's sentence word for word, so it can be compared with the dialog on the Mac, over a button that asks for Face ID. Settings states the pairing and sets nothing. It keeps one keychain item that does not leave the device: the bearer, the Mac's address and the Enclave's blob for the key.
+
+Cost: the Mac must be awake and the broker running in the login session, as for any tailnet client. The phone approves for a Mac that is on but unattended. It does nothing for one that is asleep.
+
+Cost: only prompts the broker raises reach the phone. `passbox audit` and the other commands that unlock on their own still want the Mac's sensor.
+
+Cost: what the phone shows is what the Mac sent it. A process that already runs as the owner can word a prompt as it likes on the Mac today, and it can do the same to the phone.
+
+Rejected: Handoff or Continuity, which have no API to raise a biometric prompt on another device. Rejected: a passkey on the phone, which wants a QR scan and Bluetooth range on every use. Rejected: Tailscale as the wake-up, because an iOS app cannot listen in the background, so the tailnet carries the answer and something else has to carry the knock.
 
 ## The SSH agent
 
@@ -295,4 +339,5 @@ A failure after the tag is pushed takes the tag back with it. A tag with no rele
 - `PASSBOX_PASSPHRASE` turns off the Enclave path. It exists for CI and headless use, and it makes the passphrase the only gate.
 - A token keeps its granted values in broker memory until it lapses, and whoever holds the token reads them without a prompt. That is the cost of running unattended, and why a grant names secrets rather than a namespace.
 - Tokens live in the broker's memory only, so restarting it revokes every one of them.
+- A phone sees a request only while its app is open. The push that would wake it is not built yet.
 - Linux builds the client half only, behind the `host` cargo feature being off. It has no Enclave, no broker server and no `sync`, so it opens a local store with a passphrase, or asks the Mac named in `~/.passbox/host` or `PASSBOX_HOST` to approve the read over the tailnet.
