@@ -2,7 +2,7 @@
 
 A second approver for the Mac's Touch ID prompt. When a prompt on the Mac goes unanswered, or the lid is closed, the request appears here and Face ID answers it.
 
-Status: written and not yet run on a device. The protocol and both encryption formats are tested, on Linux, against the broker's own. The screens, the Secure Enclave key and the network code have only been read, never compiled, because that needs Xcode.
+Status: it builds and opens in the simulator, and has not yet run on a device. The protocol and both encryption formats are tested, on Linux, against the broker's own. The Secure Enclave key, the keychain item and the network code compile and have not run against a broker.
 
 There are no notifications yet. The app sees a request while it is open.
 
