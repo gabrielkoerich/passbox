@@ -102,6 +102,11 @@ impl Store {
     pub(crate) fn se_wrap_path(&self) -> PathBuf {
         self.wraps_dir().join(format!("se-{}.json", hostname()))
     }
+    /// One per machine as well: a phone enrolls with one Mac, and the file names the node it dials from
+    #[cfg(feature = "host")]
+    pub(crate) fn phone_wrap_path(&self) -> PathBuf {
+        self.wraps_dir().join(format!("phone-{}.json", hostname()))
+    }
     pub(crate) fn socket_path(&self) -> PathBuf {
         self.dir.join("broker.sock")
     }
@@ -265,14 +270,41 @@ impl Store {
         write_private(&self.se_wrap_path(), &serde_json::to_vec(&wrap)?)
     }
 
+    #[cfg(feature = "host")]
+    fn se_wrap(&self) -> Result<se::SeWrap> {
+        let raw =
+            fs::read(self.se_wrap_path()).context("no Secure Enclave wrap on this machine")?;
+        Ok(serde_json::from_slice(&raw)?)
+    }
+
     /// Raise a Touch ID prompt worded by `reason`, then open the store key.
     #[cfg(feature = "host")]
     pub(crate) fn unlock_with_se(&self, reason: &str) -> Result<x25519::Identity> {
-        let raw =
-            fs::read(self.se_wrap_path()).context("no Secure Enclave wrap on this machine")?;
-        let wrap: se::SeWrap = serde_json::from_slice(&raw)?;
-        let plain = se::unwrap(&wrap, reason)?;
+        let plain = se::unwrap(&self.se_wrap()?, reason)?;
         key_from_bytes(&plain)
+    }
+
+    /// The same prompt, left on screen while the caller also waits for a phone. `done` runs on
+    /// another thread with the key or the refusal
+    #[cfg(feature = "host")]
+    pub(crate) fn unlock_with_se_in_background(
+        &self,
+        reason: &str,
+        done: impl FnOnce(Result<x25519::Identity>) + Send + 'static,
+    ) -> Result<se::Prompt> {
+        se::unwrap_in_background(&self.se_wrap()?, reason, move |plain| {
+            done(plain.and_then(|plain| key_from_bytes(&plain)));
+        })
+    }
+
+    /// The store key as a phone handed it back, refused unless it is this store's
+    #[cfg(feature = "host")]
+    pub(crate) fn key_from_phone(&self, raw: &[u8]) -> Result<x25519::Identity> {
+        let key = key_from_bytes(raw)?;
+        if key.to_public().to_string() != self.recipient()?.to_string() {
+            bail!("the phone opened a different key, not this store's");
+        }
+        Ok(key)
     }
 
     /// Ids with a secret file and no tombstone.

@@ -106,6 +106,7 @@ func unwrap(reason: String) {
     enrolled and an unlocked session are all still not enough: a MacBook running with the lid shut
     has its sensor inside the closed keyboard, and `evaluatePolicy` then fails with a cancellation
     that reads like the user refused. */
+    // The broker reads the first words of this failure to ask an enrolled phone at once, so they stay
     var reachable: NSError?
     if !context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &reachable) {
         let why = reachable?.localizedDescription ?? "unknown reason"
@@ -136,7 +137,13 @@ func unwrap(reason: String) {
             Thread.sleep(forTimeInterval: 0.3)
             continue
         }
-        if system || code == .userCancel {
+        // The system gave up, as when the lid closes on an open prompt. The owner refused nothing,
+        // so this opens the way the unreachable sensor above does and an enrolled phone is asked
+        if system {
+            fail("Touch ID is unavailable on this Mac right now (the system kept dismissing the "
+                + "prompt). A closed lid or a locked screen will do this.")
+        }
+        if code == .userCancel {
             fail("denied: the Touch ID prompt was dismissed, nothing was read")
         }
         fail("denied: \(authError.localizedDescription)")
