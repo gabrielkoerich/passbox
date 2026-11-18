@@ -43,3 +43,6 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        # The answer to App Store Connect's export question, so no build waits on it. The app's crypto
+        # is CryptoKit, the keychain and the Secure Enclave, the operating system's own
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
