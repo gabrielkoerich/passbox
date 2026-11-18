@@ -19,6 +19,12 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
+// No prompt can be shown, so nothing was refused. The broker reads status 3 and asks a phone at once
+func unavailable(_ message: String) -> Never {
+    FileHandle.standardError.write(Data((message + "\n").utf8))
+    exit(3)
+}
+
 func readStdin() -> [String: String] {
     let data = FileHandle.standardInput.readDataToEndOfFile()
     guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
@@ -109,7 +115,7 @@ func unwrap(reason: String) {
     var reachable: NSError?
     if !context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &reachable) {
         let why = reachable?.localizedDescription ?? "unknown reason"
-        fail("Touch ID is unavailable on this Mac right now (\(why)). A closed lid or a sleeping "
+        unavailable("Touch ID is unavailable on this Mac right now (\(why)). A closed lid or a sleeping "
             + "Touch ID keyboard will do this. Use the recovery passphrase, or open the lid.")
     }
 
@@ -136,7 +142,12 @@ func unwrap(reason: String) {
             Thread.sleep(forTimeInterval: 0.3)
             continue
         }
-        if system || code == .userCancel {
+        // The system gave up, as when the lid closes on an open prompt, and the owner refused nothing
+        if system {
+            unavailable("Touch ID is unavailable on this Mac right now (the system kept dismissing the "
+                + "prompt). A closed lid or a locked screen will do this.")
+        }
+        if code == .userCancel {
             fail("denied: the Touch ID prompt was dismissed, nothing was read")
         }
         fail("denied: \(authError.localizedDescription)")

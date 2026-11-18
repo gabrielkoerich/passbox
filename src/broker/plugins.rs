@@ -158,8 +158,7 @@ impl Broker {
             .ok_or_else(|| anyhow!("no secret for {}, approve it again", request.name))?;
         let args = manifest
             .tool(&request.action)
-            .map(|t| t.shown(&bound))
-            .unwrap_or_default();
+            .map_or_default(|t| t.shown(&bound));
         self.audit_by(&request.agent, secret, "released", caller, &args)?;
         // The output crosses the socket or the tailnet, so it is scrubbed on the way out
         plugin::run_fed(command, &value)

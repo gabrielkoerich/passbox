@@ -59,17 +59,14 @@ impl Broker {
             return signed;
         }
 
-        let known = host.map(|_| ssh::known_hosts()).unwrap_or_default();
+        let known = host.map_or_default(|_| ssh::known_hosts());
         let listed = host.and_then(|h| policy.listed(h, &known));
         let shown = match (&listed, host) {
             (Some((name, _)), _) => Some(name.clone()),
             (None, Some(h)) => ssh::known_names(&known, h).into_iter().next(),
             (None, None) => None,
         };
-        let to = shown
-            .as_ref()
-            .map(|n| format!(" to {n}"))
-            .unwrap_or_default();
+        let to = shown.as_ref().map_or_default(|n| format!(" to {n}"));
         let mut reason = format!("sign {purpose}{to} with SSH key {label} for {agent}");
         if let Some((name, secs)) = &listed {
             let span = plugin::span(*secs);

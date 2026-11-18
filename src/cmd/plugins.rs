@@ -315,10 +315,7 @@ fn plugin_run_fed(
         return Err(plugin::missing(name, secret));
     };
     let caller = broker::own_ancestry();
-    let args = manifest
-        .tool(action)
-        .map(|t| t.shown(&params))
-        .unwrap_or_default();
+    let args = manifest.tool(action).map_or_default(|t| t.shown(&params));
     broker::append_audit(store, &agent(), secret, "released", &caller, &args)?;
     print_output(&plugin::run_fed(command, &entry.value)?);
     Ok(())

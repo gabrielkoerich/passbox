@@ -56,6 +56,9 @@ struct Config {
     // Checked by the broker, see `ssh::windows`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ssh: Option<toml::Table>,
+    // Read by the broker, see `broker::phone`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phone: Option<toml::Table>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq, Clone)]
@@ -216,11 +219,12 @@ pub(crate) fn choose(store: &Store, engine: Engine) -> Result<Destination> {
     let old = fs::read_to_string(config_path(store))
         .ok()
         .and_then(|text| toml::from_str::<Config>(&text).ok());
-    let (plugins, ssh) = old.map_or((None, None), |c| (c.plugins, c.ssh));
+    let (plugins, ssh, phone) = old.map_or((None, None, None), |c| (c.plugins, c.ssh, c.phone));
     let text = toml::to_string(&Config {
         sync: Some(engine),
         plugins,
         ssh,
+        phone,
     })?;
     write_private(&config_path(store), text.as_bytes())?;
     let _ = fs::remove_file(remote_path(store));
@@ -262,6 +266,8 @@ const NEVER_SYNCED: &[&str] = &[
     // A grant that travelled would let a machine you have not touched inherit an approval
     "/grants-*.age",
     "/windows-*.json",
+    // A phone enrolls with one Mac, and its wrap names the node that dials that Mac
+    "/wraps/phone-*.json",
 ];
 
 fn matches(pattern: &str, relative: &str) -> bool {
@@ -1029,6 +1035,7 @@ mod tests {
         assert!(args.iter().any(|a| a == "--ignore-case"), "{args:?}");
         assert!(!skip(Path::new("audit-mac.log")));
         assert!(!skip(Path::new("wraps/se-mac.json")));
+        assert!(skip(Path::new("wraps/phone-mac.json")));
     }
 
     /* Every file passbox keeps for this machine alone. The audit log and the Enclave wrap are per
