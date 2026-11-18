@@ -691,7 +691,7 @@ For a build from source, write `~/Library/LaunchAgents/com.you.passbox.broker.pl
 </plist>
 ```
 
-Set `PATH` explicitly. A LaunchAgent gets a minimal one, `tailscale` is not on it, and the broker then starts with no tailnet listener and says nothing about why.
+A LaunchAgent gets a minimal `PATH` without `/usr/local/bin` or `/opt/homebrew/bin`. With the Tailscale app in `/Applications` the broker uses the app's own binary and needs nothing more. A `tailscale` installed some other way, such as from Homebrew, has to be on the `PATH` the plist sets, or the broker starts with no tailnet listener.
 
 Load it, then forward the tailnet port to the broker. The `serve` step applies to either kind of LaunchAgent:
 
@@ -699,6 +699,8 @@ Load it, then forward the tailnet port to the broker. The `serve` step applies t
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.you.passbox.broker.plist
 tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787
 ```
+
+With only the Tailscale app and no `tailscale` command, run the same line as `/Applications/Tailscale.app/Contents/MacOS/Tailscale serve ...`. passbox prints it that way when it finds no `tailscale` on `PATH`.
 
 ### Why `serve` rather than binding the tailnet address
 

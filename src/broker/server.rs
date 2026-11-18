@@ -29,10 +29,6 @@ pub(super) enum Origin {
 /// How a tailnet caller is named when `tailscale whois` fails, followed by its address
 pub(super) const UNNAMED: &str = "an unknown tailnet host";
 
-/// The PROXY header is how the broker learns which host connected, so the listener requires it
-pub(crate) const SERVE: &str =
-    "tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787";
-
 /// One loop per connection, since ssh sends several requests on one, and only signing takes the lock
 fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
     for stream in listener.incoming() {
@@ -181,7 +177,8 @@ fn serve_tailnet(listener: &std::net::TcpListener, shared: &std::sync::Arc<Share
                     ok: false,
                     value: None,
                     error: Some(format!(
-                        "the broker cannot tell which host asked, run on the Mac:\n  {SERVE}"
+                        "the broker cannot tell which host asked, run on the Mac:\n  {}",
+                        tailnet::serve_command()
                     )),
                 };
                 let _ = writeln!(
@@ -281,7 +278,10 @@ pub(crate) fn serve(store: Store) -> Result<()> {
         let port = tailnet_port();
         match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
             Ok(tcp) => {
-                eprintln!("listening on 127.0.0.1:{port}; expose it with\n  {SERVE}");
+                eprintln!(
+                    "listening on 127.0.0.1:{port}; expose it with\n  {}",
+                    tailnet::serve_command()
+                );
                 let shared = std::sync::Arc::clone(&shared);
                 std::thread::spawn(move || serve_tailnet(&tcp, &shared));
             }
