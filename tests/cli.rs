@@ -4234,6 +4234,116 @@ fn removing_the_phone_leaves_touch_id_alone() {
     assert!(decided(&log, "<phone>", "removed"), "{log}");
 }
 
+/// A relay on loopback that records what the broker sends it, one request per connection
+fn fake_relay() -> (String, std::sync::mpsc::Receiver<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let (sender, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+
+                request.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            request.push_str(&String::from_utf8_lossy(&body));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\n{{\"ok\":true}}"
+            )
+            .unwrap();
+            let _ = sender.send(request);
+        }
+    });
+    (address, received)
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn an_unanswered_prompt_asks_the_relay_to_wake_the_phone_and_says_nothing_else() {
+    let paired = Paired::new("after = 0");
+    let (relay, received) = fake_relay();
+    let id = "1".repeat(32);
+    let secret = "2".repeat(64);
+
+    // Only the enrolled phone registers, and only with what the relay hands out
+    let stranger = paired
+        .call_from(
+            "100.64.0.7",
+            &serde_json::json!({
+                "op": "phone", "agent": "", "action": "notify", "token": paired.token,
+                "params": [["relay", relay], ["id", id], ["secret", secret]],
+            }),
+        )
+        .unwrap_err();
+    assert!(stranger.contains("now dials in as"), "{stranger}");
+    let plain = paired
+        .call(
+            "notify",
+            "",
+            &[
+                ("relay", "http://relay.example"),
+                ("id", &id),
+                ("secret", &secret),
+            ],
+        )
+        .unwrap_err();
+    assert!(plain.contains("https"), "{plain}");
+    paired
+        .call(
+            "notify",
+            "",
+            &[("relay", &relay), ("id", &id), ("secret", &secret)],
+        )
+        .unwrap();
+
+    let _held = paired.bound.hold();
+    let read = paired.read_later("demo/one");
+    let sent = received
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the relay was never asked");
+    assert!(sent.starts_with("POST /push "), "{sent}");
+    let body: serde_json::Value =
+        serde_json::from_str(sent.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body, serde_json::json!({ "id": id, "secret": secret }));
+    assert!(
+        !sent.contains("demo/one"),
+        "the secret's name reached the relay: {sent}"
+    );
+
+    let shown = paired.pending();
+    paired.approve(&shown).unwrap();
+    assert_eq!(read.join().unwrap().unwrap(), "value-one");
+
+    // Turned off, the next prompt asks no relay
+    paired.call("notify", "", &[("off", "1")]).unwrap();
+    let _held = paired.bound.hold();
+    let read = paired.read_later("demo/two");
+    let shown = paired.pending();
+    assert!(
+        received.recv_timeout(Duration::from_millis(500)).is_err(),
+        "a relay was asked after off"
+    );
+    paired.approve(&shown).unwrap();
+    assert_eq!(read.join().unwrap().unwrap(), "value-two");
+}
+
 #[test]
 #[cfg_attr(
     not(feature = "mock-enclave"),

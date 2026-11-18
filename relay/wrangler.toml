@@ -1,0 +1,18 @@
+# The relay as a Cloudflare Worker, keeping phones in D1. The key is set once with
+#   bunx wrangler secret put APNS_KEY < AuthKey.p8
+# and the relay workflow deploys every change to relay/ on main
+name = "passbox-push"
+main = "src/cloudflare.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+preview_urls = false
+
+[vars]
+KEY_ID = "58FJ7K3U8T"
+TEAM_ID = "ZEY9Z684DK"
+TOPIC = "com.gabrielkoerich.passbox.signer"
+
+[[d1_databases]]
+binding = "PHONES"
+database_name = "passbox-push"
+database_id = "44798926-cef3-4424-b0b9-89ecbbe4b605"
