@@ -1,6 +1,6 @@
 //! `passbox phone`: enrolling the iPhone that approves when Touch ID goes unanswered.
 
-use crate::broker::{self, ENROLL_SECS, PHONE_SUBJECT, PhoneWrap, SERVE, Timing};
+use crate::broker::{self, ENROLL_SECS, PHONE_SUBJECT, PhoneWrap, Timing};
 use crate::store::Store;
 use crate::{headless, tailnet};
 use anyhow::{Context, Result, bail};
@@ -31,7 +31,10 @@ pub(crate) fn phone_add(store: &Store) -> Result<()> {
     eprintln!(
         "Then touch the sensor here only if the key in this Mac's prompt matches the code on the phone."
     );
-    eprintln!("If the phone cannot connect, expose the broker once with:\n  {SERVE}");
+    eprintln!(
+        "If the phone cannot connect, expose the broker once with:\n  {}",
+        tailnet::serve_command()
+    );
 
     let until = Instant::now() + Duration::from_secs(ENROLL_SECS);
     let phone = loop {

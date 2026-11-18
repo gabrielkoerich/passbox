@@ -26,7 +26,7 @@ pub(crate) use client::{phone_open, phone_test};
 #[cfg(feature = "host")]
 pub(crate) use phone::{ENROLL_SECS, PhoneWrap, SUBJECT as PHONE_SUBJECT, Timing};
 #[cfg(feature = "host")]
-pub(crate) use server::{SERVE, serve};
+pub(crate) use server::serve;
 
 #[cfg(feature = "host")]
 use crate::project::{self, Grant};

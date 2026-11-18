@@ -6,9 +6,38 @@ broker instead listens on loopback and `tailscale serve` forwards tailnet connec
 `tailscale whois` turns the peer address into a machine the control plane authenticated. Everywhere else in passbox the agent name is self declared; this is the first
 caller identity that is verified, so the prompt can say who is really asking. */
 
+/// The Mac app's own binary, which answers as the CLI when it is run with arguments
+const APP_CLI: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+
+/// `tailscale` on PATH, or else the app's binary, so a Mac with only the app works, and so does
+/// a broker under launchd, whose PATH has no `/usr/local/bin`
+pub(crate) fn cli() -> std::path::PathBuf {
+    pick(
+        std::env::var_os("PATH").as_deref(),
+        std::path::Path::new(APP_CLI),
+    )
+}
+
+fn pick(path: Option<&std::ffi::OsStr>, app: &std::path::Path) -> std::path::PathBuf {
+    let on_path =
+        path.is_some_and(|p| std::env::split_paths(p).any(|d| d.join("tailscale").is_file()));
+    if on_path || !app.is_file() {
+        return std::path::PathBuf::from("tailscale");
+    }
+    app.to_path_buf()
+}
+
+/// The one command that exposes the broker to the tailnet, with the PROXY header it requires
+pub(crate) fn serve_command() -> String {
+    format!(
+        "{} serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787",
+        cli().display()
+    )
+}
+
 /// This machine's tailnet address, or None when Tailscale is not up
 pub(crate) fn address() -> Option<std::net::IpAddr> {
-    let out = std::process::Command::new("tailscale")
+    let out = std::process::Command::new(cli())
         .args(["ip", "-4"])
         .output()
         .ok()?;
@@ -28,7 +57,7 @@ pub(crate) fn address() -> Option<std::net::IpAddr> {
 `tailscale whois` prints `Machine:` and `User:` as headers with the values on indented lines
 beneath, so the name is the first `Name:` under each header rather than the header's own text. */
 pub(crate) fn whois(peer: std::net::IpAddr) -> Option<String> {
-    let out = std::process::Command::new("tailscale")
+    let out = std::process::Command::new(cli())
         .args(["whois", &peer.to_string()])
         .output()
         .ok()?;
@@ -109,6 +138,29 @@ fn proxy_source(line: &str) -> Option<std::net::IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cli_on_path_wins_and_the_apps_binary_stands_in_for_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let app = tmp.path().join("Tailscale");
+        let path = std::env::join_paths([&bin]).unwrap();
+
+        // Neither: the bare name, so the failure names the command that is missing
+        assert_eq!(
+            pick(Some(&path), &app),
+            std::path::PathBuf::from("tailscale")
+        );
+        std::fs::write(&app, "").unwrap();
+        assert_eq!(pick(Some(&path), &app), app);
+        assert_eq!(pick(None, &app), app);
+        std::fs::write(bin.join("tailscale"), "").unwrap();
+        assert_eq!(
+            pick(Some(&path), &app),
+            std::path::PathBuf::from("tailscale")
+        );
+    }
 
     /// The real shape of `tailscale whois`, which nests the name under a header
     const SAMPLE: &str = "Machine:\n  Name:          server.example.ts.net\n  ID:            nExampleCNTRL\n  Addresses:     [100.64.0.7/32]\nUser:\n  Name:     someone@example.com\n";
