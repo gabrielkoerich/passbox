@@ -21,7 +21,7 @@ targets:
       - package: PassboxCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gabrielkoerich.passbox.phone
+        PRODUCT_BUNDLE_IDENTIFIER: com.gabrielkoerich.passbox.signer
         PRODUCT_NAME: passbox
         # The team that signs the Mac binary. Change it to build under another account
         DEVELOPMENT_TEAM: ZEY9Z684DK

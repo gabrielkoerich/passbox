@@ -20,7 +20,7 @@ struct Pairing: Codable, Equatable {
 
     private static let query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: "com.gabrielkoerich.passbox.phone",
+        kSecAttrService as String: "com.gabrielkoerich.passbox.signer",
         kSecAttrAccount as String: "pairing",
     ]
 
