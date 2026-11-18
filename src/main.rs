@@ -42,6 +42,8 @@ use cmd::exec::exec;
 use cmd::git::{git, written};
 #[cfg(feature = "host")]
 use cmd::imports::{Manager, import};
+#[cfg(feature = "host")]
+use cmd::phone::{phone_add, phone_ls, phone_rm};
 use cmd::plugins::plugin_cmd;
 #[cfg(feature = "host")]
 use cmd::secrets::audit;
@@ -147,6 +149,12 @@ enum Command {
     YubikeyAdd {
         /// The `age1yubikey1...` recipient, or none to use the plugged token and set it up if needed
         recipient: Option<String>,
+    },
+    #[cfg(feature = "host")]
+    /// Let an iPhone approve a read when Touch ID on this Mac goes unanswered
+    Phone {
+        #[command(subcommand)]
+        action: PhoneAction,
     },
     /// Run a command with secrets injected, so the value never reaches the caller
     Exec {
@@ -266,6 +274,17 @@ impl AddArgs {
     }
 }
 
+#[cfg(feature = "host")]
+#[derive(Subcommand)]
+enum PhoneAction {
+    /// Enroll the phone: it dials this Mac over the tailnet with the code shown here
+    Add,
+    /// Name the enrolled phone
+    Ls,
+    /// Remove the enrolled phone, which can then open nothing
+    Rm,
+}
+
 #[derive(Subcommand)]
 enum SkillAction {
     /// Write the SKILL.md for this version, to ~/.claude/skills/passbox by default
@@ -348,6 +367,15 @@ fn run() -> Result<()> {
         #[cfg(feature = "host")]
         Command::YubikeyAdd { recipient } => yubikey_add(&store, recipient.as_deref())
             .inspect(|()| written(&store, "wrap the store key to a YubiKey")),
+        #[cfg(feature = "host")]
+        Command::Phone { action } => match action {
+            PhoneAction::Add => phone_add(&store),
+            PhoneAction::Ls => {
+                phone_ls(&store);
+                Ok(())
+            }
+            PhoneAction::Rm => phone_rm(&store),
+        },
         Command::Exec {
             envs,
             stdin,

@@ -259,7 +259,7 @@ A client connecting over SSH has authenticated with a key, and the host knows wh
 
 Tailscale would do the same through node identity.
 
-## Approving from a phone, declined
+## Approving from a phone, declined and then narrowed
 
 The idea: a push notification to the phone, approve there, the value is released. It answers what a machine with no sensor does, and it removes the requirement that the host be awake.
 
@@ -274,6 +274,16 @@ passbox does something narrow: a secret goes into one child process rather than 
 The sharper version of the problem this was meant to solve is "nobody is awake at 3am", not "approve from my phone". Injection at launch and a scoped grant already answer that, and they answer it better, because they need no one at all.
 
 Rejected: a phone as approver, and the passkey work that would support it. Revisit only if the agent boundary is finished and this is still the largest missing thing, which it is not today.
+
+Revisited 2026-11, and a narrower thing is being built. The decline above stands for the feature it describes: a phone as a first-class client, with a passkey and a host that need not be awake. What changed is the question. A Mac in clamshell mode has no reachable sensor, and a Mac across the room has nobody at it, and in both the owner is holding a phone. So the phone became a second approver for a Mac that is on, and nothing more:
+
+- The credential is one more Enclave wrap, sealed like the Mac's own, so there is no passkey and no sync change.
+- The answer travels over the tailnet the broker already listens on, where `tailscale whois` names the phone.
+- The knock is an Apple push sent by the owner's own Mac while this is one person's tool. For anyone else it has to become CloudKit, which needs a signed app bundle, or a relay that sees a device token and an opaque id.
+
+Order: the Mac side with a phone written in the tests, which is built, then the app opened by hand, which is written and waiting for its first run on a device, then the push. The design notes have it under "A phone as a second approver".
+
+Cost: an iOS app is now part of passbox, which is the cost the decline named, paid for a smaller feature.
 
 ## Knowing when to stop
 

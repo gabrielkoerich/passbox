@@ -2,6 +2,7 @@
 
 use super::audit::{Entry, append_audit_to};
 use super::caller::{ancestry, caller_cwd, peer_pid, prompt_agent, remote_agent, ssh_requester};
+use super::phone::{self, PhoneState};
 use super::tokens::{Tokens, mint_child, token_value};
 use super::{Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Request, Response, TAILNET_PORT};
 use crate::store::{self, Store};
@@ -25,8 +26,12 @@ pub(super) enum Origin {
     Tailnet,
 }
 
+/// How a tailnet caller is named when `tailscale whois` fails, followed by its address
+pub(super) const UNNAMED: &str = "an unknown tailnet host";
+
 /// The PROXY header is how the broker learns which host connected, so the listener requires it
-const SERVE: &str = "tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787";
+pub(crate) const SERVE: &str =
+    "tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787";
 
 /// One loop per connection, since ssh sends several requests on one, and only signing takes the lock
 fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
@@ -60,24 +65,27 @@ fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
 
 /// What every connection thread shares. The token map is reachable without the broker's lock
 pub(super) struct Shared {
-    broker: std::sync::Mutex<Broker>,
+    pub(super) broker: std::sync::Mutex<Broker>,
     pub(super) tokens: Tokens,
+    pub(super) phones: PhoneState,
     pub(super) store: Store,
 }
 
+/// True when the request was a phone's `pending` call, which is held open and is not activity
 fn reply<S: std::io::Read + Write>(
     shared: &Shared,
     stream: &mut S,
     caller: &str,
     cwd: Option<&std::path::Path>,
     origin: Origin,
-) -> Result<()> {
+) -> Result<bool> {
     let mut line = String::new();
     let mut reader = BufReader::new(&mut *stream);
     if let Err(e) = reader.read_line(&mut line) {
         eprintln!("could not read the request: {e}");
-        return Ok(());
+        return Ok(false);
     }
+    let mut poll = false;
     eprintln!("{} read {} bytes of request", clock(), line.len());
     let response = match serde_json::from_str::<Request>(&line) {
         Ok(mut request) => {
@@ -99,7 +107,14 @@ fn reply<S: std::io::Read + Write>(
             let child = (request.op == Op::Grant && !request.token.is_empty())
                 .then(|| mint_child(shared, &request, caller))
                 .flatten();
+            poll = request.op == Op::Phone && request.action == "pending";
+            // An open app polls back to back, and cutting one poll off for an upgrade loses nothing
+            if poll {
+                IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+            }
             let answer = match (by_token, child) {
+                // Before the lock: the phone answers the very prompt that is holding it
+                _ if request.op == Op::Phone => phone::handle(shared, &request, caller, origin),
                 (Some((value, grant)), _) => shared
                     .store
                     .recipient()
@@ -125,6 +140,9 @@ fn reply<S: std::io::Read + Write>(
                     .expect("broker")
                     .handle(&request, caller, cwd, origin),
             };
+            if poll {
+                IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+            }
             match answer {
                 Ok(value) => Response {
                     ok: true,
@@ -145,7 +163,7 @@ fn reply<S: std::io::Read + Write>(
         },
     };
     writeln!(stream, "{}", serde_json::to_string(&response)?)?;
-    Ok(())
+    Ok(poll)
 }
 
 /* Another machine asks here, through `tailscale serve` on loopback. The PROXY header carries the
@@ -154,7 +172,6 @@ control plane authenticated that name, so it is the one caller identity that is 
 fn serve_tailnet(listener: &std::net::TcpListener, shared: &std::sync::Arc<Shared>) {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
-        LAST_SEEN.store(store::now(), Ordering::Relaxed);
         let shared = std::sync::Arc::clone(shared);
         IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
@@ -175,13 +192,14 @@ fn serve_tailnet(listener: &std::net::TcpListener, shared: &std::sync::Arc<Share
                 IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
                 return;
             };
-            let caller =
-                tailnet::whois(peer).unwrap_or_else(|| format!("an unknown tailnet host ({peer})"));
+            let caller = tailnet::whois(peer).unwrap_or_else(|| format!("{UNNAMED} ({peer})"));
             eprintln!("tailnet request from {caller}");
-            if let Err(e) = reply(&shared, &mut stream, &caller, None, Origin::Tailnet) {
-                eprintln!("tailnet request failed: {e:#}");
+            // A phone holding `pending` open would otherwise keep the key in memory for good
+            match reply(&shared, &mut stream, &caller, None, Origin::Tailnet) {
+                Ok(true) => {}
+                Ok(false) => LAST_SEEN.store(store::now(), Ordering::Relaxed),
+                Err(e) => eprintln!("tailnet request failed: {e:#}"),
             }
-            LAST_SEEN.store(store::now(), Ordering::Relaxed);
             IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         });
     }
@@ -212,6 +230,20 @@ fn bind_private(path: &std::path::Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
+/// Tests run many brokers at once, and one fixed port would let a single one listen
+#[cfg(feature = "mock-enclave")]
+fn tailnet_port() -> u16 {
+    std::env::var("PASSBOX_TEST_TAILNET_PORT")
+        .ok()
+        .and_then(|port| port.parse().ok())
+        .unwrap_or(TAILNET_PORT)
+}
+
+#[cfg(not(feature = "mock-enclave"))]
+fn tailnet_port() -> u16 {
+    TAILNET_PORT
+}
+
 pub(crate) fn serve(store: Store) -> Result<()> {
     #[cfg(target_os = "macos")]
     harden();
@@ -222,9 +254,15 @@ pub(crate) fn serve(store: Store) -> Result<()> {
 
     LAST_SEEN.store(store::now(), Ordering::Relaxed);
     let tokens = Tokens::default();
+    let phones = PhoneState::default();
     let shared = std::sync::Arc::new(Shared {
-        broker: std::sync::Mutex::new(Broker::new(store.clone(), std::sync::Arc::clone(&tokens))),
+        broker: std::sync::Mutex::new(Broker::new(
+            store.clone(),
+            std::sync::Arc::clone(&tokens),
+            std::sync::Arc::clone(&phones),
+        )),
         tokens,
+        phones,
         store,
     });
     watchdog(socket, std::sync::Arc::clone(&shared));
@@ -240,9 +278,10 @@ pub(crate) fn serve(store: Store) -> Result<()> {
     Loopback has none of the unix socket's 0600 protection, so any local user can reach this
     port. That is the cost of the only inbound path macOS actually delivers. */
     if tailnet::address().is_some() {
-        match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, TAILNET_PORT)) {
+        let port = tailnet_port();
+        match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
             Ok(tcp) => {
-                eprintln!("listening on 127.0.0.1:{TAILNET_PORT}; expose it with\n  {SERVE}");
+                eprintln!("listening on 127.0.0.1:{port}; expose it with\n  {SERVE}");
                 let shared = std::sync::Arc::clone(&shared);
                 std::thread::spawn(move || serve_tailnet(&tcp, &shared));
             }
@@ -436,6 +475,7 @@ mod tests {
                 dir: tmp.path().to_path_buf(),
             },
             Tokens::default(),
+            PhoneState::default(),
         );
         broker.key = Some(Box::new(x25519::Identity::generate()));
         broker.tokens.lock().unwrap().insert(
