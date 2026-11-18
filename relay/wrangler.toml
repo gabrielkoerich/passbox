@@ -1,15 +1,18 @@
-# The relay as a Cloudflare Worker. Create the namespace once with
-#   bunx wrangler kv namespace create PHONES
-# put its id below, set the key with `bunx wrangler secret put APNS_KEY < AuthKey.p8`, then deploy
+# The relay as a Cloudflare Worker, keeping phones in D1. The key is set once with
+#   bunx wrangler secret put APNS_KEY < AuthKey.p8
+# and the relay workflow deploys every change to relay/ on main
 name = "passbox-push"
 main = "src/cloudflare.ts"
 compatibility_date = "2026-11-01"
+workers_dev = true
+preview_urls = false
 
 [vars]
 KEY_ID = "58FJ7K3U8T"
 TEAM_ID = "ZEY9Z684DK"
 TOPIC = "com.gabrielkoerich.passbox.signer"
 
-[[kv_namespaces]]
+[[d1_databases]]
 binding = "PHONES"
-id = "set-after-kv-namespace-create"
+database_name = "passbox-push"
+database_id = "44798926-cef3-4424-b0b9-89ecbbe4b605"

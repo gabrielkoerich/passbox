@@ -15,16 +15,17 @@ The store keeps a SHA-256 of each secret, so reading it is not enough to push. A
 
 ## On Cloudflare
 
-`src/cloudflare.ts` keeps phones in KV and reaches Apple with the Worker's fetch.
+`src/cloudflare.ts` keeps phones in D1, in the same table the server keeps in SQLite, and reaches Apple with the Worker's fetch. It runs as `passbox-push.bliv-labs.workers.dev`.
 
 ```bash
-bunx wrangler login
-bunx wrangler kv namespace create PHONES     # put the id in wrangler.toml
+bunx wrangler d1 create passbox-push        # put the id in wrangler.toml
 bunx wrangler secret put APNS_KEY < AuthKey_XXXXXXXXXX.p8
 bunx wrangler deploy
 ```
 
-The free plan allows 100,000 requests and 1,000 KV writes a day for the whole account. Only a registration writes.
+After the first deploy, `.github/workflows/relay.yml` deploys every change to `relay/` on main, with the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets. The APNs key stays a Worker secret and is never in GitHub.
+
+The free plan allows 100,000 requests a day for the whole account, shared by every Worker on it. Only a registration writes to D1.
 
 ## On a server
 
