@@ -8,12 +8,20 @@ import PassboxCore
 import SwiftUI
 
 struct ContentView: View {
+    #if DEBUG
+        @State private var tab = Demo.state == "settings" ? 1 : 0
+    #else
+        @State private var tab = 0
+    #endif
+
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             StatusView()
                 .tabItem { Label("Status", systemImage: "checkmark.shield.fill") }
+                .tag(0)
             InfoView()
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(1)
         }
         // One look in any light, since the screen is mostly empty and meant to be glanced at
         .preferredColorScheme(.dark)

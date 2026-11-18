@@ -32,7 +32,35 @@ final class Model: ObservableObject {
 
     init() {
         pairing = Pairing.load()
+        #if DEBUG
+            if let state = Demo.state {
+                show(state)
+            }
+        #endif
     }
+
+    #if DEBUG
+        /// One screen's state with no Mac behind it, for screenshots
+        private func show(_ state: String) {
+            if state == "pairing" {
+                busy = true
+                fingerprint = "EE 5C 83"
+                return
+            }
+            pairing = Pairing(
+                host: "macbook-pro", mac: "macbook-pro", phone: "iphone", token: "",
+                keyBlob: Data(), added: Date().addingTimeInterval(-86_400 * 3))
+            lastContact = Date()
+            if state == "request" {
+                let since = Int(Date().timeIntervalSince1970) - 20
+                let json = """
+                    {"id":"demo","reason":"release the password for github/token to claude-code",\
+                    "since":\(since),"key":"","ephemeral":"","ciphertext":""}
+                    """
+                request = try? JSONDecoder().decode(Pending.self, from: Data(json.utf8))
+            }
+        }
+    #endif
 
     var reachable: Bool { lastContact != nil && trouble == nil }
 
@@ -46,6 +74,11 @@ final class Model: ObservableObject {
         guard watcher == nil, let pairing else {
             return
         }
+        #if DEBUG
+            if Demo.state != nil {
+                return
+            }
+        #endif
         let mac = client(pairing)
         watcher = Task { [weak self] in
             while !Task.isCancelled {
