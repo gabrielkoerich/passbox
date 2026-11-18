@@ -52,7 +52,44 @@ pub(crate) struct PhoneWrap {
     mask: String,
     /// Set once the phone answers its test round, and no prompt asks a phone before that
     pub(crate) proved: bool,
+    /// Where the broker asks for a notification, once the app has registered with the relay
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    push: Option<Push>,
     added: u64,
+}
+
+/// The relay that wakes the phone, and the id and secret the relay gave it. They let the broker
+/// make the phone buzz and nothing else, so they sit in the wrap, which is never synced
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+struct Push {
+    relay: String,
+    id: String,
+    secret: String,
+}
+
+impl Push {
+    fn from(request: &Request) -> Result<Self> {
+        let relay = param(request, "relay")?.trim_end_matches('/');
+        // A relay on loopback carries nothing off the Mac, which is how the tests run one
+        if !(relay.starts_with("https://") || relay.starts_with("http://127.0.0.1:")) {
+            bail!("the relay must be an https address");
+        }
+
+        let id = param(request, "id")?;
+        let secret = param(request, "secret")?;
+        let hex = |text: &str, len: usize| {
+            text.len() == len && text.bytes().all(|b| b.is_ascii_hexdigit())
+        };
+        if !hex(id, 32) || !hex(secret, 64) {
+            bail!("the relay id and secret are not the relay's own");
+        }
+
+        Ok(Push {
+            relay: relay.to_string(),
+            id: id.to_string(),
+            secret: secret.to_string(),
+        })
+    }
 }
 
 impl PhoneWrap {
@@ -267,8 +304,9 @@ pub(super) fn handle(
         ("enroll", Origin::Tailnet) => enroll(shared, request, caller),
         ("pending", Origin::Tailnet) => pending(shared, request, caller),
         ("answer", Origin::Tailnet) => answer(shared, request, caller),
+        ("notify", Origin::Tailnet) => notify(shared, request, caller),
         ("open" | "test", Origin::Tailnet) => bail!("only the Mac itself starts an enrollment"),
-        ("enroll" | "pending" | "answer", Origin::Local) => {
+        ("enroll" | "pending" | "answer" | "notify", Origin::Local) => {
             bail!("a phone reaches the broker over the tailnet, not this socket")
         }
         (other, _) => bail!("no phone step named {other}"),
@@ -399,14 +437,74 @@ fn answer(shared: &Shared, request: &Request, caller: &str) -> Result<String> {
     Ok("ok".to_string())
 }
 
-// Where step 3 sends the push. Until then the phone learns of a request by being opened, and
-// this is the line in the broker's log that says one is waiting
+/// The app's relay registration, sent again whenever iOS gives it a new device token. `off`
+/// clears it, for a phone whose owner turned notifications off
+fn notify(shared: &Shared, request: &Request, caller: &str) -> Result<String> {
+    let mut wrap = enrolled(&shared.store, request, caller)?;
+    wrap.push = if request.params.iter().any(|(k, _)| k == "off") {
+        None
+    } else {
+        Some(Push::from(request)?)
+    };
+    wrap.save(&shared.store)?;
+    Ok("ok".to_string())
+}
+
+/**
+ * Asks the relay to make the phone buzz, on a thread of its own so a slow relay never holds the
+ * prompt. The request carries the relay's id and secret on stdin, never in argv, and nothing about
+ * the read: the phone shows the Mac's own sentence once the owner opens the app
+ **/
 fn wake(phone: &PhoneWrap) {
     eprintln!(
         "{} waiting for {} to answer in passbox",
         clock(),
         phone.node
     );
+    let Some(push) = phone.push.clone() else {
+        return;
+    };
+    let node = phone.node.clone();
+    std::thread::spawn(move || {
+        let body = serde_json::json!({ "id": push.id, "secret": push.secret }).to_string();
+        let outcome = std::process::Command::new("curl")
+            .args([
+                "--silent",
+                "--show-error",
+                "--fail-with-body",
+                "--max-time",
+                "10",
+            ])
+            .args([
+                "--header",
+                "content-type: application/json",
+                "--data-binary",
+                "@-",
+            ])
+            .arg(format!("{}/push", push.relay))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(body.as_bytes())?;
+                }
+
+                child.wait_with_output()
+            });
+        match outcome {
+            Ok(out) if out.status.success() => eprintln!("{} notified {node}", clock()),
+            Ok(out) => eprintln!(
+                "{} could not notify {node}: {} {}",
+                clock(),
+                String::from_utf8_lossy(&out.stdout).trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            Err(e) => eprintln!("{} could not notify {node}: {e}", clock()),
+        }
+    });
 }
 
 fn show(phones: &Phones, phone: &PhoneWrap, reason: &str, answer: Sender<Event>) {
@@ -571,6 +669,7 @@ impl Broker {
             token: project::hash(token.as_bytes()),
             mask: hex::encode(&*mask),
             proved: false,
+            push: None,
             added: store::now(),
         };
         wrap.save(&self.store)?;
@@ -592,7 +691,7 @@ impl Broker {
     /// still at the Mac. The key it returns is checked and dropped, it opens nothing here. The
     /// broker settles the outcome itself, so a `phone add` that is interrupted changes nothing
     fn test_phone(&mut self) -> Result<String> {
-        let mut phone = PhoneWrap::load(&self.store).context("no phone is enrolled on this Mac")?;
+        let phone = PhoneWrap::load(&self.store).context("no phone is enrolled on this Mac")?;
         let timing = Timing::read(&self.store)?;
         let (sender, answers) = channel();
         let outcome = wait(
@@ -620,9 +719,11 @@ impl Broker {
             )?;
             return Err(e);
         }
-        phone.proved = true;
-        phone.save(&self.store)?;
-        Ok(phone.node)
+        // Read again, since the app registers for notifications while this round is still open
+        let mut fresh = PhoneWrap::load(&self.store).unwrap_or(phone);
+        fresh.proved = true;
+        fresh.save(&self.store)?;
+        Ok(fresh.node)
     }
 
     /// The line that says a prompt was answered on the phone, ahead of whatever it released
@@ -714,6 +815,7 @@ mod tests {
             token: String::new(),
             mask: hex::encode([0x0f, 0xf0, 0xaa]),
             proved: true,
+            push: None,
             added: 0,
         };
         assert_eq!(
