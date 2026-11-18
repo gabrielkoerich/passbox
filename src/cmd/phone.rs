@@ -55,9 +55,9 @@ pub(crate) fn phone_add(store: &Store) -> Result<()> {
     if let Err(e) = broker::phone_test(store) {
         return Err(e.context("the phone did not prove it can approve, so it was removed"));
     }
-    let after = Timing::read(store)?.after.as_secs();
+    let delay = Timing::read(store)?.delay.as_secs();
     eprintln!(
-        "{} can approve. It is asked once Touch ID has gone unanswered for {after}s, and at \
+        "{} can approve. It is asked once Touch ID has gone unanswered for {delay}s, and at \
          once when the lid is closed",
         phone.node
     );

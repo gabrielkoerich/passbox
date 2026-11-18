@@ -23,10 +23,10 @@ pub(crate) const ENROLL_SECS: u64 = 120;
 /// Wrong codes before the window closes, so six digits cannot be walked
 const ENROLL_TRIES: u8 = 5;
 /// Seconds Touch ID goes unanswered before the phone is asked as well
-const DEFAULT_AFTER_SECS: u64 = 15;
+const DEFAULT_DELAY_SECS: u64 = 10;
 /// Seconds the phone has when it is the only approver, as with the lid closed
-const DEFAULT_WAIT_SECS: u64 = 60;
-/// The longest `after` or `wait` may be, so a stray number in the config cannot overflow a deadline
+const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// The longest `delay` or `timeout` may be, so a stray number in the config cannot overflow a deadline
 const MAX_TIMING_SECS: u64 = 86_400;
 /// The longest a phone may hold one `pending` call open, so an idle app is one connection in a while
 const MAX_HOLD_SECS: u64 = 30;
@@ -129,15 +129,15 @@ impl PhoneWrap {
 /// `[phone]` in `config.toml`: when the phone is asked, and how long it has when it is alone
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Timing {
-    pub(crate) after: Duration,
-    wait: Duration,
+    pub(crate) delay: Duration,
+    timeout: Duration,
 }
 
 impl Default for Timing {
     fn default() -> Self {
         Timing {
-            after: Duration::from_secs(DEFAULT_AFTER_SECS),
-            wait: Duration::from_secs(DEFAULT_WAIT_SECS),
+            delay: Duration::from_secs(DEFAULT_DELAY_SECS),
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
         }
     }
 }
@@ -163,13 +163,13 @@ impl Timing {
                 .and_then(|n| u64::try_from(n).ok())
                 .with_context(|| format!("phone.{key} must be a number of seconds"))?;
             match key.as_str() {
-                "after" | "wait" if secs > MAX_TIMING_SECS => {
+                "delay" | "timeout" if secs > MAX_TIMING_SECS => {
                     bail!("phone.{key} is at most {MAX_TIMING_SECS} seconds")
                 }
-                "after" => timing.after = Duration::from_secs(secs),
-                "wait" if secs > 0 => timing.wait = Duration::from_secs(secs),
-                "wait" => bail!("phone.wait must be at least a second"),
-                other => bail!("unknown key phone.{other}, the keys are after and wait"),
+                "delay" => timing.delay = Duration::from_secs(secs),
+                "timeout" if secs > 0 => timing.timeout = Duration::from_secs(secs),
+                "timeout" => bail!("phone.timeout must be at least a second"),
+                other => bail!("unknown key phone.{other}, the keys are delay and timeout"),
             }
         }
         Ok(timing)
@@ -520,9 +520,9 @@ fn show(phones: &Phones, phone: &PhoneWrap, reason: &str, answer: Sender<Event>)
 }
 
 /**
- * Whoever answers first decides. With a prompt on the Mac the phone is asked after `after` and
+ * Whoever answers first decides. With a prompt on the Mac the phone is asked after `delay` and
  * both then stay open for as long as the prompt would have, which is until someone answers. With
- * no prompt possible the phone is asked at once and has `wait`, since nothing on screen says a
+ * no prompt possible the phone is asked at once and has `timeout`, since nothing on screen says a
  * request is hanging. `asked_after` of None is the phone alone, for the round that proves an
  * enrollment
  **/
@@ -542,7 +542,7 @@ fn wait(
     };
     let mut no_sensor = None;
     let mut asked = false;
-    let mut deadline = Some(Instant::now() + asked_after.unwrap_or(timing.wait));
+    let mut deadline = Some(Instant::now() + asked_after.unwrap_or(timing.timeout));
     if asked_after.is_none() {
         ask(phones);
         asked = true;
@@ -560,7 +560,7 @@ fn wait(
                 ask(phones);
                 asked = true;
                 no_sensor = Some(e);
-                deadline = Some(Instant::now() + timing.wait);
+                deadline = Some(Instant::now() + timing.timeout);
             }
             Ok(Event::Mac(Err(e)) | Event::Phone(Err(e))) => return Err(e),
             Err(RecvTimeoutError::Timeout) if !asked => {
@@ -569,7 +569,7 @@ fn wait(
                 deadline = None;
             }
             Err(RecvTimeoutError::Timeout) => {
-                let secs = timing.wait.as_secs();
+                let secs = timing.timeout.as_secs();
                 return Err(match no_sensor {
                     Some(e) => anyhow!("{e:#} {} did not answer within {secs}s either", phone.node),
                     None => anyhow!("{} did not answer within {secs}s", phone.node),
@@ -613,7 +613,7 @@ pub(super) fn unlock(
         reason,
         (&answers, sender),
         timing,
-        Some(timing.after),
+        Some(timing.delay),
     );
     // Whichever lost is taken down, so neither a dialog nor a request outlives the decision
     if let Some(prompt) = prompt {
@@ -846,15 +846,17 @@ mod tests {
     #[test]
     fn the_timing_defaults_and_reads_its_two_keys() {
         assert_eq!(Timing::parse("").unwrap(), Timing::default());
-        assert_eq!(Timing::default().after, Duration::from_secs(15));
-        let set = Timing::parse("[phone]\nafter = 0\nwait = 5\n").unwrap();
-        assert_eq!(set.after, Duration::ZERO);
-        assert_eq!(set.wait, Duration::from_secs(5));
-        assert!(Timing::parse("[phone]\nwait = 0\n").is_err());
-        assert!(Timing::parse("[phone]\nafter = \"soon\"\n").is_err());
+        assert_eq!(Timing::default().delay, Duration::from_secs(10));
+        let set = Timing::parse("[phone]\ndelay = 0\ntimeout = 5\n").unwrap();
+        assert_eq!(set.delay, Duration::ZERO);
+        assert_eq!(set.timeout, Duration::from_secs(5));
+        assert!(Timing::parse("[phone]\ntimeout = 0\n").is_err());
+        assert!(Timing::parse("[phone]\ndelay = \"soon\"\n").is_err());
         assert!(Timing::parse("[phone]\nsoon = 1\n").is_err());
-        assert!(Timing::parse("[phone]\nafter = 86400\nwait = 86400\n").is_ok());
-        assert!(Timing::parse("[phone]\nafter = 9223372036854775807\n").is_err());
-        assert!(Timing::parse("[phone]\nwait = 86401\n").is_err());
+        // The old names are refused, which leaves the defaults in place for reads
+        assert!(Timing::parse("[phone]\nafter = 10\n").is_err());
+        assert!(Timing::parse("[phone]\ndelay = 86400\ntimeout = 86400\n").is_ok());
+        assert!(Timing::parse("[phone]\ndelay = 9223372036854775807\n").is_err());
+        assert!(Timing::parse("[phone]\ntimeout = 86401\n").is_err());
     }
 }

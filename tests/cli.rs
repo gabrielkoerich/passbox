@@ -3590,7 +3590,7 @@ struct Paired {
 }
 
 impl Paired {
-    /// `timing` is the body of `[phone]` in the config, such as `after = 0`
+    /// `timing` is the body of `[phone]` in the config, such as `delay = 0`
     fn unenrolled(timing: &str) -> Self {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -3899,7 +3899,7 @@ fn a_phone_enrolls_with_the_code_a_fingerprint_and_a_proof() {
     ignore = "needs --features mock-enclave"
 )]
 fn a_phone_that_cannot_prove_itself_is_removed() {
-    let mut paired = Paired::unenrolled("wait = 1");
+    let mut paired = Paired::unenrolled("timeout = 1");
     let (ok, said) = paired.add(Proof::Withhold);
     assert!(!ok, "{said}");
     assert!(said.contains("did not answer within 1s"), "{said}");
@@ -3913,7 +3913,7 @@ fn a_phone_that_cannot_prove_itself_is_removed() {
     ignore = "needs --features mock-enclave"
 )]
 fn an_unanswered_prompt_reaches_the_phone_and_its_answer_releases_the_secret() {
-    let paired = Paired::new("after = 0");
+    let paired = Paired::new("delay = 0");
     let held = paired.bound.hold();
     let read = paired.read_later("demo/one");
 
@@ -3953,7 +3953,7 @@ call with nothing to wait for comes back empty when its time is up. */
     ignore = "needs --features mock-enclave"
 )]
 fn a_held_pending_call_returns_when_a_request_appears() {
-    let paired = Paired::new("after = 0");
+    let paired = Paired::new("delay = 0");
     let started = Instant::now();
     assert_eq!(paired.call("pending", "", &[("wait", "1")]).unwrap(), "");
     assert!(
@@ -3988,7 +3988,7 @@ fn a_held_pending_call_returns_when_a_request_appears() {
     ignore = "needs --features mock-enclave"
 )]
 fn the_phone_is_not_asked_while_touch_id_is_still_within_its_delay() {
-    let paired = Paired::new("after = 600");
+    let paired = Paired::new("delay = 600");
     let held = paired.bound.hold();
     let read = paired.read_later("demo/one");
     paired.bound.wait_for_prompts(1);
@@ -4007,7 +4007,7 @@ fn the_phone_is_not_asked_while_touch_id_is_still_within_its_delay() {
     ignore = "needs --features mock-enclave"
 )]
 fn a_closed_lid_asks_the_phone_at_once_and_gives_up_when_it_stays_silent() {
-    let paired = Paired::new("after = 600\nwait = 2");
+    let paired = Paired::new("delay = 600\ntimeout = 2");
     paired.bound.deny("unavailable");
 
     let read = paired.read_later("demo/one");
@@ -4033,7 +4033,7 @@ fn a_closed_lid_asks_the_phone_at_once_and_gives_up_when_it_stays_silent() {
     ignore = "needs --features mock-enclave"
 )]
 fn a_lid_closed_on_an_open_prompt_hands_the_request_to_the_phone() {
-    let paired = Paired::new("after = 600\nwait = 5");
+    let paired = Paired::new("delay = 600\ntimeout = 5");
     let held = paired.bound.hold();
     let read = paired.read_later("demo/one");
     paired.bound.wait_for_prompts(1);
@@ -4053,7 +4053,7 @@ fn a_lid_closed_on_an_open_prompt_hands_the_request_to_the_phone() {
     ignore = "needs --features mock-enclave"
 )]
 fn a_typo_under_phone_in_the_config_leaves_touch_id_working() {
-    let paired = Paired::new("after = 600");
+    let paired = Paired::new("delay = 600");
     std::fs::write(
         paired.bound.cli.path().join("config.toml"),
         "[phone]\nsoon = 1\n",
@@ -4068,7 +4068,7 @@ fn a_typo_under_phone_in_the_config_leaves_touch_id_working() {
     ignore = "needs --features mock-enclave"
 )]
 fn a_refusal_on_the_phone_is_a_denial_and_takes_the_prompt_down() {
-    let paired = Paired::new("after = 0");
+    let paired = Paired::new("delay = 0");
     let _held = paired.bound.hold();
     let read = paired.read_later("demo/one");
     let shown = paired.pending();
@@ -4091,7 +4091,7 @@ fn a_refusal_on_the_phone_is_a_denial_and_takes_the_prompt_down() {
     ignore = "needs --features mock-enclave"
 )]
 fn only_the_enrolled_phone_sees_or_answers_a_request() {
-    let mut paired = Paired::new("after = 0");
+    let mut paired = Paired::new("delay = 0");
     let _held = paired.bound.hold();
     let read = paired.read_later("demo/one");
     let shown = paired.pending();
@@ -4217,7 +4217,7 @@ fn five_wrong_codes_close_the_enrollment() {
     ignore = "needs --features mock-enclave"
 )]
 fn removing_the_phone_leaves_touch_id_alone() {
-    let paired = Paired::new("after = 0");
+    let paired = Paired::new("delay = 0");
     let removed = paired.bound.cmd().args(["phone", "rm"]).output().unwrap();
     assert!(removed.status.success());
     assert_eq!(paired.bound.run(&["phone", "ls"], None).unwrap(), "");
@@ -4277,7 +4277,7 @@ fn fake_relay() -> (String, std::sync::mpsc::Receiver<String>) {
     ignore = "needs --features mock-enclave"
 )]
 fn an_unanswered_prompt_asks_the_relay_to_wake_the_phone_and_says_nothing_else() {
-    let paired = Paired::new("after = 0");
+    let paired = Paired::new("delay = 0");
     let (relay, received) = fake_relay();
     let id = "1".repeat(32);
     let secret = "2".repeat(64);
@@ -4350,7 +4350,7 @@ fn an_unanswered_prompt_asks_the_relay_to_wake_the_phone_and_says_nothing_else()
     ignore = "needs --features mock-enclave"
 )]
 fn a_removed_phone_that_kept_its_wrap_opens_nothing() {
-    let mut paired = Paired::new("after = 0");
+    let mut paired = Paired::new("delay = 0");
     let kept = {
         let held = paired.bound.hold();
         let read = paired.read_later("demo/one");
@@ -4392,7 +4392,7 @@ fn a_removed_phone_that_kept_its_wrap_opens_nothing() {
     ignore = "needs --features mock-enclave"
 )]
 fn an_interrupted_phone_add_leaves_no_phone_that_is_asked() {
-    let mut paired = Paired::unenrolled("wait = 1");
+    let mut paired = Paired::unenrolled("timeout = 1");
     let (ok, said) = paired.add(Proof::Abandon);
     assert!(!ok, "{said}");
     // The CLI may have started the proof before it died, and then the broker settles it within `wait`
@@ -4421,7 +4421,7 @@ fn an_interrupted_phone_add_leaves_no_phone_that_is_asked() {
     ignore = "needs --features mock-enclave"
 )]
 fn a_held_pending_call_ends_when_the_request_it_saw_is_answered() {
-    let paired = Paired::new("after = 0");
+    let paired = Paired::new("delay = 0");
     let held = paired.bound.hold();
     let read = paired.read_later("demo/one");
     let shown = paired.pending();

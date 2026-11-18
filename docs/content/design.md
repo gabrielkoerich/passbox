@@ -94,7 +94,7 @@ Cost: the broker holds the key in memory while it runs, so a grant can release i
 
 ## A phone as a second approver
 
-`passbox phone add` enrolls one iPhone. After that, a Touch ID prompt nobody has answered for 15 seconds is also shown on the phone, and whichever answers first decides. With the lid closed no prompt can be raised, so the phone is asked at once.
+`passbox phone add` enrolls one iPhone. After that, a Touch ID prompt nobody has answered for 10 seconds is also shown on the phone, and whichever answers first decides. With the lid closed no prompt can be raised, so the phone is asked at once.
 
 Status: the Mac side is built and tested against a phone written in the tests. The app is in `ios/`: its protocol and both boxes are tested against the same bytes the broker is, and it installs on a phone from TestFlight. It has paired with a Mac and approved from the phone. Notifications go through a push relay, described below, which is not yet deployed.
 
@@ -116,7 +116,7 @@ The code is single use, and five wrong ones close the window. The pairing code i
 
 An open app holds one `pending` call open with `wait` and `seen`, the id it has on screen, and the broker answers it the moment the waiting request differs from that one: a new request appears, or the one on screen is answered or withdrawn. Rejected: asking every second or two, which is a `tailscale whois` and two log lines on the Mac each time, for as long as the app is on screen.
 
-The first answer wins. A release on the phone kills the helper holding the Touch ID dialog, and a fingerprint on the Mac withdraws the request from the phone. A refusal on either ends both. With a dialog on screen the request stays on the phone as long as the dialog stays up, since it is the same question. With no dialog, the phone has 60 seconds, because nothing on screen says a request is hanging. `[phone]` in `config.toml` sets both, as `after` and `wait` in seconds, at most a day each. A `[phone]` table the broker cannot read leaves the defaults in place for reads, so a typo does not stop Touch ID.
+The first answer wins. A release on the phone kills the helper holding the Touch ID dialog, and a fingerprint on the Mac withdraws the request from the phone. A refusal on either ends both. With a dialog on screen the request stays on the phone as long as the dialog stays up, since it is the same question. With no dialog, the phone has 60 seconds, because nothing on screen says a request is hanging. `[phone]` in `config.toml` sets both, as `delay` and `timeout` in seconds, at most a day each. A `[phone]` table the broker cannot read leaves the defaults in place for reads, so a typo does not stop Touch ID.
 
 The helper exits with status 3 when it cannot show a prompt: the sensor is unreachable, or the system keeps dismissing the prompt, as when the lid closes on it. The broker asks the phone at once on that status, and also when the helper cannot start. Rejected: matching the helper's message, which a reworded sentence would break without a test noticing.
 
