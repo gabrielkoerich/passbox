@@ -96,7 +96,7 @@ Cost: the broker holds the key in memory while it runs, so a grant can release i
 
 `passbox phone add` enrolls one iPhone. After that, a Touch ID prompt nobody has answered for 15 seconds is also shown on the phone, and whichever answers first decides. With the lid closed no prompt can be raised, so the phone is asked at once.
 
-Status: the Mac side is built and tested against a phone written in the tests. The app is in `ios/`: its protocol and both boxes are tested against the same bytes the broker is, and it installs on a phone from TestFlight. It has not yet paired with a Mac. The push that wakes it is not built, so a request reaches the phone only while the app is open.
+Status: the Mac side is built and tested against a phone written in the tests. The app is in `ios/`: its protocol and both boxes are tested against the same bytes the broker is, and it installs on a phone from TestFlight. It has paired with a Mac and approved from the phone. Notifications go through a push relay, described below, which is not yet deployed.
 
 **The phone is one more Enclave wrap.** The store key is sealed to a P-256 key the phone makes in its own Secure Enclave, gated by Face ID, with the same ECIES the Mac's wrap uses. So the phone cannot say yes, it can only open the store key, and a finger or a face on a sensor is still the one thing that releases anything.
 
@@ -141,6 +141,12 @@ Cost: only prompts the broker raises reach the phone. `passbox audit` and the ot
 Cost: what the phone shows is what the Mac sent it. A process that already runs as the owner can word a prompt as it likes on the Mac today, and it can do the same to the phone.
 
 Rejected: Handoff or Continuity, which have no API to raise a biometric prompt on another device. Rejected: a passkey on the phone, which wants a QR scan and Bluetooth range on every use. Rejected: Tailscale as the wake-up, because an iOS app cannot listen in the background, so the tailnet carries the answer and something else has to carry the knock.
+
+**The knock is a push through a relay.** Only the app's owner can ask Apple to wake the app, so the APNs key sits in a small relay, in `relay/`, and never on a Mac. The phone registers its device token there and gets an id and a secret, and hands both to its Mac with `notify` once paired. When a request goes to the phone, the broker sends the relay those two on a thread of its own, and the phone shows "Your Mac is waiting for an approval". The secret's name and the agent stay on the Mac, and the phone shows the Mac's own sentence once opened. The relay keeps a hash of each secret, so its store alone cannot push.
+
+Rejected: the APNs key on each Mac, which works only for the key's owner and cannot ship to anyone else. Rejected: binding the relay to one host. Its core takes a store and an HTTP/2 sender, with entry points for a Cloudflare Worker and for Bun on a server.
+
+Cost: a request now leaves a trace outside the tailnet, the fact that this phone was asked at that time. The relay is one more service to run, and while it is down the phone learns of a request only when opened.
 
 ## The SSH agent
 
