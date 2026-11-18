@@ -1,8 +1,8 @@
-/*
- Two tabs, and the first is the app. Status is black with the name in the middle and one thing
- under it: whether the phone is enrolled and connected, or the sentence the Mac's own prompt shows
- with a button that asks for Face ID. Settings states the pairing and sets nothing.
- */
+/**
+ * Two tabs, and the first is the app. Status is black with the name in the middle and one thing
+ * under it: whether the phone is enrolled and connected, or the sentence the Mac's own prompt shows
+ * with a button that asks for Face ID. Settings states the pairing and sets nothing
+ **/
 
 import PassboxCore
 import SwiftUI

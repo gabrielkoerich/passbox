@@ -197,15 +197,13 @@ impl Store {
 
     #[cfg(feature = "host")]
     pub(crate) fn yubikey_recipients(&self) -> Vec<String> {
-        fs::read_to_string(self.yubikey_recipients_path())
-            .map(|raw| {
-                raw.lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default()
+        fs::read_to_string(self.yubikey_recipients_path()).map_or_default(|raw| {
+            raw.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
     }
 
     /* age takes any number of recipients, so a second token is added to the same wrap rather
@@ -300,7 +298,8 @@ impl Store {
     /// The store key as a phone handed it back, refused unless it is this store's
     #[cfg(feature = "host")]
     pub(crate) fn key_from_phone(&self, raw: &[u8]) -> Result<x25519::Identity> {
-        let key = key_from_bytes(raw)?;
+        let key = key_from_bytes(raw)
+            .map_err(|_| anyhow!("the phone opened a different key, not this store's"))?;
         if key.to_public().to_string() != self.recipient()?.to_string() {
             bail!("the phone opened a different key, not this store's");
         }

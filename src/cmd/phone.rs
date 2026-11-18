@@ -1,6 +1,6 @@
 //! `passbox phone`: enrolling the iPhone that approves when Touch ID goes unanswered.
 
-use crate::broker::{self, ENROLL_SECS, PhoneWrap, SERVE, Timing};
+use crate::broker::{self, ENROLL_SECS, PHONE_SUBJECT, PhoneWrap, SERVE, Timing};
 use crate::store::Store;
 use crate::{headless, tailnet};
 use anyhow::{Context, Result, bail};
@@ -46,8 +46,8 @@ pub(crate) fn phone_add(store: &Store) -> Result<()> {
         "enrolled {}, approve the test request on it now",
         phone.node
     );
+    // The broker removes a phone that fails, so an interrupted `phone add` leaves nothing behind
     if let Err(e) = broker::phone_test(store) {
-        std::fs::remove_file(store.phone_wrap_path())?;
         return Err(e.context("the phone did not prove it can approve, so it was removed"));
     }
     let after = Timing::read(store)?.after.as_secs();
@@ -61,7 +61,11 @@ pub(crate) fn phone_add(store: &Store) -> Result<()> {
 
 pub(crate) fn phone_ls(store: &Store) {
     match PhoneWrap::load(store) {
-        Some(phone) => println!("{}", phone.node),
+        Some(phone) if phone.proved => println!("{}", phone.node),
+        Some(phone) => eprintln!(
+            "{} enrolled and never proved it can approve, run `passbox phone add` again",
+            phone.node
+        ),
         None => eprintln!("no phone is enrolled on this Mac"),
     }
 }
@@ -73,7 +77,7 @@ pub(crate) fn phone_rm(store: &Store) -> Result<()> {
     };
     std::fs::remove_file(store.phone_wrap_path())?;
     let caller = broker::own_ancestry();
-    broker::append_audit(store, &phone.node, "<phone>", "removed", &caller, "")?;
+    broker::append_audit(store, &phone.node, PHONE_SUBJECT, "removed", &caller, "")?;
     eprintln!("removed {}, it can no longer approve", phone.node);
     Ok(())
 }

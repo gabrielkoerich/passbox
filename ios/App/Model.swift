@@ -1,9 +1,9 @@
-/*
- Everything the two screens show. While the app is on screen it keeps one call open to the Mac,
- which the Mac answers the moment a prompt needs the phone, so a request appears without the app
- asking every second. Nothing runs in the background: iOS does not let an app listen there, and
- the notification that would wake it is not built yet.
- */
+/**
+ * Everything the two screens show. While the app is on screen it keeps one call open to the Mac,
+ * which the Mac answers the moment a prompt needs the phone, so a request appears without the app
+ * asking every second. Nothing runs in the background: iOS does not let an app listen there, and
+ * the notification that would wake it is not built yet
+ **/
 
 import Foundation
 import PassboxCore
@@ -25,6 +25,8 @@ final class Model: ObservableObject {
     @Published private(set) var approved = false
 
     private var watcher: Task<Void, Never>?
+    /// The request this phone last answered, which a poll already on its way may still carry
+    private var answered: String?
 
     init() {
         pairing = Pairing.load()
@@ -58,18 +60,15 @@ final class Model: ObservableObject {
         watcher = nil
     }
 
-    /// One look at the Mac. With nothing on screen the call is held open for a request to appear.
-    /// With one on screen it is asked again shortly, to notice the Mac answering it itself
+    /// One look at the Mac, held open until the waiting request differs from the one on screen,
+    /// so a new request and the Mac answering one itself both show at once
     private func look(_ client: Client) async {
         do {
-            let found = try await client.pending(wait: request == nil ? 25 : 0)
+            let found = try await client.pending(wait: 25, seen: request?.id)
             lastContact = Date()
             trouble = nil
-            if found?.id != request?.id {
+            if found?.id != request?.id, found == nil || found?.id != answered {
                 request = found
-            }
-            if found != nil {
-                try await Task.sleep(for: .seconds(2))
             }
         } catch is CancellationError {
             return
@@ -133,6 +132,7 @@ final class Model: ObservableObject {
             let key = try await PhoneKey.open(
                 blob: pairing.keyBlob, reason: "Approve the request from \(pairing.mac)")
             try await client(pairing).approve(request, with: key)
+            answered = request.id
             self.request = nil
             trouble = nil
             approved = true
@@ -151,6 +151,7 @@ final class Model: ObservableObject {
         defer { busy = false }
         do {
             try await client(pairing).deny(request)
+            answered = request.id
             self.request = nil
             trouble = nil
         } catch {

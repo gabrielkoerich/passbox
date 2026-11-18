@@ -62,7 +62,9 @@ fn unwrap(reason: &str) {
         let deny = format!("{log}.deny");
         // The real helper's wording for a closed lid, where no prompt can be shown at all
         if std::fs::read_to_string(&deny).is_ok_and(|t| t.trim() == "unavailable") {
-            fail("Touch ID is unavailable on this Mac right now (the fake enclave)");
+            eprintln!("Touch ID is unavailable on this Mac right now (the fake enclave)");
+            // The real helper's status for no prompt at all
+            std::process::exit(3);
         }
         if refuse(&deny) {
             fail("denied: the fake enclave refused");

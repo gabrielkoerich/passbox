@@ -16,6 +16,21 @@ const HELPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/passbox-se"));
 #[cfg(not(target_os = "macos"))]
 const HELPER: &[u8] = &[];
 
+/// The helper's exit status when no prompt can be shown at all, as with the lid closed
+const UNAVAILABLE_EXIT: i32 = 3;
+
+/// No Touch ID prompt could be raised, so the owner refused nothing and an enrolled phone is asked
+#[derive(Debug)]
+pub(crate) struct Unavailable(pub(crate) String);
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unavailable {}
+
 /// Everything needed to open the store key on this machine, minus the fingerprint
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SeWrap {
@@ -221,9 +236,13 @@ pub(crate) fn unwrap_in_background(
             .read_to_end(&mut out)
             .and_then(|_| stderr.read_to_end(&mut err));
         let status = waited.lock().expect("helper").wait();
+        let said = || String::from_utf8_lossy(&err).trim().to_string();
         done(match (read, status) {
             (Ok(_), Ok(status)) if status.success() => Ok(out),
-            (Ok(_), Ok(_)) => Err(anyhow!("{}", String::from_utf8_lossy(&err).trim())),
+            (Ok(_), Ok(status)) if status.code() == Some(UNAVAILABLE_EXIT) => {
+                Err(Unavailable(said()).into())
+            }
+            (Ok(_), Ok(_)) => Err(anyhow!("{}", said())),
             (Err(e), _) | (_, Err(e)) => Err(anyhow!("the Secure Enclave helper broke off: {e}")),
         });
     });

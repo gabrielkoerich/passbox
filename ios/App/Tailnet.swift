@@ -1,8 +1,8 @@
-/*
- One line to the Mac's broker and one line back, over a TCP connection that Tailscale carries.
- The broker listens on the tailnet port through `tailscale serve`, which is also what tells it
- that the caller is this phone.
- */
+/**
+ * One line to the Mac's broker and one line back, over a TCP connection that Tailscale carries. The
+ * broker listens on the tailnet port through `tailscale serve`, which is also what tells it that
+ * the caller is this phone
+ **/
 
 import Foundation
 import Network

@@ -1,8 +1,8 @@
-/*
- The two boxes the phone handles. It opens the wrap the Mac made at enrollment, which holds the
- store key, and seals that key into the answer for one request. Both formats are the broker's:
- `swift/passbox-se.swift` seals the first and `src/broker/phone.rs` opens the second.
- */
+/**
+ * The two boxes the phone handles. It opens the wrap the Mac made at enrollment, which holds the
+ * store key, and seals that key into the answer for one request. Both formats are the broker's:
+ * `swift/passbox-se.swift` seals the first and `src/broker/phone.rs` opens the second
+ **/
 
 #if canImport(CryptoKit)
     import CryptoKit
@@ -51,10 +51,12 @@ public enum Wrap {
 }
 
 public enum Answer {
-    /* The box only one request's key opens: X25519 with a key made for this message, HKDF-SHA256
-     salted with both public keys and bound to the request id, then ChaCha20-Poly1305 with the id
-     as associated data. The nonce is zero because the key is used once. `ephemeral` is a
-     parameter so a test can pin the output. */
+    /**
+     * The box only one request's key opens: X25519 with a key made for this message, HKDF-SHA256
+     * salted with both public keys and bound to the request id, then ChaCha20-Poly1305 with the id
+     * as associated data. The nonce is zero because the key is used once. `ephemeral` is a
+     * parameter so a test can pin the output
+     **/
     public static func seal(
         _ plaintext: Data, to key: Data, id: String,
         with ephemeral: Curve25519.KeyAgreement.PrivateKey = .init()

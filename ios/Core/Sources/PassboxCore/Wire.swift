@@ -1,7 +1,7 @@
-/*
- The broker's protocol as the phone speaks it: one JSON line out, one JSON line back, a new
- connection each time. `docs/content/design.md` has the table this follows.
- */
+/**
+ * The broker's protocol as the phone speaks it: one JSON line out, one JSON line back, a new
+ * connection each time. `docs/content/design.md` has the table this follows
+ **/
 
 import Foundation
 
@@ -100,9 +100,12 @@ public struct Client: Sendable {
     }
 
     /// The waiting request, or nil. With `wait` the Mac holds the call open that many seconds for
-    /// one to appear, so an open app hears at once and asks rarely
-    public func pending(wait: Int = 0) async throws -> Pending? {
-        let params = wait > 0 ? [("wait", String(wait))] : []
+    /// the waiting request to differ from `seen`, so an open app hears at once and asks rarely
+    public func pending(wait: Int = 0, seen: String? = nil) async throws -> Pending? {
+        var params = wait > 0 ? [("wait", String(wait))] : []
+        if let seen {
+            params.append(("seen", seen))
+        }
         let line = try Wire.line("pending", token: token, params: params)
         let value = try Wire.value(
             of: await transport.exchange(line, timeout: TimeInterval(wait + 10)))

@@ -24,7 +24,7 @@ pub(crate) use client::{grant, list, plugin_run_remote, request, request_token};
 #[cfg(feature = "host")]
 pub(crate) use client::{phone_open, phone_test};
 #[cfg(feature = "host")]
-pub(crate) use phone::{ENROLL_SECS, PhoneWrap, Timing};
+pub(crate) use phone::{ENROLL_SECS, PhoneWrap, SUBJECT as PHONE_SUBJECT, Timing};
 #[cfg(feature = "host")]
 pub(crate) use server::{SERVE, serve};
 

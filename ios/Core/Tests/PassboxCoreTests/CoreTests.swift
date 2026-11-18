@@ -53,8 +53,10 @@ func hex(_ text: String) -> Data {
 }
 
 final class CoreTests: XCTestCase {
-    /* The same bytes are pinned in `src/broker/phone.rs`, where the broker opens them. Each side
-     checks the vector on its own CI, so neither needs the other's toolchain to prove they agree. */
+    /**
+     * The same bytes are pinned in `src/broker/phone.rs`, where the broker opens them. Each side
+     * checks the vector on its own CI, so neither needs the other's toolchain to prove they agree
+     **/
     func testAnAnswerIsSealedTheWayTheBrokerOpensIt() throws {
         let request = try Curve25519.KeyAgreement.PrivateKey(
             rawRepresentation: Data(repeating: 0x11, count: 32))
@@ -108,6 +110,7 @@ final class CoreTests: XCTestCase {
     func testNothingWaitingIsNilAndARefusalIsTheBrokersWords() async throws {
         let broker = FakeBroker([
             FakeBroker.ok(""), FakeBroker.refused("no phone is enrolled on this Mac"), "nonsense",
+            FakeBroker.ok(""),
         ])
         let client = Client(transport: broker, token: "bearer")
 
@@ -128,6 +131,11 @@ final class CoreTests: XCTestCase {
         } catch {
             XCTAssertNotNil(error as? Refused)
         }
+
+        // The request on screen goes along, so the Mac holds the call until that one changes
+        _ = try await client.pending(wait: 25, seen: "request-1")
+        XCTAssertEqual(
+            broker.sent[3]["params"] as? [[String]], [["wait", "25"], ["seen", "request-1"]])
     }
 
     /// The whole approval against a broker written here: its wrap, its request key, its opening

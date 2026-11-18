@@ -1,7 +1,7 @@
-/*
- The Settings tab: facts about the pairing, and nothing to set. The one action is forgetting the
- Mac, which is how a phone is paired again or handed on.
- */
+/**
+ * The Settings tab: facts about the pairing, and nothing to set. The one action is forgetting the
+ * Mac, which is how a phone is paired again or handed on
+ **/
 
 import SwiftUI
 

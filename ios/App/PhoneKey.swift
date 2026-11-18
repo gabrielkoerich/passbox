@@ -1,8 +1,8 @@
-/*
- The phone's key. The private half is made inside the Secure Enclave and never leaves it. What
- this app keeps is the blob the Enclave hands back, which only this phone's Enclave can use, and
- only after Face ID. That is what makes the phone a second sensor and not a second password.
- */
+/**
+ * The phone's key. The private half is made inside the Secure Enclave and never leaves it. What
+ * this app keeps is the blob the Enclave hands back, which only this phone's Enclave can use, and
+ * only after Face ID. That is what makes the phone a second sensor and not a second password
+ **/
 
 import CryptoKit
 import Foundation

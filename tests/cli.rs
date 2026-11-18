@@ -1,9 +1,4 @@
 //! Drives the built binary, so it covers what unit tests cannot: argument handling and exit codes.
-#![expect(
-    clippy::unwrap_used,
-    reason = "allow-unwrap-in-tests does not reach an integration test crate's helpers"
-)]
-
 use age::x25519::Identity;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -3739,6 +3734,11 @@ impl Paired {
             "the Mac did not name itself"
         );
         self.token = enrolled["token"].as_str().unwrap().to_string();
+        if proof == Proof::Abandon {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            return (false, said);
+        }
         if proof == Proof::Give {
             let shown = self.pending();
             assert_eq!(
@@ -3749,6 +3749,24 @@ impl Paired {
         }
         stderr.read_to_string(&mut said).unwrap();
         (child.wait().unwrap().success(), said)
+    }
+
+    /// The mask in the phone's wrap, which the phone itself never sees
+    fn mask(&self) -> Vec<u8> {
+        let wraps = self.bound.cli.path().join("wraps");
+        let wrap = std::fs::read_dir(&wraps)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("phone-")
+            })
+            .expect("a phone wrap");
+        let wrap: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(wrap).unwrap()).unwrap();
+        hex::decode(wrap["mask"].as_str().unwrap()).unwrap()
     }
 
     /// A read left running, since it waits on an approval the test then gives or withholds
@@ -3771,6 +3789,8 @@ impl Paired {
 enum Proof {
     Give,
     Withhold,
+    /// Ctrl-C on `passbox phone add` once the phone has enrolled, before the proof
+    Abandon,
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -4099,9 +4119,13 @@ fn only_the_enrolled_phone_sees_or_answers_a_request() {
         "{local}"
     );
 
-    // A box that opens to something other than this store's key
-    let other = age_key();
-    let (ephemeral, sealed) = seal_answer(shown["key"].as_str().unwrap(), id, other.as_bytes());
+    // A box that opens to something other than this store's key, masked as the phone's would be
+    let other: Vec<u8> = age_key()
+        .bytes()
+        .zip(paired.mask())
+        .map(|(a, b)| a ^ b)
+        .collect();
+    let (ephemeral, sealed) = seal_answer(shown["key"].as_str().unwrap(), id, &other);
     let wrong = paired
         .call(
             "answer",
@@ -4206,4 +4230,105 @@ fn removing_the_phone_leaves_touch_id_alone() {
 
     let log = paired.bound.audit();
     assert!(decided(&log, "<phone>", "removed"), "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_removed_phone_that_kept_its_wrap_opens_nothing() {
+    let mut paired = Paired::new("after = 0");
+    let kept = {
+        let held = paired.bound.hold();
+        let read = paired.read_later("demo/one");
+        let shown = paired.pending();
+        // The fake enclave seals nothing, so this is exactly what the phone's Enclave would open
+        let copy = shown["ciphertext"].as_str().unwrap().to_string();
+        assert!(
+            !String::from_utf8_lossy(&unbase64(&copy)).starts_with("AGE-SECRET-KEY"),
+            "the phone was handed the bare store key"
+        );
+        held.release();
+        assert_eq!(read.join().unwrap().unwrap(), "value-one");
+        copy
+    };
+
+    assert!(
+        paired
+            .bound
+            .cmd()
+            .args(["phone", "rm"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let (ok, said) = paired.add(Proof::Give);
+    assert!(ok, "{said}");
+    let _held = paired.bound.hold();
+    let _read = paired.read_later("demo/one");
+    let mut shown = paired.pending();
+    shown["ciphertext"] = serde_json::Value::String(kept);
+    let refused = paired.approve(&shown).unwrap_err();
+    assert!(refused.contains("a different key"), "{refused}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn an_interrupted_phone_add_leaves_no_phone_that_is_asked() {
+    let mut paired = Paired::unenrolled("wait = 1");
+    let (ok, said) = paired.add(Proof::Abandon);
+    assert!(!ok, "{said}");
+    // The CLI may have started the proof before it died, and then the broker settles it within `wait`
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(paired.bound.run(&["phone", "ls"], None).unwrap(), "");
+
+    paired.bound.deny("unavailable");
+    let refused = paired.bound.read("demo/one").unwrap_err();
+    assert!(
+        !refused.contains("did not answer"),
+        "an unproven phone was asked: {refused}"
+    );
+    assert_eq!(paired.call("pending", "", &[]).unwrap_or_default(), "");
+
+    paired.bound.deny("0");
+    let (ok, said) = paired.add(Proof::Give);
+    assert!(
+        ok,
+        "a new phone add did not replace the unproven one: {said}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_held_pending_call_ends_when_the_request_it_saw_is_answered() {
+    let paired = Paired::new("after = 0");
+    let held = paired.bound.hold();
+    let read = paired.read_later("demo/one");
+    let shown = paired.pending();
+    let id = shown["id"].as_str().unwrap().to_string();
+    let started = Instant::now();
+    let watcher = {
+        let paired = &paired;
+        std::thread::scope(|scope| {
+            let watching =
+                scope.spawn(|| paired.call("pending", "", &[("wait", "25"), ("seen", &id)]));
+            std::thread::sleep(Duration::from_millis(300));
+            held.release();
+            watching.join().unwrap()
+        })
+    };
+    assert_eq!(watcher.unwrap(), "");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the held call waited out its hold"
+    );
+    assert_eq!(read.join().unwrap().unwrap(), "value-one");
 }

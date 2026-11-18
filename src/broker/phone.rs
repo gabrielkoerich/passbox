@@ -26,17 +26,18 @@ const ENROLL_TRIES: u8 = 5;
 const DEFAULT_AFTER_SECS: u64 = 15;
 /// Seconds the phone has when it is the only approver, as with the lid closed
 const DEFAULT_WAIT_SECS: u64 = 60;
-/// The helper's opening words when no prompt can be shown, as `swift/passbox-se.swift` writes them
-const NO_SENSOR: &str = "Touch ID is unavailable";
+/// The longest `after` or `wait` may be, so a stray number in the config cannot overflow a deadline
+const MAX_TIMING_SECS: u64 = 86_400;
 /// The longest a phone may hold one `pending` call open, so an idle app is one connection in a while
 const MAX_HOLD_SECS: u64 = 30;
 /// What the audit log names in place of a secret for a line about the phone itself
-const SUBJECT: &str = "<phone>";
+pub(crate) const SUBJECT: &str = "<phone>";
 
 /**
  * The store key under a key in the phone's Secure Enclave, sealed the way the Mac's own wrap is.
- * Only that phone opens it, after Face ID, so the file is inert here and anywhere it is copied.
- * Deleting it is the whole of removing the phone
+ * What is sealed is the key masked with `mask`, which never leaves this file, so the phone only
+ * ever holds a masked copy. Deleting the file deletes the mask, which is the whole of removing the
+ * phone, even one that kept the ciphertext from a `pending` reply
  **/
 #[derive(Serialize, Deserialize)]
 pub(crate) struct PhoneWrap {
@@ -47,6 +48,10 @@ pub(crate) struct PhoneWrap {
     ciphertext: String,
     /// SHA-256 of the bearer the phone presents, so this file cannot be replayed as the phone
     token: String,
+    /// Hex bytes the store key is masked with, by exclusive or, before it is sealed to the phone
+    mask: String,
+    /// Set once the phone answers its test round, and no prompt asks a phone before that
+    pub(crate) proved: bool,
     added: u64,
 }
 
@@ -61,6 +66,26 @@ impl PhoneWrap {
                 None
             }
         }
+    }
+
+    /// The enrolled phone, if it has proved it can approve
+    fn approver(store: &Store) -> Option<Self> {
+        PhoneWrap::load(store).filter(|wrap| wrap.proved)
+    }
+
+    fn save(&self, store: &Store) -> Result<()> {
+        write_private(&store.phone_wrap_path(), &serde_json::to_vec(self)?)
+    }
+
+    /// The store key from what the phone opened, with this wrap's mask taken off
+    fn unmask(&self, opened: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+        let mask = Zeroizing::new(hex::decode(&self.mask).context("the phone wrap's mask")?);
+        if mask.len() != opened.len() {
+            bail!("the phone opened something the length of no store key");
+        }
+        Ok(Zeroizing::new(
+            opened.iter().zip(mask.iter()).map(|(a, b)| a ^ b).collect(),
+        ))
     }
 }
 
@@ -101,6 +126,9 @@ impl Timing {
                 .and_then(|n| u64::try_from(n).ok())
                 .with_context(|| format!("phone.{key} must be a number of seconds"))?;
             match key.as_str() {
+                "after" | "wait" if secs > MAX_TIMING_SECS => {
+                    bail!("phone.{key} is at most {MAX_TIMING_SECS} seconds")
+                }
                 "after" => timing.after = Duration::from_secs(secs),
                 "wait" if secs > 0 => timing.wait = Duration::from_secs(secs),
                 "wait" => bail!("phone.wait must be at least a second"),
@@ -211,6 +239,12 @@ fn enrolled(store: &Store, request: &Request, caller: &str) -> Result<PhoneWrap>
     Ok(wrap)
 }
 
+/// No request is waiting any more, which also ends a `pending` call held open on the old one
+fn withdraw(phones: &Phones) {
+    *phones.pending.lock().expect("pending") = None;
+    phones.arrived.notify_all();
+}
+
 /// Every phone step, none of which waits on the broker's lock except enrolling, which prompts
 pub(super) fn handle(
     shared: &Shared,
@@ -234,11 +268,14 @@ pub(super) fn handle(
 
 /// `passbox phone add` opens the window and shows the code this returns
 fn open(shared: &Shared) -> Result<String> {
-    if let Some(wrap) = PhoneWrap::load(&shared.store) {
-        bail!(
+    match PhoneWrap::load(&shared.store) {
+        Some(wrap) if wrap.proved => bail!(
             "{} is already enrolled, remove it first with `passbox phone rm`",
             wrap.node
-        );
+        ),
+        // Left by a `phone add` that ended before the proof. It never approved anything
+        Some(_) => std::fs::remove_file(shared.store.phone_wrap_path())?,
+        None => {}
     }
     let code = format!("{:06}", rand::random::<u32>() % 1_000_000);
     *shared.phones.enrolling.lock().expect("enrolling") = Some(Enrolling {
@@ -290,8 +327,9 @@ fn enroll(shared: &Shared, request: &Request, caller: &str) -> Result<String> {
 
 /**
  * What the phone shows and what it needs to answer, or nothing when no prompt is waiting. With
- * `wait` the call stays open that many seconds for a request to appear, so an open app hears of
- * one at once without asking every second, which would also fill the broker's log
+ * `wait` the call stays open that many seconds for the waiting request to differ from `seen`, the
+ * id the app has on screen, so an open app hears of a new request or a withdrawn one at once
+ * without asking every second, which would also fill the broker's log
  **/
 fn pending(shared: &Shared, request: &Request, caller: &str) -> Result<String> {
     let wrap = enrolled(&shared.store, request, caller)?;
@@ -301,13 +339,14 @@ fn pending(shared: &Shared, request: &Request, caller: &str) -> Result<String> {
             .context("wait is not a number of seconds")?,
         Err(_) => 0,
     };
+    let seen = param(request, "seen").ok();
     let (slot, _) = shared
         .phones
         .arrived
         .wait_timeout_while(
             shared.phones.pending.lock().expect("pending"),
             Duration::from_secs(hold.min(MAX_HOLD_SECS)),
-            |slot| slot.is_none(),
+            |slot| slot.as_ref().map(|w| w.id.as_str()) == seen,
         )
         .expect("pending");
     let Some(waiting) = slot.as_ref() else {
@@ -340,11 +379,12 @@ fn answer(shared: &Shared, request: &Request, caller: &str) -> Result<String> {
         let ephemeral =
             se::unbase64(param(request, "ephemeral")?).context("ephemeral is not base64")?;
         let sealed = se::unbase64(param(request, "sealed")?).context("sealed is not base64")?;
-        let plain = open_box(&waiting.secret, &waiting.id, &ephemeral, &sealed)?;
-        Event::Phone(Ok(shared.store.key_from_phone(&plain)?))
+        let opened = open_box(&waiting.secret, &waiting.id, &ephemeral, &sealed)?;
+        Event::Phone(Ok(shared.store.key_from_phone(&wrap.unmask(&opened)?)?))
     };
     // Taken only now, so an answer that does not open leaves the request up for a real one
     let waiting = slot.take().ok_or_else(gone)?;
+    shared.phones.arrived.notify_all();
     waiting.answer.send(event).map_err(|_| gone())?;
     Ok("ok".to_string())
 }
@@ -408,7 +448,7 @@ fn wait(
         match event {
             Ok(Event::Mac(Ok(key))) => return Ok((key, None)),
             Ok(Event::Phone(Ok(key))) => return Ok((key, Some(phone.node.clone()))),
-            Ok(Event::Mac(Err(e))) if e.to_string().starts_with(NO_SENSOR) => {
+            Ok(Event::Mac(Err(e))) if e.downcast_ref::<se::Unavailable>().is_some() => {
                 ask(phones);
                 asked = true;
                 no_sensor = Some(e);
@@ -439,7 +479,7 @@ pub(super) fn unlock(
     phones: &Phones,
     reason: &str,
 ) -> Result<(x25519::Identity, Option<String>)> {
-    let Some(phone) = PhoneWrap::load(store) else {
+    let Some(phone) = PhoneWrap::approver(store) else {
         return Ok((store.unlock_with_se(reason)?, None));
     };
     // A typo in config.toml must not take Touch ID down with it, so the defaults stand in
@@ -449,9 +489,16 @@ pub(super) fn unlock(
     });
     let (sender, answers) = channel();
     let mac = sender.clone();
-    let prompt = store.unlock_with_se_in_background(reason, move |outcome| {
-        let _ = mac.send(Event::Mac(outcome));
-    })?;
+    let prompt = store
+        .unlock_with_se_in_background(reason, move |outcome| {
+            let _ = mac.send(Event::Mac(outcome));
+        })
+        // A Mac that cannot start the prompt at all is one the phone answers for, as with the lid shut
+        .map_err(|e| {
+            let unavailable = se::Unavailable(format!("{e:#}"));
+            let _ = sender.send(Event::Mac(Err(unavailable.into())));
+        })
+        .ok();
     let outcome = wait(
         phones,
         &phone,
@@ -461,8 +508,10 @@ pub(super) fn unlock(
         Some(timing.after),
     );
     // Whichever lost is taken down, so neither a dialog nor a request outlives the decision
-    prompt.cancel();
-    *phones.pending.lock().expect("pending") = None;
+    if let Some(prompt) = prompt {
+        prompt.cancel();
+    }
+    withdraw(phones);
     outcome
 }
 
@@ -480,9 +529,19 @@ impl Broker {
         }
 
         let mut text = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
-        let sealed = se::seal_to(public_key, text.as_bytes());
+        let mask = Zeroizing::new(
+            (0..text.len())
+                .map(|_| rand::random::<u8>())
+                .collect::<Vec<_>>(),
+        );
+        let masked = Zeroizing::new(
+            text.bytes()
+                .zip(mask.iter())
+                .map(|(a, b)| a ^ b)
+                .collect::<Vec<_>>(),
+        );
         text.zeroize();
-        let sealed = sealed?;
+        let sealed = se::seal_to(public_key, &masked)?;
 
         let token = hex::encode(rand::random::<[u8; 32]>());
         let wrap = PhoneWrap {
@@ -491,10 +550,16 @@ impl Broker {
             ephemeral: sealed.ephemeral,
             ciphertext: sealed.ciphertext,
             token: project::hash(token.as_bytes()),
+            mask: hex::encode(&*mask),
+            proved: false,
             added: store::now(),
         };
-        write_private(&self.store.phone_wrap_path(), &serde_json::to_vec(&wrap)?)?;
-        self.audit(&key, caller, SUBJECT, "enrolled", caller)?;
+        wrap.save(&self.store)?;
+        // A wrap with no audit line would be an approver nobody can trace, and no phone holds its bearer
+        if let Err(e) = self.audit(&key, caller, SUBJECT, "enrolled", caller) {
+            let _ = std::fs::remove_file(self.store.phone_wrap_path());
+            return Err(e);
+        }
         // The names are for the phone to show its owner. Only the bearer is ever sent back
         Ok(serde_json::json!({
             "token": token,
@@ -505,9 +570,10 @@ impl Broker {
     }
 
     /// One round with the phone alone, so a pairing that cannot approve fails while the owner is
-    /// still at the Mac. The key it returns is checked and dropped, it opens nothing here
+    /// still at the Mac. The key it returns is checked and dropped, it opens nothing here. The
+    /// broker settles the outcome itself, so a `phone add` that is interrupted changes nothing
     fn test_phone(&mut self) -> Result<String> {
-        let phone = PhoneWrap::load(&self.store).context("no phone is enrolled on this Mac")?;
+        let mut phone = PhoneWrap::load(&self.store).context("no phone is enrolled on this Mac")?;
         let timing = Timing::read(&self.store)?;
         let (sender, answers) = channel();
         let outcome = wait(
@@ -518,8 +584,26 @@ impl Broker {
             timing,
             None,
         );
-        *self.phones.pending.lock().expect("pending") = None;
-        outcome.map(|_| phone.node)
+        withdraw(&self.phones);
+        if let Err(e) = outcome {
+            std::fs::remove_file(self.store.phone_wrap_path())?;
+            append_audit_to(
+                &self.store,
+                &self.store.recipient()?,
+                &Entry {
+                    agent: &phone.node,
+                    secret: SUBJECT,
+                    decision: "removed",
+                    caller: &phone.node,
+                    args: "it did not prove it can approve",
+                    ..Entry::default()
+                },
+            )?;
+            return Err(e);
+        }
+        phone.proved = true;
+        phone.save(&self.store)?;
+        Ok(phone.node)
     }
 
     /// The line that says a prompt was answered on the phone, ahead of whatever it released
@@ -595,6 +679,27 @@ mod tests {
      * and the broker are each checked against something neither of them wrote
      **/
     #[test]
+    fn a_wrap_unmasks_only_what_its_own_mask_covers() {
+        let wrap = PhoneWrap {
+            node: String::new(),
+            public_key: String::new(),
+            ephemeral: String::new(),
+            ciphertext: String::new(),
+            token: String::new(),
+            mask: hex::encode([0x0f, 0xf0, 0xaa]),
+            proved: true,
+            added: 0,
+        };
+        assert_eq!(
+            &wrap
+                .unmask(&[0x0f ^ b'a', 0xf0 ^ b'b', 0xaa ^ b'c'])
+                .unwrap()[..],
+            b"abc"
+        );
+        assert!(wrap.unmask(b"ab").is_err());
+    }
+
+    #[test]
     fn the_apps_answer_opens() {
         let request = StaticSecret::from([0x11; 32]);
         let ephemeral =
@@ -620,5 +725,8 @@ mod tests {
         assert!(Timing::parse("[phone]\nwait = 0\n").is_err());
         assert!(Timing::parse("[phone]\nafter = \"soon\"\n").is_err());
         assert!(Timing::parse("[phone]\nsoon = 1\n").is_err());
+        assert!(Timing::parse("[phone]\nafter = 86400\nwait = 86400\n").is_ok());
+        assert!(Timing::parse("[phone]\nafter = 9223372036854775807\n").is_err());
+        assert!(Timing::parse("[phone]\nwait = 86401\n").is_err());
     }
 }

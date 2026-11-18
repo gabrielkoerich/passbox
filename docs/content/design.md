@@ -96,13 +96,17 @@ Cost: the broker holds the key in memory while it runs, so a grant can release i
 
 `passbox phone add` enrolls one iPhone. After that, a Touch ID prompt nobody has answered for 15 seconds is also shown on the phone, and whichever answers first decides. With the lid closed no prompt can be raised, so the phone is asked at once.
 
-Status: the Mac side is built and tested against a phone written in the tests. The app is in `ios/`: its protocol and both boxes are tested against the same bytes the broker is, and its screens, Enclave key and network code have not yet run on a device. The push that wakes it is not built, so a request reaches the phone only while the app is open.
+Status: the Mac side is built and tested against a phone written in the tests. The app is in `ios/`: its protocol and both boxes are tested against the same bytes the broker is, and it builds and opens in the simulator. It has not yet run on a device. The push that wakes it is not built, so a request reaches the phone only while the app is open.
 
 **The phone is one more Enclave wrap.** The store key is sealed to a P-256 key the phone makes in its own Secure Enclave, gated by Face ID, with the same ECIES the Mac's wrap uses. So the phone cannot say yes, it can only open the store key, and a finger or a face on a sensor is still the one thing that releases anything.
 
+What is sealed to the phone is the store key masked, by exclusive or, with random bytes kept in the Mac's wrap file. The phone opens and returns the masked copy and the broker takes the mask off, so the phone never holds the store key itself. `passbox phone rm` deletes the file and the mask with it, so a copy the phone kept from any `pending` reply opens nothing afterwards.
+
+Rejected: rotating the store key on removal. It re-encrypts every secret, and the old ciphertexts in git and in backups stay under the old key anyway.
+
 Rejected: a wrap the broker opens when the phone sends a signed yes. The key would then sit behind software on the Mac, and the rule that nothing is read without a sensor would hold only as long as that software did.
 
-**Enrollment** takes a code and a fingerprint. `phone add` opens a two minute window and prints six digits. The phone dials the broker over the tailnet with the code and its public key, and the Mac raises `passbox is trying to let <node> approve reads from now on`, with the node named by `tailscale whois`. The fingerprint opens the store key, the broker seals it to the phone's key and writes `wraps/phone-<mac>.json`. The phone gets back a random bearer, of which the file keeps only the hash. One approval on the phone that releases nothing then proves the pairing, and a phone that fails it is removed.
+**Enrollment** takes a code and a fingerprint. `phone add` opens a two minute window and prints six digits. The phone dials the broker over the tailnet with the code and its public key, and the Mac raises `passbox is trying to let <node> approve reads from now on`, with the node named by `tailscale whois`. The fingerprint opens the store key, the broker seals it to the phone's key and writes `wraps/phone-<mac>.json`. The phone gets back a random bearer, of which the file keeps only the hash. One approval on the phone that releases nothing then proves the pairing. The broker runs that round and removes a phone that fails it, and no prompt asks a phone before it has passed, so a `phone add` cut short leaves nothing that approves. A fingerprint given after the window has closed is refused.
 
 The code is single use, and five wrong ones close the window. Cost: six digits and a fingerprint are all that stand between a tailnet node and approver status, so the prompt wording is what the owner has to read.
 
@@ -110,9 +114,11 @@ The code is single use, and five wrong ones close the window. Cost: six digits a
 
 **Every call from the phone is checked twice**: the node `tailscale whois` names must be the one that enrolled, and it must present the bearer. The first is what the control plane vouches for. The second is what a local user forging a PROXY header on loopback does not have. Neither gets past the store key check, which only the phone's Enclave can satisfy.
 
-An open app holds one `pending` call open with `wait`, and the broker answers it the moment a request appears. Rejected: asking every second or two, which is a `tailscale whois` and two log lines on the Mac each time, for as long as the app is on screen.
+An open app holds one `pending` call open with `wait` and `seen`, the id it has on screen, and the broker answers it the moment the waiting request differs from that one: a new request appears, or the one on screen is answered or withdrawn. Rejected: asking every second or two, which is a `tailscale whois` and two log lines on the Mac each time, for as long as the app is on screen.
 
-The first answer wins. A release on the phone kills the helper holding the Touch ID dialog, and a fingerprint on the Mac withdraws the request from the phone. A refusal on either ends both. With a dialog on screen the request stays on the phone as long as the dialog stays up, since it is the same question. With no dialog, the phone has 60 seconds, because nothing on screen says a request is hanging. `[phone]` in `config.toml` sets both, as `after` and `wait` in seconds.
+The first answer wins. A release on the phone kills the helper holding the Touch ID dialog, and a fingerprint on the Mac withdraws the request from the phone. A refusal on either ends both. With a dialog on screen the request stays on the phone as long as the dialog stays up, since it is the same question. With no dialog, the phone has 60 seconds, because nothing on screen says a request is hanging. `[phone]` in `config.toml` sets both, as `after` and `wait` in seconds, at most a day each. A `[phone]` table the broker cannot read leaves the defaults in place for reads, so a typo does not stop Touch ID.
+
+The helper exits with status 3 when it cannot show a prompt: the sensor is unreachable, or the system keeps dismissing the prompt, as when the lid closes on it. The broker asks the phone at once on that status, and also when the helper cannot start. Rejected: matching the helper's message, which a reworded sentence would break without a test noticing.
 
 The audit log gets `approved on phone` with the prompt's sentence, ahead of the usual line for what was released, and `enrolled` and `removed` for the phone itself.
 
@@ -121,7 +127,7 @@ Wire format, one JSON line per connection to the tailnet port, replies as every 
 | `action` | Sends | Gets |
 |---|---|---|
 | `enroll` | `params`: `code`, `public_key` as base64 X9.63 | JSON with `token`, the bearer, and `mac` and `phone`, the two names to show |
-| `pending` | `token`, and optionally `params`: `wait` in seconds, at most 30 | empty, or JSON with `id`, `reason`, `since`, `key`, and the wrap's `ephemeral` and `ciphertext` |
+| `pending` | `token`, and optionally `params`: `wait` in seconds, at most 30, and `seen`, the id on screen | empty, or JSON with `id`, `reason`, `since`, `key`, and the wrap's `ephemeral` and `ciphertext` |
 | `answer` | `token`, `name` as the id, `params`: `ephemeral` and `sealed` in base64, or `deny` | `ok` |
 
 The app keeps the protocol and the boxes in a Swift package with no screen in it, which `swift test` runs on Linux with swift-crypto in place of CryptoKit. One sealed answer is pinned byte for byte in that package and in the broker's tests, and the bytes came from Python's `cryptography`. So the two sides are never tested against each other, each is tested against a third, and neither CI needs the other's toolchain.

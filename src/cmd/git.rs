@@ -5,18 +5,21 @@ use crate::store::Store;
 use crate::sync;
 use anyhow::{Context, Result};
 
+/// A phone's wrap is as machine bound as the Enclave's own, it names the node that dials this Mac
+const PHONE_WRAPS: &str = "wraps/phone-*.json";
+
 /* git carries the encrypted secrets and nothing that opens them. The Enclave wraps are useless
 off the Mac that made them, so they stay out. The recovery wrap only exists once sync is on, and
 then it belongs in the backup, because without it the backup cannot be restored anywhere. */
-/// A phone's wrap is as machine bound as the Enclave's own, it names the node that dials this Mac
-const PHONE_WRAPS: &str = "wraps/phone-*.json";
 
 pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
     let path = store.dir.join(".gitignore");
     if !path.exists() {
         std::fs::write(
             &path,
-            "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\nwraps/phone-*.json\ngrants-*.age\nwindows-*.json\n",
+            format!(
+                "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\n{PHONE_WRAPS}\ngrants-*.age\nwindows-*.json\n"
+            ),
         )?;
         return Ok(());
     }

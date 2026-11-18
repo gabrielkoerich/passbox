@@ -1,8 +1,8 @@
-/*
- What the phone remembers about its Mac, kept as one keychain item that never leaves this device
- and is not in a backup. The bearer and the key blob are both useless anywhere else: the blob
- needs this phone's Enclave, and the Mac only takes the bearer from this phone's tailnet node.
- */
+/**
+ * What the phone remembers about its Mac, kept as one keychain item that never leaves this device
+ * and is not in a backup. The bearer and the key blob are both useless anywhere else: the blob
+ * needs this phone's Enclave, and the Mac only takes the bearer from this phone's tailnet node
+ **/
 
 import Foundation
 import Security
