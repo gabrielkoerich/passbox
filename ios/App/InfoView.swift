@@ -24,6 +24,13 @@ struct InfoView: View {
                         LabeledContent(
                             "Paired", value: pairing.added.formatted(date: .abbreviated, time: .shortened))
                         LabeledContent("Key", value: "Secure Enclave, behind Face ID")
+                        LabeledContent(
+                            "Notifications", value: pairing.relay == nil ? "Off" : "On")
+                        if let trouble = model.notificationTrouble {
+                            Text(trouble)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     Section("Connection") {

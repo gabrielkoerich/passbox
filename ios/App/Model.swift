@@ -8,6 +8,7 @@
 import Foundation
 import PassboxCore
 import SwiftUI
+import UserNotifications
 
 @MainActor
 final class Model: ObservableObject {
@@ -23,12 +24,16 @@ final class Model: ObservableObject {
     @Published private(set) var lastContact: Date?
     /// The key's code while a pairing waits on the Mac, to compare with the Mac's prompt
     @Published private(set) var fingerprint: String?
+    /// Why notifications are not set up, when the relay or the Mac refused
+    @Published private(set) var notificationTrouble: String?
     /// Set for a moment after an approval, so the screen can say so
     @Published private(set) var approved = false
 
     private var watcher: Task<Void, Never>?
     /// The request this phone last answered, which a poll already on its way may still carry
     private var answered: String?
+    /// The device token iOS gave this launch, kept until there is a Mac to hand it to
+    private var deviceToken: String?
 
     init() {
         pairing = Pairing.load()
@@ -144,6 +149,9 @@ final class Model: ObservableObject {
             pairing = paired
             // The Mac asks for one approval straight away, to prove the pairing
             start()
+            if let deviceToken {
+                await registered(deviceToken)
+            }
         } catch {
             trouble = error.localizedDescription
         }
@@ -157,6 +165,38 @@ final class Model: ObservableObject {
         request = nil
         trouble = nil
         lastContact = nil
+    }
+
+    // MARK: Notifications
+
+    /// Asks once for permission, then for a device token, which arrives at `registered`
+    func askForNotifications() async {
+        let center = UNUserNotificationCenter.current()
+        guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else {
+            return
+        }
+
+        UIApplication.shared.registerForRemoteNotifications()
+    }
+
+    /// Registers the token with the relay and hands the Mac what the relay gave back. A failure
+    /// leaves the app as it was, and it tries again on the next launch
+    func registered(_ token: String) async {
+        deviceToken = token
+        guard var paired = pairing else {
+            return
+        }
+
+        do {
+            let registration = try await Relay.register(token: token, known: paired.relay)
+            try await client(paired).notify(
+                relay: Relay.address, id: registration.id, secret: registration.secret)
+            paired.relay = registration
+            try paired.save()
+            pairing = paired
+        } catch {
+            notificationTrouble = error.localizedDescription
+        }
     }
 
     // MARK: Answering

@@ -19,6 +19,11 @@ targets:
       - App
     dependencies:
       - package: PassboxCore
+    # Push lets the relay wake the app. Xcode swaps development for production when it exports
+    entitlements:
+      path: App/Passbox.entitlements
+      properties:
+        aps-environment: development
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gabrielkoerich.passbox.signer

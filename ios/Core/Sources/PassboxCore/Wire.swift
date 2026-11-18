@@ -138,6 +138,14 @@ public struct Client: Sendable {
         _ = try Wire.value(of: await transport.exchange(line, timeout: 15))
     }
 
+    /// Tells the Mac where to ask for a notification: the relay's address, and the id and secret the
+    /// relay gave this phone. The Mac sends the relay those two and nothing about the request
+    public func notify(relay: String, id: String, secret: String) async throws {
+        let line = try Wire.line(
+            "notify", token: token, params: [("relay", relay), ("id", id), ("secret", secret)])
+        _ = try Wire.value(of: await transport.exchange(line, timeout: 15))
+    }
+
     public func deny(_ pending: Pending) async throws {
         let line = try Wire.line(
             "answer", name: pending.id, token: token, params: [("deny", "1")])

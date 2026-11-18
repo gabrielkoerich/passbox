@@ -9,6 +9,7 @@ import SwiftUI
 
 @main
 struct PassboxApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = Model()
     @Environment(\.scenePhase) private var phase
 
@@ -16,7 +17,13 @@ struct PassboxApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(model)
-                .onAppear { model.start() }
+                .onAppear {
+                    model.start()
+                    delegate.onToken = { token in
+                        Task { await model.registered(token) }
+                    }
+                    Task { await model.askForNotifications() }
+                }
         }
         // The Mac is asked only while the app is on screen. iOS gives it no way to listen otherwise
         .onChange(of: phase) { _, now in

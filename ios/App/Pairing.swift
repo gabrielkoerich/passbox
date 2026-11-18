@@ -17,6 +17,8 @@ struct Pairing: Codable, Equatable {
     var token: String
     var keyBlob: Data
     var added: Date
+    /// The notification relay's id and secret for this phone, once it has registered
+    var relay: Relay.Registration?
 
     private static let query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,

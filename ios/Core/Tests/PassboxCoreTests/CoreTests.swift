@@ -113,6 +113,17 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(Fingerprint.of(key), "EE 5C 83")
     }
 
+    func testNotifyHandsTheMacTheRelaysIdAndSecret() async throws {
+        let broker = FakeBroker([FakeBroker.ok("ok")])
+        let client = Client(transport: broker, token: "bearer")
+        try await client.notify(relay: "https://relay.example", id: "i", secret: "s")
+        XCTAssertEqual(broker.sent[0]["action"] as? String, "notify")
+        XCTAssertEqual(broker.sent[0]["token"] as? String, "bearer")
+        XCTAssertEqual(
+            broker.sent[0]["params"] as? [[String]],
+            [["relay", "https://relay.example"], ["id", "i"], ["secret", "s"]])
+    }
+
     func testNothingWaitingIsNilAndARefusalIsTheBrokersWords() async throws {
         let broker = FakeBroker([
             FakeBroker.ok(""), FakeBroker.refused("no phone is enrolled on this Mac"), "nonsense",
