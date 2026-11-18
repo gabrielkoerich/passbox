@@ -8,9 +8,7 @@ fn store_dir() -> PathBuf {
     if let Some(set) = std::env::var_os("PASSWORD_STORE_DIR") {
         return PathBuf::from(set);
     }
-    std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join(".password-store"))
-        .unwrap_or_default()
+    std::env::var_os("HOME").map_or_default(|h| PathBuf::from(h).join(".password-store"))
 }
 
 /// Entry names are paths under the store with the `.gpg` taken off, which is how pass names them

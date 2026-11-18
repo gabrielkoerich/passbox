@@ -120,8 +120,7 @@ impl Manifest {
             let hint = self
                 .install
                 .as_deref()
-                .map(|i| format!("\ninstall it with: {i}"))
-                .unwrap_or_default();
+                .map_or_default(|i| format!("\ninstall it with: {i}"));
             bail!(
                 "the {} plugin needs `{command}`, which is not on PATH{hint}",
                 self.name
@@ -151,7 +150,7 @@ impl Manifest {
         args: &HashMap<String, String>,
     ) -> String {
         let mut text = format!("run plugin:{}.{action}", self.name);
-        let shown = self.tool(action).map(|t| t.shown(args)).unwrap_or_default();
+        let shown = self.tool(action).map_or_default(|t| t.shown(args));
         if !shown.is_empty() {
             text.push(' ');
             text.push_str(&shown);
@@ -1026,7 +1025,7 @@ mod tests {
             match refused {
                 None => assert!(result.is_ok(), "{plugin}.{action}: {:?}", result.err()),
                 Some(why) => {
-                    let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+                    let err = result.err().map_or_default(|e| e.to_string());
                     assert!(err.contains(why), "{plugin}.{action} {pairs:?}: {err}");
                 }
             }
