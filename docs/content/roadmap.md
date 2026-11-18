@@ -217,7 +217,7 @@ Headscale, the open source control server, is worth a look later. It replaces th
 
 A request arriving over SSH cannot raise the prompt itself. Measured on 2026-09-24: a process spawned by SSH gets `canEvaluatePolicy` false with `systemCancel`, and so does a launchd agent in the Aqua session when the lid is shut. Whoever calls `evaluatePolicy` has to be somewhere a sensor is reachable.
 
-So the broker runs as a LaunchAgent in the host's login session, through `brew services start passbox` or a plist of your own. A local command still spawns one on demand when none is running, and one spawned inside an SSH session cannot ask anybody anything.
+So the broker runs as a LaunchAgent in the host's login session, through `brew services start passbox`. A local command still spawns one on demand when none is running, and one spawned inside an SSH session cannot ask anybody anything.
 
 This is the one hard constraint the remote design adds.
 

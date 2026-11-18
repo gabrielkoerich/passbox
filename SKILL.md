@@ -176,9 +176,7 @@ passbox get github/token              # prompt appears on the Mac
 
 Three things have to be true on the Mac, and each fails silently in its own way:
 
-**The broker must be a LaunchAgent** in the login session. One started by an incoming connection blocks inside `evaluatePolicy` forever rather than prompting. `brew services start passbox` sets one up, without sudo.
-
-**Give that LaunchAgent a PATH.** It gets a minimal one, `tailscale` is not on it, and the broker starts with no tailnet listener and says nothing. The Homebrew service sets one that finds `tailscale`, a plist you write yourself has to set it.
+**The broker must be a LaunchAgent** in the login session. One started by an incoming connection blocks inside `evaluatePolicy` forever rather than prompting. `brew services start passbox` sets one up, without sudo. It is the only supported way: a second LaunchAgent beside it splits local commands and remote clients between two brokers.
 
 **Expose it with `tailscale serve`, not by binding the tailnet address.** macOS runs Tailscale as a network extension; a socket bound to the 100.x address accepts the connection and then fails the first read with `ENOTCONN`.
 

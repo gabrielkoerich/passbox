@@ -661,44 +661,14 @@ Verified from a Raspberry Pi on a LAN and a fly.io machine in another country, b
 
 The broker has to be **already running, in your login session**. One started by an incoming connection cannot raise a Touch ID prompt: whoever calls `evaluatePolicy` has to be somewhere a sensor is reachable. A LaunchAgent is how you get that.
 
-A Homebrew install ships one. Start it as your user, not with sudo, since a sudo service has no login session:
+Start the Homebrew service as your user, not with sudo, since a sudo service has no login session. Then forward the tailnet port to the broker:
 
 ```bash
 brew services start passbox
-```
-
-For a build from source, write `~/Library/LaunchAgents/com.you.passbox.broker.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.you.passbox.broker</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/opt/homebrew/bin/passbox</string>
-    <string>broker</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
-  </dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardErrorPath</key><string>/tmp/passbox-broker.log</string>
-</dict>
-</plist>
-```
-
-A LaunchAgent gets a minimal `PATH` without `/usr/local/bin` or `/opt/homebrew/bin`. With the Tailscale app in `/Applications` the broker uses the app's own binary and needs nothing more. A `tailscale` installed some other way, such as from Homebrew, has to be on the `PATH` the plist sets, or the broker starts with no tailnet listener.
-
-Load it, then forward the tailnet port to the broker. The `serve` step applies to either kind of LaunchAgent:
-
-```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.you.passbox.broker.plist
 tailscale serve --bg --proxy-protocol 1 --tcp 8787 tcp://127.0.0.1:8787
 ```
+
+The service is the one way to keep the broker running. Do not add a LaunchAgent of your own beside it: launchd keeps both alive, and the second to start takes the socket while the first keeps the tailnet port, so local commands and remote clients reach different brokers. A build from source has no service, and its broker starts on demand with the first command that needs it.
 
 With only the Tailscale app and no `tailscale` command, run the same line as `/Applications/Tailscale.app/Contents/MacOS/Tailscale serve ...`. passbox prints it that way when it finds no `tailscale` on `PATH`.
 
