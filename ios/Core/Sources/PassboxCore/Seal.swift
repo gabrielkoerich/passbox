@@ -21,6 +21,15 @@ public protocol Agreement {
 
 extension P256.KeyAgreement.PrivateKey: Agreement {}
 
+/// The code the app shows while it pairs, and the Mac's prompt shows too: the first three bytes of
+/// the public key's SHA-256. A key a local process sent the Mac in this phone's name has another
+public enum Fingerprint {
+    public static func of(_ publicKey: Data) -> String {
+        SHA256.hash(data: publicKey).prefix(3).map { String(format: "%02X", $0) }
+            .joined(separator: " ")
+    }
+}
+
 public enum Wrap {
     static let info = Data("passbox-se-v1".utf8)
 

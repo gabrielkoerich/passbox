@@ -107,6 +107,12 @@ final class CoreTests: XCTestCase {
             sent["params"] as? [[String]], [["code", "123456"], ["public_key", "BAcH"]])
     }
 
+    /// The same key and code are pinned in `src/broker/phone.rs`, so the two screens agree
+    func testThePairingCodeIsTheFirstThreeBytesOfTheKeysHash() {
+        let key = Data([4] + [UInt8](repeating: 7, count: 64))
+        XCTAssertEqual(Fingerprint.of(key), "EE 5C 83")
+    }
+
     func testNothingWaitingIsNilAndARefusalIsTheBrokersWords() async throws {
         let broker = FakeBroker([
             FakeBroker.ok(""), FakeBroker.refused("no phone is enrolled on this Mac"), "nonsense",

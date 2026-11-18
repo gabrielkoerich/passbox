@@ -211,7 +211,21 @@ private struct PairView: View {
             .opacity(host.isEmpty || code.count < 6 ? 0.5 : 1)
             .padding(.top, 6)
 
-            if let trouble = model.trouble {
+            if let fingerprint = model.fingerprint {
+                VStack(spacing: 6) {
+                    Text("Touch the sensor only if the Mac's prompt shows")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text(fingerprint)
+                        .font(.title.monospaced().bold())
+                        .foregroundStyle(.white)
+                    Text("Any other key means something else is pairing. Press Deny on the Mac.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 8)
+            } else if let trouble = model.trouble {
                 Text(trouble)
                     .font(.footnote)
                     .foregroundStyle(.red)

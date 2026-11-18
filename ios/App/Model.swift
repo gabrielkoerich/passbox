@@ -21,6 +21,8 @@ final class Model: ObservableObject {
     @Published private(set) var trouble: String?
     /// When the Mac last answered, and nil while it has not
     @Published private(set) var lastContact: Date?
+    /// The key's code while a pairing waits on the Mac, to compare with the Mac's prompt
+    @Published private(set) var fingerprint: String?
     /// Set for a moment after an approval, so the screen can say so
     @Published private(set) var approved = false
 
@@ -93,9 +95,13 @@ final class Model: ObservableObject {
         }
         busy = true
         trouble = nil
-        defer { busy = false }
+        defer {
+            busy = false
+            fingerprint = nil
+        }
         do {
             let key = try PhoneKey.make()
+            fingerprint = Fingerprint.of(key.publicKey)
             let enrolled = try await Client(transport: Tailnet(host: host))
                 .enroll(code: code, publicKey: key.publicKey)
             let paired = Pairing(

@@ -31,7 +31,7 @@ On the Mac, with the broker running as a service and the tailnet port exposed, a
 passbox phone add
 ```
 
-It prints the Mac's tailnet address and a six digit code. Enter both here, press Pair, and touch the sensor on the Mac when it asks to let the phone approve reads. The Mac then sends one test request, which the phone approves with Face ID. After that the pairing is in use.
+It prints the Mac's tailnet address and a six digit code. Enter both here and press Pair. The phone then shows a three byte key, such as `EE 5C 83`. Touch the sensor on the Mac only if its prompt shows the same key, and press Deny if it shows another. The Mac then sends one test request, which the phone approves with Face ID. After that the pairing is in use.
 
 Tailscale has to be on, on both.
 

@@ -11,7 +11,7 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -209,6 +209,15 @@ fn open_box(
         .map_err(|_| anyhow!("the answer does not open, it was sealed for another request"))
 }
 
+/// The code the app shows while it pairs, so the owner can tell its key from one a local process sent
+fn fingerprint(public_key: &[u8]) -> String {
+    Sha256::digest(public_key)[..3]
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn param<'a>(request: &'a Request, key: &str) -> Result<&'a str> {
     request
         .params
@@ -315,14 +324,15 @@ fn enroll(shared: &Shared, request: &Request, caller: &str) -> Result<String> {
 
     let public_key = param(request, "public_key")?;
     // An uncompressed P-256 point, the form the Enclave hands out and the helper seals to
-    if !se::unbase64(public_key).is_some_and(|raw| raw.len() == 65 && raw[0] == 4) {
+    let Some(raw) = se::unbase64(public_key).filter(|raw| raw.len() == 65 && raw[0] == 4) else {
         bail!("the public key is not an uncompressed P-256 point");
-    }
-    shared
-        .broker
-        .lock()
-        .expect("broker")
-        .enroll_phone(caller, public_key, until)
+    };
+    shared.broker.lock().expect("broker").enroll_phone(
+        caller,
+        public_key,
+        &fingerprint(&raw),
+        until,
+    )
 }
 
 /**
@@ -517,10 +527,19 @@ pub(super) fn unlock(
 
 impl Broker {
     /// Touch ID on the Mac and never the phone, since this is what makes a phone an approver
-    fn enroll_phone(&mut self, caller: &str, public_key: &str, until: u64) -> Result<String> {
+    fn enroll_phone(
+        &mut self,
+        caller: &str,
+        public_key: &str,
+        code: &str,
+        until: u64,
+    ) -> Result<String> {
+        // Anything on this Mac can forge the caller's name on loopback, but not the key the phone shows
         let key = self
             .store
-            .unlock_with_se(&format!("let {caller} approve reads from now on"))
+            .unlock_with_se(&format!(
+                "let {caller} with key {code} approve reads from now on"
+            ))
             .map_err(|e| self.refused(caller, &[SUBJECT], e, caller))?;
         // `passbox phone add` has given up by now, so nothing would run the proof or remove a failure
         if store::now() >= until {
@@ -678,6 +697,13 @@ mod tests {
      * `ios/Core/Tests`. They came from a third implementation, Python's `cryptography`, so the app
      * and the broker are each checked against something neither of them wrote
      **/
+    /// The same key and code are pinned in `ios/Core/Tests`, so the two screens agree
+    #[test]
+    fn the_pairing_code_is_the_first_three_bytes_of_the_keys_hash() {
+        let key = [&[4u8][..], &[7u8; 64][..]].concat();
+        assert_eq!(fingerprint(&key), "EE 5C 83");
+    }
+
     #[test]
     fn a_wrap_unmasks_only_what_its_own_mask_covers() {
         let wrap = PhoneWrap {

@@ -3857,7 +3857,9 @@ fn a_phone_enrolls_with_the_code_a_fingerprint_and_a_proof() {
     assert!(said.contains(&format!("{PHONE} can approve")), "{said}");
     assert_eq!(
         paired.bound.prompts(),
-        [format!("let {PHONE} approve reads from now on")]
+        [format!(
+            "let {PHONE} with key EE 5C 83 approve reads from now on"
+        )]
     );
     assert_eq!(
         paired.bound.run(&["phone", "ls"], None).unwrap().trim(),

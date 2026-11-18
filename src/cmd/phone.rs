@@ -28,7 +28,9 @@ pub(crate) fn phone_add(store: &Store) -> Result<()> {
     eprintln!("On the iPhone, open passbox and enter:");
     eprintln!("  Mac   {this_mac}");
     eprintln!("  Code  {code}");
-    eprintln!("Then touch the sensor here when this Mac asks to let the phone approve reads.");
+    eprintln!(
+        "Then touch the sensor here only if the key in this Mac's prompt matches the code on the phone."
+    );
     eprintln!("If the phone cannot connect, expose the broker once with:\n  {SERVE}");
 
     let until = Instant::now() + Duration::from_secs(ENROLL_SECS);
