@@ -9,7 +9,7 @@ import SwiftUI
 import UserNotifications
 
 enum Relay {
-    static let address = "https://passbox-push.RELAY.workers.dev"
+    static let address = "https://passbox-push.bliv-labs.workers.dev"
 
     // Xcode runs debug builds against Apple's sandbox, and TestFlight and the App Store use production
     #if DEBUG
