@@ -2,6 +2,7 @@
 
 #[cfg(feature = "host")]
 use crate::crypto;
+use crate::sshkey;
 use crate::store::{self, Secret, Store};
 use crate::{agent, broker, brokered, read_secret, unlock};
 use crate::{agent_list_names, held_token, tree};
@@ -80,6 +81,13 @@ pub(crate) fn add(store: &Store, name: &str, input: Input<'_>, existing: Existin
         bail!("refusing to store an empty value");
     }
 
+    // Stored decrypted, as 1Password does, since the store encrypts it and every signature prompts
+    let value = sshkey::decrypt(&value, || {
+        rpassword::prompt_password("SSH key passphrase: ")
+            .context("could not ask for the SSH key passphrase")
+    })?
+    .unwrap_or(value);
+
     // Spotting a duplicate needs the name to id map, which only the key can produce
     let id = if let Some(id) = replaced {
         id
@@ -153,6 +161,32 @@ pub(crate) fn get(store: &Store, name: &str, field: Option<&str>) -> Result<()> 
     }
     let value = read_field(store, name, field)?;
     out.write_all(value.as_bytes())?;
+    out.write_all(b"\n")?;
+    Ok(())
+}
+
+// The passphrase is asked before the broker is, so the export costs one Touch ID prompt
+pub(crate) fn get_encrypted(store: &Store, name: &str) -> Result<()> {
+    let mut out = std::io::stdout();
+    if !out.is_terminal() {
+        bail!("passbox get --encrypt writes the key to stdout and this is not a terminal");
+    }
+
+    if !brokered(store) {
+        bail!("exporting an SSH key needs the broker, which this store does not use");
+    }
+
+    let passphrase = zeroize::Zeroizing::new(rpassword::prompt_password("new passphrase: ")?);
+    if passphrase.is_empty() {
+        bail!("an exported SSH key needs a passphrase");
+    }
+
+    if *rpassword::prompt_password("again: ")? != *passphrase {
+        bail!("passphrases do not match");
+    }
+
+    let key = broker::export(store, name, &agent(), &passphrase)?;
+    out.write_all(key.as_bytes())?;
     out.write_all(b"\n")?;
     Ok(())
 }

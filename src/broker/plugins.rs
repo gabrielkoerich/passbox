@@ -2,7 +2,7 @@
 
 use super::windows::{Window, open_window, window_open};
 use super::{Broker, Request};
-use crate::{plugin, store};
+use crate::{plugin, sshkey, store};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashMap;
 
@@ -79,7 +79,7 @@ impl Broker {
 
         let value = match secret {
             Some(name) => match self.store.find(name, &key)? {
-                Some((_, entry)) => Some(entry.value.clone()),
+                Some((_, entry)) => Some(sshkey::release(name, &entry.value, "")?),
                 None => return Err(plugin::missing(&request.name, name)),
             },
             None => None,

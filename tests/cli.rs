@@ -2434,6 +2434,63 @@ fn agent_round_trip(kind: &str) {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn an_ssh_key_never_leaves_bare() {
+    let bound = Bound::new();
+    let keys = tempfile::tempdir().unwrap();
+    let path = keys.path().join("id");
+    let made = Command::new("ssh-keygen")
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "test@passbox.dev",
+            "-f",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let private = std::fs::read_to_string(&path).unwrap();
+    bound.run(&["add", "ssh/test"], Some(&private)).unwrap();
+
+    let err = bound
+        .run(&["exec", "--env", "K=ssh/test", "--", "true"], None)
+        .unwrap_err();
+    assert!(err.contains("only the SSH agent signs with"), "{err}");
+    let err = bound.run(&["grant", "ssh/test"], None).unwrap_err();
+    assert!(err.contains("no token holds it"), "{err}");
+    let err = bound.run(&["copy", "ssh/test"], None).unwrap_err();
+    assert!(err.contains("passbox get --encrypt ssh/test"), "{err}");
+    assert!(decided(&bound.audit(), "ssh/test", "withheld"));
+}
+
+#[test]
+fn a_passphrase_store_refuses_an_ssh_key_too() {
+    let cli = Cli::new();
+    let keys = tempfile::tempdir().unwrap();
+    let path = keys.path().join("id");
+    let made = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let private = std::fs::read_to_string(&path).unwrap();
+    cli.run(&["add", "ssh/test"], Some(&private)).unwrap();
+    let err = cli
+        .run(&["exec", "--env", "K=ssh/test", "--", "true"], None)
+        .unwrap_err();
+    assert!(err.contains("only the SSH agent signs with"), "{err}");
+}
+
+#[test]
 fn rm_and_restore_rebuild_the_offered_ssh_keys() {
     let cli = Cli::new();
     let keys = tempfile::tempdir().unwrap();

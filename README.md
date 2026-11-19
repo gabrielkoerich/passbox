@@ -92,7 +92,7 @@ export SSH_AUTH_SOCK=~/.passbox/ssh-agent.sock   # in ~/.zshrc
 ssh-add -L                                        # lists it, no prompt
 ```
 
-The agent takes unencrypted Ed25519 and P-256 keys only. Remove a passphrase with `ssh-keygen -p -f KEY`, then delete the file once the key is in the store. The prompt says what is signed, where to and with which key, such as "sign an SSH login as git to github.com with SSH key you@mac for ssh". A key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
+The agent takes Ed25519 and P-256 keys only. A key with a passphrase asks for it once at `add` and is stored decrypted, as 1Password does, because the store encrypts it and every signature prompts. Delete the file once the key is in the store. A key only signs: `get`, `copy`, `exec`, a grant token and a plugin all refuse it. `passbox get --encrypt ssh/github > id_ed25519` asks for a new passphrase and prints the key encrypted with it, for one Touch ID prompt. The prompt says what is signed, where to and with which key, such as "sign an SSH login as git to github.com with SSH key you@mac for ssh". A key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
 
 ### Signing windows
 
@@ -265,6 +265,8 @@ Every decision is logged, encrypted, one record per line, with the agent, the se
 |---|---|
 | `released` | A prompt was approved and the value went out, to a caller or a plugin's stdin |
 | `signed` | A prompt was approved and an SSH key in the store signed |
+| `exported` | A prompt was approved and an SSH key went out encrypted with a new passphrase |
+| `withheld` | A prompt was approved for an SSH key, and the key stayed in the store |
 | `by token` | A grant token covered the read, no prompt |
 | `granted` | A grant was approved for this name |
 | `delegated` | A child token was minted from a live token, no prompt |
