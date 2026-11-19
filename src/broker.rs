@@ -20,7 +20,7 @@ pub(crate) use audit::append_audit;
 pub(crate) use caller::own_ancestry;
 #[cfg(feature = "host")]
 pub(crate) use client::plugin_approve;
-pub(crate) use client::{grant, list, plugin_run_remote, request, request_token};
+pub(crate) use client::{export, grant, list, plugin_run_remote, request, request_token};
 #[cfg(feature = "host")]
 pub(crate) use client::{phone_open, phone_test};
 #[cfg(feature = "host")]
@@ -32,6 +32,8 @@ pub(crate) use server::serve;
 use crate::project::{self, Grant};
 #[cfg(feature = "host")]
 use crate::ssh;
+#[cfg(feature = "host")]
+use crate::sshkey;
 #[cfg(feature = "host")]
 use crate::store::{self, Store};
 #[cfg(feature = "host")]
@@ -99,6 +101,9 @@ pub(crate) struct Request {
     /// When set, the broker runs the Plugin tool and returns its output, for a remote client
     #[serde(default)]
     pub run: bool,
+    /// Set on a Get of an SSH key, which is released only encrypted with it
+    #[serde(default)]
+    pub passphrase: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -308,6 +313,12 @@ impl Broker {
             let Some((id, secret)) = self.store.find(name, &key)? else {
                 continue;
             };
+            if sshkey::parse(&secret.value).is_some() {
+                bail!(
+                    "{name} is an SSH key, which only the SSH agent signs with, so no token holds it"
+                );
+            }
+
             stamps.insert(name.clone(), (id.clone(), self.store.stamp(&id)?));
             values.insert(name.clone(), secret.value.clone());
         }
@@ -372,7 +383,7 @@ impl Broker {
                     ..Entry::default()
                 },
             )?;
-            return Ok(value);
+            return sshkey::release(&request.name, &value, "");
         }
 
         // A read prompts every time. The only way past the prompt is a token or, for the
@@ -392,8 +403,20 @@ impl Broker {
             self.audit(&key, &request.agent, &request.name, "unknown", caller)?;
             bail!("no secret named {}", request.name);
         };
+        let value = match sshkey::release(&request.name, &secret.value, &request.passphrase) {
+            Ok(value) => value,
+            Err(e) => {
+                self.audit(&key, &request.agent, &request.name, "withheld", caller)?;
+                return Err(e);
+            }
+        };
+        let outcome = if request.passphrase.is_empty() {
+            outcome
+        } else {
+            "exported"
+        };
         self.audit(&key, &request.agent, &request.name, outcome, caller)?;
-        Ok(secret.value.clone())
+        Ok(value)
     }
 }
 

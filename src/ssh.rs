@@ -1,10 +1,11 @@
 //! The SSH agent protocol, and which secrets it offers. The broker owns the socket and the prompt
 
+use crate::sshkey::{HEADER, parse};
 use crate::store::{self, Store};
 use crate::{broker, plugin, project, sync};
 use age::x25519;
 use anyhow::{Context, Result, bail};
-use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey, PublicKey, Signature};
+use ssh_key::{HashAlg, PrivateKey, PublicKey, Signature};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -22,24 +23,6 @@ const SESSION_BIND: &[u8] = b"session-bind@openssh.com";
 const MAX_BINDS: usize = 16;
 /// Far above any real request, so a bad length cannot make the broker allocate gigabytes
 const MAX_MESSAGE: usize = 256 * 1024;
-const HEADER: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
-
-/// A secret is an SSH key when its value is an unencrypted Ed25519 or P-256 OpenSSH key
-pub(crate) fn parse(value: &str) -> Option<PrivateKey> {
-    if !value.trim_start().starts_with(HEADER) {
-        return None;
-    }
-    let key = PrivateKey::from_openssh(value).ok()?;
-    let usable = matches!(
-        key.algorithm(),
-        Algorithm::Ed25519
-            | Algorithm::Ecdsa {
-                curve: EcdsaCurve::NistP256
-            }
-    );
-    (usable && !key.is_encrypted()).then_some(key)
-}
-
 /// Every SSH key in the store, with the name it is stored under
 pub(crate) fn keys(store: &Store, key: &x25519::Identity) -> Result<Vec<(String, PrivateKey)>> {
     let mut out = Vec::new();
@@ -424,8 +407,10 @@ fn take<'a>(rest: &mut &'a [u8]) -> Result<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sshkey::{decrypt, release};
     use signature::Verifier;
     use ssh_key::private::{Ed25519Keypair, KeypairData};
+    use ssh_key::rand_core::{self, CryptoRng, RngCore};
 
     /// A fixed seed, so the key is the same on every run and never touches disk
     fn key() -> PrivateKey {
@@ -488,6 +473,72 @@ mod tests {
         }
         out.extend(flags.to_be_bytes());
         out
+    }
+
+    /// The bytes an encrypted test key takes for its salt and nonce, the same every run
+    struct Fixed;
+
+    impl RngCore for Fixed {
+        fn next_u32(&mut self) -> u32 {
+            7
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            7
+        }
+
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            dest.fill(7);
+        }
+
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+            dest.fill(7);
+            Ok(())
+        }
+    }
+
+    impl CryptoRng for Fixed {}
+
+    #[test]
+    fn a_passphrase_key_is_stored_decrypted() {
+        let locked = key().encrypt(&mut Fixed, "hunter2").unwrap();
+        let text = locked.to_openssh(ssh_key::LineEnding::LF).unwrap();
+        assert!(parse(&text).is_none());
+
+        let plain = decrypt(&text, || Ok("hunter2".into()))
+            .unwrap()
+            .expect("decrypted");
+        let parsed = parse(&plain).expect("an unencrypted key");
+        assert_eq!(
+            parsed.public_key().key_data(),
+            key().public_key().key_data()
+        );
+        assert_eq!(parsed.comment(), "test@passbox.dev");
+        assert!(decrypt(&text, || Ok("wrong".into())).is_err());
+    }
+
+    #[test]
+    fn a_key_leaves_only_encrypted() {
+        let text = key().to_openssh(ssh_key::LineEnding::LF).unwrap();
+        let err = release("ssh/github", &text, "").unwrap_err();
+        assert!(err.to_string().contains("passbox get --encrypt ssh/github"));
+
+        let out = release("ssh/github", &text, "hunter2").unwrap();
+        let locked = PrivateKey::from_openssh(&out).unwrap();
+        assert!(locked.is_encrypted());
+        let plain = locked.decrypt("hunter2").unwrap();
+        assert_eq!(plain.public_key().key_data(), key().public_key().key_data());
+
+        assert_eq!(release("api/key", "hunter2", "").unwrap(), "hunter2");
+        assert!(release("api/key", "hunter2", "pw").is_err());
+    }
+
+    #[test]
+    fn only_a_passphrase_key_asks_for_one() {
+        let text = key().to_openssh(ssh_key::LineEnding::LF).unwrap();
+        let never = || -> Result<String> { panic!("asked for a passphrase") };
+        assert!(decrypt(&text, never).unwrap().is_none());
+        assert!(decrypt("hunter2", never).unwrap().is_none());
     }
 
     #[test]

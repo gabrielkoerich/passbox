@@ -21,6 +21,7 @@ mod se;
 mod skill;
 #[cfg(feature = "host")]
 mod ssh;
+mod sshkey;
 mod store;
 #[cfg(feature = "host")]
 mod sync;
@@ -47,7 +48,7 @@ use cmd::phone::{phone_add, phone_ls, phone_rm};
 use cmd::plugins::plugin_cmd;
 #[cfg(feature = "host")]
 use cmd::secrets::audit;
-use cmd::secrets::{Existing, Input, Notes, add, copy, get, grant, ls, restore, rm};
+use cmd::secrets::{Existing, Input, Notes, add, copy, get, get_encrypted, grant, ls, restore, rm};
 use cmd::setup::init;
 #[cfg(feature = "host")]
 use cmd::setup::{enable_sync, machine_add, run_sync, yubikey_add};
@@ -107,6 +108,9 @@ enum Command {
         /// One field of a multi-line entry, such as `username`. `password` is the first line
         #[arg(long)]
         field: Option<String>,
+        /// Export an SSH key encrypted with a new passphrase, the only way a key leaves the store
+        #[arg(long, conflicts_with = "field")]
+        encrypt: bool,
     },
     /// Copy a secret to the clipboard, which clears after a few seconds and skips clipboard history
     Copy {
@@ -346,7 +350,17 @@ fn run() -> Result<()> {
         Command::Init => init(&store),
         Command::Add(args) => add(&store, &args.name, args.input(), args.existing())
             .inspect(|()| written(&store, "add a secret")),
-        Command::Get { name, field } => get(&store, &name, field.as_deref()),
+        Command::Get {
+            name,
+            field,
+            encrypt,
+        } => {
+            if encrypt {
+                get_encrypted(&store, &name)
+            } else {
+                get(&store, &name, field.as_deref())
+            }
+        }
         Command::Copy { name, field, clear } => copy(&store, &name, field.as_deref(), clear),
         Command::Grant {
             names,
@@ -451,6 +465,11 @@ fn read_secret_as(store: &Store, name: &str, agent: &str) -> Result<String> {
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
     let caller = broker::own_ancestry();
+    if let Err(e) = sshkey::release(name, &secret.value, "") {
+        broker::append_audit(store, agent, name, "withheld", &caller, "")?;
+        return Err(e);
+    }
+
     broker::append_audit(store, agent, name, "released", &caller, "")?;
     Ok(secret.value.clone())
 }

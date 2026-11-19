@@ -26,6 +26,26 @@ pub(crate) fn request_token(store: &Store, name: &str, agent: &str, token: &str)
             action: String::new(),
             params: Vec::new(),
             run: false,
+            passphrase: String::new(),
+        },
+    )
+}
+
+/// An SSH key, which the broker encrypts with `passphrase` before it leaves
+pub(crate) fn export(store: &Store, name: &str, agent: &str, passphrase: &str) -> Result<String> {
+    ask_broker(
+        store,
+        &Request {
+            name: name.to_string(),
+            agent: agent.to_string(),
+            op: Op::Get,
+            token: String::new(),
+            ttl: 0,
+            names: Vec::new(),
+            action: String::new(),
+            params: Vec::new(),
+            run: false,
+            passphrase: passphrase.to_string(),
         },
     )
 }
@@ -44,6 +64,7 @@ pub(crate) fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
             action: String::new(),
             params: Vec::new(),
             run: false,
+            passphrase: String::new(),
         },
     )?;
     Ok(names.lines().map(str::to_string).collect())
@@ -63,6 +84,7 @@ pub(crate) fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> R
             action: String::new(),
             params: Vec::new(),
             run: false,
+            passphrase: String::new(),
         },
     )
 }
@@ -89,6 +111,7 @@ pub(crate) fn plugin_approve(
             action: action.to_string(),
             params: params.clone().into_iter().collect(),
             run: false,
+            passphrase: String::new(),
         },
     )
     .map(|_| ())
@@ -115,6 +138,7 @@ pub(crate) fn plugin_run_remote(
             action: action.to_string(),
             params: params.to_vec(),
             run: true,
+            passphrase: String::new(),
         },
     )
 }
@@ -134,6 +158,7 @@ fn phone_step(store: &Store, action: &str) -> Result<String> {
             action: action.to_string(),
             params: Vec::new(),
             run: false,
+            passphrase: String::new(),
         },
     )
 }

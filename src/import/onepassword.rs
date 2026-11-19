@@ -1,7 +1,7 @@
 //! Bring items across from 1Password through the `op` CLI, which the user has signed in
 
 use super::{Entry, Fetched, Source, under};
-use crate::ssh;
+use crate::sshkey;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -391,7 +391,7 @@ impl Source for OnePassword {
                     text
                 };
                 let text = text.trim_end_matches('\n').to_string();
-                if ssh::parse(&text).is_some() {
+                if sshkey::parse(&text).is_some() {
                     Fetched::Value {
                         value: text,
                         notes: Vec::new(),
