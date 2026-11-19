@@ -722,13 +722,13 @@ passbox phone ls
 passbox phone rm      # the phone can then open nothing
 ```
 
-Once a phone is enrolled, a Touch ID prompt that goes unanswered for 15 seconds is also shown on the phone, and whichever answers first decides. With the lid closed the phone is asked at once. Face ID opens the store key inside the phone's own Secure Enclave, so a sensor still stands behind every release. The phone reaches the broker over the tailnet, set up as above, and the audit log says which approvals came from it.
+Once a phone is enrolled, a Touch ID prompt that goes unanswered for 10 seconds is also shown on the phone, and whichever answers first decides. With the lid closed the phone is asked at once. Face ID opens the store key inside the phone's own Secure Enclave, so a sensor still stands behind every release. The phone reaches the broker over the tailnet, set up as above, and the audit log says which approvals came from it.
 
 ```toml
 # ~/.passbox/config.toml
 [phone]
-after = 15    # seconds before the phone is asked too
-wait = 60     # seconds the phone has when the Mac cannot prompt at all
+delay = 10     # seconds Touch ID goes unanswered before the phone is asked too
+timeout = 60   # seconds the phone has when the Mac cannot prompt at all
 ```
 
 The reasoning is in [docs/content/design.md](docs/content/design.md#a-phone-as-a-second-approver).
