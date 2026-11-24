@@ -120,6 +120,11 @@ impl Store {
     pub(crate) fn ssh_keys_path(&self) -> PathBuf {
         self.dir.join("ssh-keys.pub")
     }
+    /// The approved `[ssh.windows]` section, signed under the store key as the plugin record is
+    #[cfg(feature = "host")]
+    pub(crate) fn ssh_approval_path(&self) -> PathBuf {
+        self.dir.join(format!("windows-ssh-{}.json", hostname()))
+    }
     /// Installed plugins, one directory each. Local and machine specific, so sync skips it
     #[cfg(feature = "host")]
     pub(crate) fn plugins_dir(&self) -> PathBuf {

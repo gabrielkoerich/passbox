@@ -15,9 +15,6 @@ mod plugin;
 mod project;
 #[cfg(feature = "host")]
 mod se;
-#[cfg(feature = "host")]
-mod ssh;
-mod sshkey;
 mod store;
 #[cfg(feature = "host")]
 mod sync;
@@ -33,9 +30,7 @@ use clap::{Parser, Subcommand};
 use cmd::exec::exec;
 use cmd::git::{git, written};
 #[cfg(feature = "host")]
-use cmd::import::Mode;
-#[cfg(feature = "host")]
-use cmd::imports::{Manager, import};
+use cmd::import::{Manager, Mode, import};
 #[cfg(feature = "host")]
 use cmd::phone::{phone_add, phone_ls, phone_rm};
 use cmd::plugins::plugin_cmd;
@@ -457,7 +452,7 @@ fn read_secret_as(store: &Store, name: &str, agent: &str) -> Result<String> {
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
     let caller = broker::own_ancestry();
-    if let Err(e) = sshkey::release(name, &secret.value, "") {
+    if let Err(e) = broker::sshkey::release(name, &secret.value, "") {
         broker::append_audit(store, agent, name, "withheld", &caller, "")?;
         return Err(e);
     }

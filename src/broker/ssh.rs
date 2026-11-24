@@ -1,7 +1,7 @@
 //! The SSH agent protocol, and which secrets it offers. The broker owns the socket and the prompt
 
+use super::sshkey::{HEADER, parse};
 use crate::project::{self, MAX_GRANT_SECS, duration, span};
-use crate::sshkey::{HEADER, parse};
 use crate::store::{self, Store};
 use crate::sync;
 use age::x25519;
@@ -203,19 +203,12 @@ pub(crate) fn parse_windows(text: &str) -> Result<Windows> {
     Ok(out)
 }
 
-/// Plain text like the section, signed under the store key as the plugin record is
-pub(crate) fn approval_path(store: &Store) -> std::path::PathBuf {
-    store
-        .dir
-        .join(format!("windows-ssh-{}.json", store::hostname()))
-}
-
 pub(crate) fn approved(store: &Store) -> Option<project::Approval> {
-    project::approved_at(&approval_path(store))
+    project::approved_at(&store.ssh_approval_path())
 }
 
 pub(crate) fn approve(store: &Store, key: &x25519::Identity, hash: &str) -> Result<()> {
-    project::approve_at(&approval_path(store), "ssh", key, hash)
+    project::approve_at(&store.ssh_approval_path(), "ssh", key, hash)
 }
 
 pub(crate) fn known_hosts() -> String {
@@ -408,8 +401,8 @@ fn take<'a>(rest: &mut &'a [u8]) -> Result<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::broker::sshkey::{decrypt, release};
     use crate::plugin;
-    use crate::sshkey::{decrypt, release};
     use signature::Verifier;
     use ssh_key::private::{Ed25519Keypair, KeypairData};
     use ssh_key::rand_core::{self, CryptoRng, RngCore};
@@ -813,7 +806,7 @@ mod tests {
         };
         let key = x25519::Identity::generate();
         plugin::approve(&store, &key, "h").unwrap();
-        std::fs::copy(plugin::approval_path(&store), approval_path(&store)).unwrap();
+        std::fs::copy(plugin::approval_path(&store), store.ssh_approval_path()).unwrap();
         let copied = approved(&store).unwrap();
         assert!(!copied.verify_for("ssh", &key));
         approve(&store, &key, "h").unwrap();

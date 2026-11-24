@@ -12,6 +12,9 @@ mod server;
 #[cfg(feature = "host")]
 mod sign;
 #[cfg(feature = "host")]
+pub(crate) mod ssh;
+pub(crate) mod sshkey;
+#[cfg(feature = "host")]
 pub(crate) mod tailnet;
 #[cfg(feature = "host")]
 mod tokens;
@@ -32,10 +35,6 @@ pub(crate) use server::serve;
 
 #[cfg(feature = "host")]
 use crate::project::{self, Grant, MAX_GRANT_SECS};
-#[cfg(feature = "host")]
-use crate::ssh;
-#[cfg(feature = "host")]
-use crate::sshkey;
 #[cfg(feature = "host")]
 use crate::store::{self, Store};
 #[cfg(feature = "host")]

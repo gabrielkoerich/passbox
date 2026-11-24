@@ -4,8 +4,6 @@ pub(crate) mod exec;
 pub(crate) mod git;
 #[cfg(feature = "host")]
 pub(crate) mod import;
-#[cfg(feature = "host")]
-pub(crate) mod imports;
 pub(crate) mod mcp;
 #[cfg(feature = "host")]
 pub(crate) mod phone;

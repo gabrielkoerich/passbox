@@ -3,13 +3,13 @@
 use super::audit::{Entry, append_audit_to};
 use super::caller::{ancestry, caller_cwd, peer_pid, prompt_agent, remote_agent, ssh_requester};
 use super::phone::{self, PhoneState};
+use super::ssh;
 use super::tailnet;
 use super::tokens::{Tokens, mint_child, token_value};
 use super::{
     Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Origin, Request, Response, Shared, TAILNET_PORT,
     UNNAMED, clock,
 };
-use crate::ssh;
 use crate::store::{self, Store};
 use anyhow::Result;
 use std::io::{BufRead, BufReader, Write};

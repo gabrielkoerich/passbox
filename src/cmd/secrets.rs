@@ -2,13 +2,14 @@
 
 use super::tree;
 #[cfg(feature = "host")]
+use crate::broker::ssh;
+use crate::broker::sshkey;
+#[cfg(feature = "host")]
 use crate::crypto;
-use crate::sshkey;
+use crate::se;
 use crate::store::{self, Secret, Store};
 use crate::{agent, broker, brokered, read_secret, unlock};
 use crate::{agent_list_names, held_token};
-#[cfg(feature = "host")]
-use crate::{se, ssh};
 use age::x25519;
 use anyhow::{Context, Result, bail};
 use std::io::{IsTerminal, Read, Write};

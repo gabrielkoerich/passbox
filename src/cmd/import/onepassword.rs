@@ -1,7 +1,7 @@
 //! Bring items across from 1Password through the `op` CLI, which the user has signed in
 
 use super::{Entry, Fetched, Source, under};
-use crate::sshkey;
+use crate::broker::sshkey;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashSet;

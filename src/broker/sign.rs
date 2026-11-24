@@ -3,8 +3,9 @@
 use super::Broker;
 use super::audit::{Entry, append_audit_to};
 use super::clock;
+use super::ssh;
 use super::windows::{SshWindow, SshWindowKey, fingerprint, ssh_window_open};
-use crate::{project, ssh, store};
+use crate::{project, store};
 use anyhow::{Result, anyhow, bail};
 use std::fmt::Write as _;
 

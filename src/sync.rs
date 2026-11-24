@@ -499,7 +499,7 @@ pub(crate) fn sync_via_rclone(store: &Store, remote: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::store::{Secret, new_id, now};
-    use crate::{plugin, project, ssh};
+    use crate::{plugin, project};
     use age::x25519;
     use secrecy::SecretString;
 
@@ -1059,7 +1059,7 @@ mod tests {
             config_path(&one),
             project::path(&one),
             plugin::approval_path(&one),
-            ssh::approval_path(&one),
+            one.ssh_approval_path(),
         ] {
             let relative = path.strip_prefix(&one.dir).unwrap();
             assert!(skip(relative), "{} would sync", relative.display());

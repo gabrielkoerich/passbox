@@ -1,8 +1,9 @@
 //! Plugin calls: the prompt or window that approves one, and running it when the broker must.
 
+use super::sshkey;
 use super::windows::{Window, open_window, window_open};
 use super::{Broker, Request};
-use crate::{plugin, sshkey, store};
+use crate::{plugin, store};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashMap;
 
