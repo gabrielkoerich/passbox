@@ -1,11 +1,12 @@
 //! Commands on one secret or the list of them: add, get, copy, ls, rm, restore, grant and audit.
 
+use super::tree;
 #[cfg(feature = "host")]
 use crate::crypto;
 use crate::sshkey;
 use crate::store::{self, Secret, Store};
 use crate::{agent, broker, brokered, read_secret, unlock};
-use crate::{agent_list_names, held_token, tree};
+use crate::{agent_list_names, held_token};
 #[cfg(feature = "host")]
 use crate::{se, ssh};
 use age::x25519;

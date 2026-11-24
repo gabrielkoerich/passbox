@@ -12,6 +12,8 @@ mod server;
 #[cfg(feature = "host")]
 mod sign;
 #[cfg(feature = "host")]
+pub(crate) mod tailnet;
+#[cfg(feature = "host")]
 mod tokens;
 #[cfg(feature = "host")]
 mod windows;

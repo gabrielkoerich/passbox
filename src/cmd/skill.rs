@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 
-const SKILL: &str = include_str!("../SKILL.md");
+const SKILL: &str = include_str!("../../SKILL.md");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The embedded SKILL.md with the running version added to the front matter

@@ -1,6 +1,6 @@
 //! `passbox import`: copying secrets across from pass or from 1Password.
 
-use crate::import::{self, Line, Mode, OnePassword, Outcome, Pass, Source};
+use super::import::{self, Line, Mode, OnePassword, Outcome, Pass, Source};
 use crate::store::Store;
 use crate::unlock;
 use anyhow::Result;
