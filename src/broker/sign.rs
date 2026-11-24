@@ -2,9 +2,10 @@
 
 use super::Broker;
 use super::audit::{Entry, append_audit_to};
-use super::server::clock;
+use super::clock;
+use super::ssh;
 use super::windows::{SshWindow, SshWindowKey, fingerprint, ssh_window_open};
-use crate::{plugin, ssh, store};
+use crate::{project, store};
 use anyhow::{Result, anyhow, bail};
 use std::fmt::Write as _;
 
@@ -69,7 +70,7 @@ impl Broker {
         let to = shown.as_ref().map_or_default(|n| format!(" to {n}"));
         let mut reason = format!("sign {purpose}{to} with SSH key {label} for {agent}");
         if let Some((name, secs)) = &listed {
-            let span = plugin::span(*secs);
+            let span = project::span(*secs);
             let _ = write!(
                 reason,
                 ", and its logins to {name} for {span} without asking"
@@ -122,7 +123,7 @@ impl Broker {
             _ => String::new(),
         };
         if let (true, Some((host_name, secs)), Some(window_key)) = (trusted, &listed, window_key) {
-            let _ = write!(args, ", window {}", plugin::span(*secs));
+            let _ = write!(args, ", window {}", project::span(*secs));
             self.ssh_windows.insert(
                 window_key,
                 SshWindow {

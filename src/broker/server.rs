@@ -3,10 +3,14 @@
 use super::audit::{Entry, append_audit_to};
 use super::caller::{ancestry, caller_cwd, peer_pid, prompt_agent, remote_agent, ssh_requester};
 use super::phone::{self, PhoneState};
+use super::ssh;
+use super::tailnet;
 use super::tokens::{Tokens, mint_child, token_value};
-use super::{Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Request, Response, TAILNET_PORT};
+use super::{
+    Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Origin, Request, Response, Shared, TAILNET_PORT,
+    UNNAMED, clock,
+};
 use crate::store::{self, Store};
-use crate::{ssh, tailnet};
 use anyhow::Result;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
@@ -16,18 +20,6 @@ static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
 
 /// Connections being answered, token reads included, so an upgrade restart never cuts one off
 static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Where a request came from, which names its agent and scopes its plugin windows
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Origin {
-    /// This Mac's socket, where every caller shares one window scope
-    Local,
-    /// Another machine through `tailscale serve`, named by whois
-    Tailnet,
-}
-
-/// How a tailnet caller is named when `tailscale whois` fails, followed by its address
-pub(super) const UNNAMED: &str = "an unknown tailnet host";
 
 /// One loop per connection, since ssh sends several requests on one, and only signing takes the lock
 fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
@@ -57,14 +49,6 @@ fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
             }
         });
     }
-}
-
-/// What every connection thread shares. The token map is reachable without the broker's lock
-pub(super) struct Shared {
-    pub(super) broker: std::sync::Mutex<Broker>,
-    pub(super) tokens: Tokens,
-    pub(super) phones: PhoneState,
-    pub(super) store: Store,
 }
 
 /// True when the request was a phone's `pending` call, which is held open and is not activity
@@ -343,8 +327,9 @@ impl Binary {
         Binary { launch, running }
     }
 
-    fn replaced(&self) -> bool {
-        self.running.is_some() && file_id(&self.launch) != self.running
+    /// The launch path, once it names a different file than the one running
+    fn replaced(&self) -> Option<&std::path::Path> {
+        (self.running.is_some() && file_id(&self.launch) != self.running).then_some(&*self.launch)
     }
 }
 
@@ -362,14 +347,14 @@ fn watchdog(socket: std::path::PathBuf, shared: std::sync::Arc<Shared>) {
             /* After an upgrade the old file may already be deleted, and macOS kills a process
             whose code it can no longer page in. Exiting between requests lets launchd start the
             new one. Live grants end with it, since they are held only in memory */
-            if binary.replaced()
+            if let Some(launch) = binary.replaced()
                 && IN_FLIGHT.load(Ordering::SeqCst) == 0
                 && let Ok(_quiet) = shared.broker.try_lock()
             {
                 eprintln!(
                     "{} {} was replaced, exiting so the new version starts",
                     clock(),
-                    binary.launch.display()
+                    launch.display()
                 );
                 let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
@@ -388,24 +373,6 @@ fn watchdog(socket: std::path::PathBuf, shared: std::sync::Arc<Shared>) {
             broker.sweep(idle);
         }
     });
-}
-
-/// Local time for the broker log, which launchd writes without one
-pub(super) fn clock() -> String {
-    let t = libc::time_t::try_from(store::now()).unwrap_or_default();
-    // SAFETY: tm holds plain integers and a nullable pointer, so all zero is a valid value
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: localtime_r reads t and writes only the tm it is given
-    unsafe { libc::localtime_r(&raw const t, &raw mut tm) };
-    format!(
-        "{}-{:02}-{:02} {:02}:{:02}:{:02}",
-        tm.tm_year + 1900,
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min,
-        tm.tm_sec
-    )
 }
 
 impl Broker {
@@ -450,21 +417,21 @@ mod tests {
             launch: launch.clone(),
             running: file_id(&old),
         };
-        assert!(!binary.replaced());
+        assert!(binary.replaced().is_none());
 
         // What `brew upgrade` does to bin/passbox
         std::fs::remove_file(&launch).unwrap();
         std::os::unix::fs::symlink(&new, &launch).unwrap();
-        assert!(binary.replaced());
+        assert!(binary.replaced().is_some());
 
         // And the cleanup, with the broker started from the file itself
         let direct = Binary {
             launch: old.clone(),
             running: file_id(&old),
         };
-        assert!(!direct.replaced());
+        assert!(direct.replaced().is_none());
         std::fs::remove_file(&old).unwrap();
-        assert!(direct.replaced());
+        assert!(direct.replaced().is_some());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Approval windows: a plugin call or an SSH login that a recent prompt already covers.
 
-use crate::{plugin, ssh};
+use super::ssh;
+use crate::plugin;
 use std::collections::HashMap;
 
 /// The SHA256 fingerprints of the signing key and of the host key it signs logins to

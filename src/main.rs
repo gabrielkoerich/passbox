@@ -10,30 +10,18 @@ mod cmd;
 mod credentials;
 mod crypto;
 #[cfg(feature = "host")]
-mod import;
-mod mcp;
-#[cfg(feature = "host")]
 mod plugin;
 #[cfg(feature = "host")]
 mod project;
 #[cfg(feature = "host")]
 mod se;
-mod skill;
-#[cfg(feature = "host")]
-mod ssh;
-mod sshkey;
 mod store;
 #[cfg(feature = "host")]
 mod sync;
 #[cfg(feature = "host")]
-mod tailnet;
-mod tree;
-#[cfg(feature = "host")]
 mod yubikey;
 
 pub(crate) use cmd::exec::run_child;
-#[cfg(feature = "host")]
-pub(crate) use cmd::plugins::first_party;
 pub(crate) use credentials::{held_token, without_credentials};
 
 use age::x25519;
@@ -42,7 +30,7 @@ use clap::{Parser, Subcommand};
 use cmd::exec::exec;
 use cmd::git::{git, written};
 #[cfg(feature = "host")]
-use cmd::imports::{Manager, import};
+use cmd::import::{Manager, Mode, import};
 #[cfg(feature = "host")]
 use cmd::phone::{phone_add, phone_ls, phone_rm};
 use cmd::plugins::plugin_cmd;
@@ -52,9 +40,8 @@ use cmd::secrets::{Existing, Input, Notes, add, copy, get, get_encrypted, grant,
 use cmd::setup::init;
 #[cfg(feature = "host")]
 use cmd::setup::{enable_sync, machine_add, run_sync, yubikey_add};
+use cmd::{mcp, skill};
 use credentials::{held_passphrase, take_credentials, take_stdin_token};
-#[cfg(feature = "host")]
-use import::Mode;
 use secrecy::SecretString;
 use std::alloc::{GlobalAlloc, Layout, System};
 use store::Store;
@@ -465,7 +452,7 @@ fn read_secret_as(store: &Store, name: &str, agent: &str) -> Result<String> {
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
     let caller = broker::own_ancestry();
-    if let Err(e) = sshkey::release(name, &secret.value, "") {
+    if let Err(e) = broker::sshkey::release(name, &secret.value, "") {
         broker::append_audit(store, agent, name, "withheld", &caller, "")?;
         return Err(e);
     }

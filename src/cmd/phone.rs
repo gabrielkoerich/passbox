@@ -1,8 +1,9 @@
 //! `passbox phone`: enrolling the iPhone that approves when Touch ID goes unanswered.
 
+use crate::broker::tailnet;
 use crate::broker::{self, ENROLL_SECS, PHONE_SUBJECT, PhoneWrap, Timing};
+use crate::headless;
 use crate::store::Store;
-use crate::{headless, tailnet};
 use anyhow::{Context, Result, bail};
 use std::time::{Duration, Instant};
 

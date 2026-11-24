@@ -12,6 +12,11 @@ mod server;
 #[cfg(feature = "host")]
 mod sign;
 #[cfg(feature = "host")]
+pub(crate) mod ssh;
+pub(crate) mod sshkey;
+#[cfg(feature = "host")]
+pub(crate) mod tailnet;
+#[cfg(feature = "host")]
 mod tokens;
 #[cfg(feature = "host")]
 mod windows;
@@ -29,11 +34,7 @@ pub(crate) use phone::{ENROLL_SECS, PhoneWrap, SUBJECT as PHONE_SUBJECT, Timing}
 pub(crate) use server::serve;
 
 #[cfg(feature = "host")]
-use crate::project::{self, Grant};
-#[cfg(feature = "host")]
-use crate::ssh;
-#[cfg(feature = "host")]
-use crate::sshkey;
+use crate::project::{self, Grant, MAX_GRANT_SECS};
 #[cfg(feature = "host")]
 use crate::store::{self, Store};
 #[cfg(feature = "host")]
@@ -46,8 +47,6 @@ use audit::{Entry, append_audit_to};
 use phone::PhoneState;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "host")]
-use server::{Origin, clock};
-#[cfg(feature = "host")]
 use std::collections::HashMap;
 #[cfg(feature = "host")]
 use tokens::{TokenGrant, Tokens, new_token, reject_namespaces, token_value};
@@ -57,10 +56,48 @@ use windows::{SshWindow, SshWindowKey, Window, WindowKey};
 /// The store key leaves memory after this long with no traffic
 #[cfg(feature = "host")]
 const KEY_TTL_SECS: u64 = 300;
-/* A ceiling on how long one approval can carry. Without it a caller names its own expiry and
-a token becomes a password that never lapses, which is the thing this exists to avoid. */
+
+/// Where a request came from, which names its agent and scopes its plugin windows
 #[cfg(feature = "host")]
-pub(crate) const MAX_GRANT_SECS: u64 = 86_400;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// This Mac's socket, where every caller shares one window scope
+    Local,
+    /// Another machine through `tailscale serve`, named by whois
+    Tailnet,
+}
+
+/// How a tailnet caller is named when `tailscale whois` fails, followed by its address
+#[cfg(feature = "host")]
+const UNNAMED: &str = "an unknown tailnet host";
+
+/// What every connection thread shares. The token map is reachable without the broker's lock
+#[cfg(feature = "host")]
+struct Shared {
+    broker: std::sync::Mutex<Broker>,
+    tokens: Tokens,
+    phones: PhoneState,
+    store: Store,
+}
+
+/// Local time for the broker log, which launchd writes without one
+#[cfg(feature = "host")]
+fn clock() -> String {
+    let t = libc::time_t::try_from(store::now()).unwrap_or_default();
+    // SAFETY: tm holds plain integers and a nullable pointer, so all zero is a valid value
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: localtime_r reads t and writes only the tm it is given
+    unsafe { libc::localtime_r(&raw const t, &raw mut tm) };
+    format!(
+        "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]

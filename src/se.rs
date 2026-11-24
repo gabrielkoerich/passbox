@@ -1,6 +1,5 @@
 //! Secure Enclave wrapping, through the Swift helper that owns the Touch ID prompt.
 
-use crate::store::write_private;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Read, Write};
@@ -93,10 +92,11 @@ fn helper() -> Result<PathBuf> {
 
     // Comparing bytes is cheaper than versioning, and a changed helper replaces itself
     if std::fs::read(&path).ok().as_deref() != Some(HELPER) {
-        write_private(&path, HELPER)?;
-        let mut perms = std::fs::metadata(&path)?.permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
-        std::fs::set_permissions(&path, perms)?;
+        // Executable before the rename, so the path never holds a file that cannot run
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, HELPER)?;
+        std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+        std::fs::rename(&tmp, &path)?;
     }
     Ok(path)
 }
