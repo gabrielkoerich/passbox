@@ -4,7 +4,10 @@ use super::audit::{Entry, append_audit_to};
 use super::caller::{ancestry, caller_cwd, peer_pid, prompt_agent, remote_agent, ssh_requester};
 use super::phone::{self, PhoneState};
 use super::tokens::{Tokens, mint_child, token_value};
-use super::{Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Request, Response, TAILNET_PORT};
+use super::{
+    Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Origin, Request, Response, Shared, TAILNET_PORT,
+    UNNAMED, clock,
+};
 use crate::store::{self, Store};
 use crate::{ssh, tailnet};
 use anyhow::Result;
@@ -16,18 +19,6 @@ static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
 
 /// Connections being answered, token reads included, so an upgrade restart never cuts one off
 static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Where a request came from, which names its agent and scopes its plugin windows
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Origin {
-    /// This Mac's socket, where every caller shares one window scope
-    Local,
-    /// Another machine through `tailscale serve`, named by whois
-    Tailnet,
-}
-
-/// How a tailnet caller is named when `tailscale whois` fails, followed by its address
-pub(super) const UNNAMED: &str = "an unknown tailnet host";
 
 /// One loop per connection, since ssh sends several requests on one, and only signing takes the lock
 fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
@@ -57,14 +48,6 @@ fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
             }
         });
     }
-}
-
-/// What every connection thread shares. The token map is reachable without the broker's lock
-pub(super) struct Shared {
-    pub(super) broker: std::sync::Mutex<Broker>,
-    pub(super) tokens: Tokens,
-    pub(super) phones: PhoneState,
-    pub(super) store: Store,
 }
 
 /// True when the request was a phone's `pending` call, which is held open and is not activity
@@ -388,24 +371,6 @@ fn watchdog(socket: std::path::PathBuf, shared: std::sync::Arc<Shared>) {
             broker.sweep(idle);
         }
     });
-}
-
-/// Local time for the broker log, which launchd writes without one
-pub(super) fn clock() -> String {
-    let t = libc::time_t::try_from(store::now()).unwrap_or_default();
-    // SAFETY: tm holds plain integers and a nullable pointer, so all zero is a valid value
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: localtime_r reads t and writes only the tm it is given
-    unsafe { libc::localtime_r(&raw const t, &raw mut tm) };
-    format!(
-        "{}-{:02}-{:02} {:02}:{:02}:{:02}",
-        tm.tm_year + 1900,
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min,
-        tm.tm_sec
-    )
 }
 
 impl Broker {

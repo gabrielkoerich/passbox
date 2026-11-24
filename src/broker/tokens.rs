@@ -1,8 +1,8 @@
 //! Tokens: what one approval opens, for whom, until when, and the children minted from it.
 
 use super::Request;
+use super::Shared;
 use super::audit::{Entry, append_audit_to};
-use super::server::Shared;
 use crate::store::{self, Store};
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashMap;

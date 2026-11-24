@@ -2,7 +2,7 @@
 
 use super::Broker;
 use super::audit::{Entry, append_audit_to};
-use super::server::clock;
+use super::clock;
 use super::windows::{SshWindow, SshWindowKey, fingerprint, ssh_window_open};
 use crate::{project, ssh, store};
 use anyhow::{Result, anyhow, bail};

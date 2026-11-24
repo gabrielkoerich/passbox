@@ -1,8 +1,7 @@
 //! A phone as a second approver: enrolling it, the request it is shown, and its race with Touch ID.
 
 use super::audit::{Entry, append_audit_to};
-use super::server::{Origin, Shared, UNNAMED, clock};
-use super::{Broker, Request};
+use super::{Broker, Origin, Request, Shared, UNNAMED, clock};
 use crate::store::{self, Store, write_private};
 use crate::{project, se, sync};
 use age::x25519;
