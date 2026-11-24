@@ -8,14 +8,18 @@ touched inherit approvals you gave on this one. */
 use crate::crypto;
 use crate::store::{self, Store};
 use age::x25519;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+/* A ceiling on how long one approval can carry. Without it a caller names its own expiry and
+a token becomes a password that never lapses, which is the thing this exists to avoid. */
+pub(crate) const MAX_GRANT_SECS: u64 = 86_400;
+
 pub(crate) const MANIFEST: &str = ".passbox.toml";
 const DEFAULT_GRANT_SECS: u64 = 3600;
-const MAX_GRANT_SECS: u64 = 12 * 3600;
+const MAX_PROJECT_SECS: u64 = 12 * 3600;
 
 #[derive(Deserialize, Default)]
 struct ManifestFile {
@@ -54,7 +58,7 @@ fn read(path: &Path) -> Result<Manifest> {
         window_secs: parsed
             .window_secs
             .unwrap_or(DEFAULT_GRANT_SECS)
-            .min(MAX_GRANT_SECS),
+            .min(MAX_PROJECT_SECS),
         hash: hash(&raw),
     })
 }
@@ -107,9 +111,97 @@ pub(crate) fn save(store: &Store, grants: &[Grant]) -> Result<()> {
     store::write_private(&path(store), &sealed)
 }
 
+/// Seconds as config.toml writes them, such as `24h` or `90s`
+pub(crate) fn span(secs: u64) -> String {
+    match secs {
+        s if s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
+/// `90s`, `30m` or `24h`
+pub(crate) fn duration(text: &str) -> Result<u64> {
+    let refuse = || anyhow!("{text:?} is not a duration such as \"90s\", \"30m\" or \"24h\"");
+    let unit = match text.chars().last() {
+        Some('s') => 1,
+        Some('m') => 60,
+        Some('h') => 3600,
+        _ => return Err(refuse()),
+    };
+    let count: u64 = text[..text.len() - 1]
+        .parse()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(refuse)?;
+    Ok(count.saturating_mul(unit))
+}
+
+// Plain text like the section, so a MAC under the store key stops a process forging its own
+#[derive(Serialize, Deserialize)]
+pub(crate) struct Approval {
+    pub hash: String,
+    mac: String,
+}
+
+/// The domain keeps a record for one section from passing as a record for the other
+fn mac(key: &x25519::Identity, domain: &str, hash: &str) -> String {
+    use age::secrecy::ExposeSecret;
+    let mut digest = Sha256::new();
+    digest.update(format!("passbox {domain} windows\n").as_bytes());
+    digest.update(key.to_string().expose_secret().as_bytes());
+    digest.update(b"\n");
+    digest.update(hash.as_bytes());
+    hex::encode(digest.finalize())
+}
+
+pub(crate) fn approved_at(path: &std::path::Path) -> Option<Approval> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+pub(crate) fn approve_at(
+    path: &std::path::Path,
+    domain: &str,
+    key: &x25519::Identity,
+    hash: &str,
+) -> Result<()> {
+    let record = Approval {
+        hash: hash.to_string(),
+        mac: mac(key, domain, hash),
+    };
+    store::write_private(path, &serde_json::to_vec(&record)?)
+}
+
+impl Approval {
+    pub(crate) fn verify(&self, key: &x25519::Identity) -> bool {
+        self.verify_for("plugin", key)
+    }
+
+    pub(crate) fn verify_for(&self, domain: &str, key: &x25519::Identity) -> bool {
+        self.mac == mac(key, domain, &self.hash)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_approval_record_verifies_only_under_the_key_that_made_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("windows.json");
+        let key = x25519::Identity::generate();
+        approve_at(&path, "plugin", &key, "h1").unwrap();
+        let record = approved_at(&path).unwrap();
+        assert_eq!(record.hash, "h1");
+        assert!(record.verify(&key));
+        assert!(!record.verify(&x25519::Identity::generate()));
+        let forged = Approval {
+            hash: "h2".into(),
+            mac: record.mac,
+        };
+        assert!(!forged.verify(&key));
+    }
 
     fn manifest(dir: &Path, body: &str) -> Manifest {
         std::fs::write(dir.join(MANIFEST), body).unwrap();
@@ -186,7 +278,7 @@ mod tests {
     fn a_window_is_capped() {
         let tmp = tempfile::tempdir().unwrap();
         let m = manifest(tmp.path(), "secrets = []\nwindow_secs = 999999\n");
-        assert_eq!(m.window_secs, MAX_GRANT_SECS);
+        assert_eq!(m.window_secs, MAX_PROJECT_SECS);
     }
 
     /// A grant file that has been edited must read as no grants, never as a grant

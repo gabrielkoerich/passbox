@@ -57,10 +57,8 @@ use windows::{SshWindow, SshWindowKey, Window, WindowKey};
 /// The store key leaves memory after this long with no traffic
 #[cfg(feature = "host")]
 const KEY_TTL_SECS: u64 = 300;
-/* A ceiling on how long one approval can carry. Without it a caller names its own expiry and
-a token becomes a password that never lapses, which is the thing this exists to avoid. */
 #[cfg(feature = "host")]
-pub(crate) const MAX_GRANT_SECS: u64 = 86_400;
+use crate::project::MAX_GRANT_SECS;
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]

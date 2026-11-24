@@ -5,12 +5,12 @@ names a command template. The broker prompts and audits a call; the caller runs 
 it keeps the caller's GUI session and the broker never drives an app itself. A plugin with `stdin`
 is the exception: it reads a secret, so it runs only inside the broker and only as its bundled copy. */
 
-use crate::store::{Store, hostname, write_private};
-use crate::{broker, project, sync};
+use crate::project::{self, Approval, MAX_GRANT_SECS, approve_at, approved_at, duration, span};
+use crate::store::{Store, hostname};
+use crate::sync;
 use age::x25519;
 use anyhow::{Context, Result, anyhow, bail};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::io::Write;
@@ -335,7 +335,7 @@ pub(crate) fn fed_command(
              reinstall it with `passbox plugin update {name}`"
         )
     };
-    let files = crate::first_party(name).ok_or_else(refuse)?;
+    let files = first_party(name).ok_or_else(refuse)?;
     let dir = store.plugins_dir().join(name);
     for (file, bytes) in files {
         if std::fs::read(dir.join(file)).ok().as_deref() != Some(bytes.as_bytes()) {
@@ -443,15 +443,6 @@ impl Windows {
     }
 }
 
-/// Seconds as config.toml writes them, such as `24h` or `90s`
-pub(crate) fn span(secs: u64) -> String {
-    match secs {
-        s if s % 3600 == 0 => format!("{}h", s / 3600),
-        s if s % 60 == 0 => format!("{}m", s / 60),
-        s => format!("{s}s"),
-    }
-}
-
 pub(crate) fn windows(store: &Store) -> Result<Windows> {
     let path = sync::config_path(store);
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -459,23 +450,6 @@ pub(crate) fn windows(store: &Store) -> Result<Windows> {
     };
     parse_windows(&text, |name| load(store, name))
         .with_context(|| format!("{} is not valid", path.display()))
-}
-
-/// `90s`, `30m` or `24h`
-pub(crate) fn duration(text: &str) -> Result<u64> {
-    let refuse = || anyhow!("{text:?} is not a duration such as \"90s\", \"30m\" or \"24h\"");
-    let unit = match text.chars().last() {
-        Some('s') => 1,
-        Some('m') => 60,
-        Some('h') => 3600,
-        _ => return Err(refuse()),
-    };
-    let count: u64 = text[..text.len() - 1]
-        .parse()
-        .ok()
-        .filter(|n| *n > 0)
-        .ok_or_else(refuse)?;
-    Ok(count.saturating_mul(unit))
 }
 
 // One plugin and one tool, so a window never covers a tool added later
@@ -516,7 +490,7 @@ fn parse_windows(text: &str, manifest: impl Fn(&str) -> Result<Manifest>) -> Res
             .with_context(|| format!("{key} must be a duration such as \"30m\""))?;
         let secs = duration(span)
             .with_context(|| key.clone())?
-            .min(broker::MAX_GRANT_SECS);
+            .min(MAX_GRANT_SECS);
         let manifest = manifest(plugin)
             .with_context(|| format!("{key} names a plugin that is not installed"))?;
         let tool = manifest
@@ -533,26 +507,8 @@ fn parse_windows(text: &str, manifest: impl Fn(&str) -> Result<Manifest>) -> Res
     Ok(out)
 }
 
-// Plain text like the section, so a MAC under the store key stops a process forging its own
-#[derive(Serialize, Deserialize)]
-pub(crate) struct Approval {
-    pub hash: String,
-    mac: String,
-}
-
 pub(crate) fn approval_path(store: &Store) -> std::path::PathBuf {
     store.dir.join(format!("windows-{}.json", hostname()))
-}
-
-/// The domain keeps a record for one section from passing as a record for the other
-fn mac(key: &x25519::Identity, domain: &str, hash: &str) -> String {
-    use age::secrecy::ExposeSecret;
-    let mut digest = Sha256::new();
-    digest.update(format!("passbox {domain} windows\n").as_bytes());
-    digest.update(key.to_string().expose_secret().as_bytes());
-    digest.update(b"\n");
-    digest.update(hash.as_bytes());
-    hex::encode(digest.finalize())
 }
 
 /// Read before the prompt to word it, and trusted only once `verify` passes
@@ -564,30 +520,37 @@ pub(crate) fn approve(store: &Store, key: &x25519::Identity, hash: &str) -> Resu
     approve_at(&approval_path(store), "plugin", key, hash)
 }
 
-pub(crate) fn approved_at(path: &std::path::Path) -> Option<Approval> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
-}
-
-pub(crate) fn approve_at(
-    path: &std::path::Path,
-    domain: &str,
-    key: &x25519::Identity,
-    hash: &str,
-) -> Result<()> {
-    let record = Approval {
-        hash: hash.to_string(),
-        mac: mac(key, domain, hash),
-    };
-    write_private(path, &serde_json::to_vec(&record)?)
-}
-
-impl Approval {
-    pub(crate) fn verify(&self, key: &x25519::Identity) -> bool {
-        self.verify_for("plugin", key)
-    }
-
-    pub(crate) fn verify_for(&self, domain: &str, key: &x25519::Identity) -> bool {
-        self.mac == mac(key, domain, &self.hash)
+/* The first-party plugins ship inside the binary, so `plugin add mail` needs no network and no
+repo checkout. Each entry is one file written into the plugin directory on install */
+pub(crate) fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    match name {
+        "mail" => Some(&[
+            ("plugin.toml", include_str!("../plugins/mail/plugin.toml")),
+            (
+                "recent.applescript",
+                include_str!("../plugins/mail/recent.applescript"),
+            ),
+            (
+                "search.applescript",
+                include_str!("../plugins/mail/search.applescript"),
+            ),
+        ]),
+        "calendar" => Some(&[
+            (
+                "plugin.toml",
+                include_str!("../plugins/calendar/plugin.toml"),
+            ),
+            ("agenda.sh", include_str!("../plugins/calendar/agenda.sh")),
+        ]),
+        "things3" => Some(&[(
+            "plugin.toml",
+            include_str!("../plugins/things3/plugin.toml"),
+        )]),
+        "imap" => Some(&[
+            ("plugin.toml", include_str!("../plugins/imap/plugin.toml")),
+            ("imap.py", include_str!("../plugins/imap/imap.py")),
+        ]),
+        _ => None,
     }
 }
 
@@ -1170,7 +1133,7 @@ mod tests {
     #[test]
     fn a_window_is_capped_at_a_day_and_shown_as_set() {
         let w = parsed("\"demo.read\" = \"48h\"").unwrap();
-        assert_eq!(w.tools["demo.read"], broker::MAX_GRANT_SECS);
+        assert_eq!(w.tools["demo.read"], MAX_GRANT_SECS);
         assert_eq!(w.shown(), "demo.read 24h");
         assert_eq!(
             parsed("\"demo.read\" = \"30m\"").unwrap().shown(),
@@ -1194,25 +1157,6 @@ mod tests {
         let a = parsed("\"demo.read\" = \"1h\"").unwrap().hash;
         assert_eq!(a, parsed("\"demo.read\" = \"60m\"").unwrap().hash);
         assert_ne!(a, parsed("\"demo.read\" = \"2h\"").unwrap().hash);
-    }
-
-    #[test]
-    fn an_approval_record_verifies_only_under_the_key_that_made_it() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = Store {
-            dir: tmp.path().to_path_buf(),
-        };
-        let key = x25519::Identity::generate();
-        approve(&store, &key, "h1").unwrap();
-        let record = approved(&store).unwrap();
-        assert_eq!(record.hash, "h1");
-        assert!(record.verify(&key));
-        assert!(!record.verify(&x25519::Identity::generate()));
-        let forged = Approval {
-            hash: "h2".into(),
-            mac: record.mac,
-        };
-        assert!(!forged.verify(&key));
     }
 
     #[test]

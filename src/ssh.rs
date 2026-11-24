@@ -1,8 +1,9 @@
 //! The SSH agent protocol, and which secrets it offers. The broker owns the socket and the prompt
 
+use crate::project::{self, MAX_GRANT_SECS, duration, span};
 use crate::sshkey::{HEADER, parse};
 use crate::store::{self, Store};
-use crate::{broker, plugin, project, sync};
+use crate::sync;
 use age::x25519;
 use anyhow::{Context, Result, bail};
 use ssh_key::{HashAlg, PrivateKey, PublicKey, Signature};
@@ -142,7 +143,7 @@ impl Windows {
     pub(crate) fn shown(&self) -> String {
         self.hosts
             .iter()
-            .map(|(host, secs)| format!("{host} {}", plugin::span(*secs)))
+            .map(|(host, secs)| format!("{host} {}", span(*secs)))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -192,9 +193,9 @@ pub(crate) fn parse_windows(text: &str) -> Result<Windows> {
         let span = value
             .as_str()
             .with_context(|| format!("{host} must be a duration such as \"12h\""))?;
-        let secs = plugin::duration(span)
+        let secs = duration(span)
             .with_context(|| host.clone())?
-            .min(broker::MAX_GRANT_SECS);
+            .min(MAX_GRANT_SECS);
         let _ = writeln!(hashed, "{host}={secs}");
         out.hosts.insert(host.clone(), secs);
     }
@@ -209,12 +210,12 @@ pub(crate) fn approval_path(store: &Store) -> std::path::PathBuf {
         .join(format!("windows-ssh-{}.json", store::hostname()))
 }
 
-pub(crate) fn approved(store: &Store) -> Option<plugin::Approval> {
-    plugin::approved_at(&approval_path(store))
+pub(crate) fn approved(store: &Store) -> Option<project::Approval> {
+    project::approved_at(&approval_path(store))
 }
 
 pub(crate) fn approve(store: &Store, key: &x25519::Identity, hash: &str) -> Result<()> {
-    plugin::approve_at(&approval_path(store), "ssh", key, hash)
+    project::approve_at(&approval_path(store), "ssh", key, hash)
 }
 
 pub(crate) fn known_hosts() -> String {
@@ -407,6 +408,7 @@ fn take<'a>(rest: &mut &'a [u8]) -> Result<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin;
     use crate::sshkey::{decrypt, release};
     use signature::Verifier;
     use ssh_key::private::{Ed25519Keypair, KeypairData};
@@ -726,7 +728,7 @@ mod tests {
     fn a_window_names_one_host_and_lasts_at_most_a_day() {
         let parsed = parse_windows("[ssh.windows]\nlegion = \"12h\"\nm1 = \"48h\"\n").unwrap();
         assert_eq!(parsed.hosts["legion"], 12 * 3600);
-        assert_eq!(parsed.hosts["m1"], broker::MAX_GRANT_SECS);
+        assert_eq!(parsed.hosts["m1"], MAX_GRANT_SECS);
         assert_eq!(parsed.shown(), "legion 12h, m1 24h");
         for host in ["\"*\"", "\"*.ts.net\"", "\"a,b\"", "\"!legion\"", "\"\""] {
             let err = parse_windows(&format!("[ssh.windows]\n{host} = \"1h\"\n")).unwrap_err();

@@ -60,7 +60,7 @@ fn plugin_list(store: &Store) -> Result<()> {
 /// A first-party plugin whose bundled version differs from the installed one can be refreshed
 #[cfg(feature = "host")]
 fn stale_note(manifest: &plugin::Manifest) -> String {
-    let Some(files) = first_party(&manifest.name) else {
+    let Some(files) = plugin::first_party(&manifest.name) else {
         return String::new();
     };
     let Some(bundled) = files
@@ -127,7 +127,7 @@ fn plugin_install(store: &Store, rest: &[String], install: Install) -> Result<()
         Ok(())
     };
 
-    if let Some(files) = first_party(arg) {
+    if let Some(files) = plugin::first_party(arg) {
         let to = store.plugins_dir().join(arg);
         fresh(&to)?;
         std::fs::create_dir_all(&to)?;
@@ -153,50 +153,6 @@ fn plugin_install(store: &Store, rest: &[String], install: Install) -> Result<()
         manifest.tools.len()
     );
     Ok(())
-}
-
-/* The first-party plugins ship inside the binary, so `plugin add mail` needs no network and no
-repo checkout. Each entry is one file written into the plugin directory on install */
-#[cfg(feature = "host")]
-pub(crate) fn first_party(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
-    match name {
-        "mail" => Some(&[
-            (
-                "plugin.toml",
-                include_str!("../../plugins/mail/plugin.toml"),
-            ),
-            (
-                "recent.applescript",
-                include_str!("../../plugins/mail/recent.applescript"),
-            ),
-            (
-                "search.applescript",
-                include_str!("../../plugins/mail/search.applescript"),
-            ),
-        ]),
-        "calendar" => Some(&[
-            (
-                "plugin.toml",
-                include_str!("../../plugins/calendar/plugin.toml"),
-            ),
-            (
-                "agenda.sh",
-                include_str!("../../plugins/calendar/agenda.sh"),
-            ),
-        ]),
-        "things3" => Some(&[(
-            "plugin.toml",
-            include_str!("../../plugins/things3/plugin.toml"),
-        )]),
-        "imap" => Some(&[
-            (
-                "plugin.toml",
-                include_str!("../../plugins/imap/plugin.toml"),
-            ),
-            ("imap.py", include_str!("../../plugins/imap/imap.py")),
-        ]),
-        _ => None,
-    }
 }
 
 #[cfg(feature = "host")]

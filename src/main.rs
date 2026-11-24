@@ -32,8 +32,6 @@ mod tree;
 mod yubikey;
 
 pub(crate) use cmd::exec::run_child;
-#[cfg(feature = "host")]
-pub(crate) use cmd::plugins::first_party;
 pub(crate) use credentials::{held_token, without_credentials};
 
 use age::x25519;
