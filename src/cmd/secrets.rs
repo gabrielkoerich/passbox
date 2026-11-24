@@ -6,6 +6,7 @@ use crate::broker::ssh;
 use crate::broker::sshkey;
 #[cfg(feature = "host")]
 use crate::crypto;
+#[cfg(feature = "host")]
 use crate::se;
 use crate::store::{self, Secret, Store};
 use crate::{agent, broker, brokered, read_secret, unlock};
