@@ -326,8 +326,9 @@ impl Binary {
         Binary { launch, running }
     }
 
-    fn replaced(&self) -> bool {
-        self.running.is_some() && file_id(&self.launch) != self.running
+    /// The launch path, once it names a different file than the one running
+    fn replaced(&self) -> Option<&std::path::Path> {
+        (self.running.is_some() && file_id(&self.launch) != self.running).then_some(&*self.launch)
     }
 }
 
@@ -345,14 +346,14 @@ fn watchdog(socket: std::path::PathBuf, shared: std::sync::Arc<Shared>) {
             /* After an upgrade the old file may already be deleted, and macOS kills a process
             whose code it can no longer page in. Exiting between requests lets launchd start the
             new one. Live grants end with it, since they are held only in memory */
-            if binary.replaced()
+            if let Some(launch) = binary.replaced()
                 && IN_FLIGHT.load(Ordering::SeqCst) == 0
                 && let Ok(_quiet) = shared.broker.try_lock()
             {
                 eprintln!(
                     "{} {} was replaced, exiting so the new version starts",
                     clock(),
-                    binary.launch.display()
+                    launch.display()
                 );
                 let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
@@ -415,21 +416,21 @@ mod tests {
             launch: launch.clone(),
             running: file_id(&old),
         };
-        assert!(!binary.replaced());
+        assert!(binary.replaced().is_none());
 
         // What `brew upgrade` does to bin/passbox
         std::fs::remove_file(&launch).unwrap();
         std::os::unix::fs::symlink(&new, &launch).unwrap();
-        assert!(binary.replaced());
+        assert!(binary.replaced().is_some());
 
         // And the cleanup, with the broker started from the file itself
         let direct = Binary {
             launch: old.clone(),
             running: file_id(&old),
         };
-        assert!(!direct.replaced());
+        assert!(direct.replaced().is_none());
         std::fs::remove_file(&old).unwrap();
-        assert!(direct.replaced());
+        assert!(direct.replaced().is_some());
     }
 
     #[test]

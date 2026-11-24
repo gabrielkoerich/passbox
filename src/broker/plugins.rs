@@ -27,7 +27,7 @@ impl Broker {
         manifest: &plugin::Manifest,
         bound: &HashMap<String, String>,
     ) -> Result<Option<String>> {
-        let secret = manifest.stdin.as_deref();
+        let secret = manifest.stdin();
         let reason = manifest.approval(&request.action, &request.agent, bound);
         let (args, call) = manifest
             .tool(&request.action)
@@ -107,7 +107,7 @@ impl Broker {
         scope: &str,
     ) -> Result<String> {
         let manifest = plugin::load(&self.store, &request.name)?;
-        if manifest.stdin.is_some() {
+        if manifest.stdin().is_some() {
             return self.handle_fed_plugin(request, caller, scope);
         }
 
@@ -150,8 +150,7 @@ impl Broker {
         let (manifest, command) =
             plugin::fed_command(&self.store, &request.name, &request.action, &bound)?;
         let secret = manifest
-            .stdin
-            .as_deref()
+            .stdin()
             .ok_or_else(|| anyhow!("{} reads no secret in its bundled copy", request.name))?;
         let value = self
             .plugin_approval(request, caller, scope, &manifest, &bound)?

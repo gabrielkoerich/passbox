@@ -45,13 +45,13 @@ fn plugin_list(store: &Store) -> Result<()> {
     for manifest in plugins {
         println!(
             "{} {}  {}{}",
-            manifest.name,
+            manifest.name(),
             manifest.version(),
-            manifest.description,
+            manifest.description(),
             stale_note(&manifest)
         );
-        for tool in &manifest.tools {
-            println!("  {} {}  {}", manifest.name, tool.name, tool.description);
+        for tool in manifest.tools() {
+            println!("  {} {}  {}", manifest.name(), tool.name, tool.description);
         }
     }
     Ok(())
@@ -60,7 +60,7 @@ fn plugin_list(store: &Store) -> Result<()> {
 /// A first-party plugin whose bundled version differs from the installed one can be refreshed
 #[cfg(feature = "host")]
 fn stale_note(manifest: &plugin::Manifest) -> String {
-    let Some(files) = plugin::first_party(&manifest.name) else {
+    let Some(files) = plugin::first_party(manifest.name()) else {
         return String::new();
     };
     let Some(bundled) = files
@@ -75,7 +75,7 @@ fn stale_note(manifest: &plugin::Manifest) -> String {
             "  (update available: {} -> {}, run `passbox plugin update {}`)",
             manifest.version(),
             bundled.version(),
-            manifest.name
+            manifest.name()
         );
     }
     String::new()
@@ -142,15 +142,15 @@ fn plugin_install(store: &Store, rest: &[String], install: Install) -> Result<()
     let text = std::fs::read_to_string(from.join("plugin.toml"))
         .with_context(|| format!("no first-party plugin {arg}, and no plugin.toml in {arg}"))?;
     let manifest: plugin::Manifest = toml::from_str(&text).context("plugin.toml")?;
-    let to = store.plugins_dir().join(&manifest.name);
+    let to = store.plugins_dir().join(manifest.name());
     fresh(&to)?;
     copy_dir(from, &to)?;
     eprintln!(
         "{} {} {} with {} tool(s)",
         install.done(),
-        manifest.name,
+        manifest.name(),
         manifest.version(),
-        manifest.tools.len()
+        manifest.tools().len()
     );
     Ok(())
 }
@@ -216,7 +216,7 @@ fn plugin_run_local(
     params: std::collections::HashMap<String, String>,
 ) -> Result<()> {
     let manifest = plugin::load(store, name)?;
-    if manifest.stdin.is_some() {
+    if manifest.stdin().is_some() {
         return plugin_run_fed(store, name, action, params);
     }
     let tool = manifest
@@ -263,8 +263,7 @@ fn plugin_run_fed(
 
     let (manifest, command) = plugin::fed_command(store, name, action, &params)?;
     let secret = manifest
-        .stdin
-        .as_deref()
+        .stdin()
         .with_context(|| format!("{name} reads no secret in its bundled copy"))?;
     let key = unlock(store, &manifest.approval(action, &agent(), &params))?;
     let Some((_, entry)) = store.find(secret, &key)? else {

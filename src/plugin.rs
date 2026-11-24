@@ -18,25 +18,25 @@ use std::process::{Command, Stdio};
 
 #[derive(Deserialize)]
 pub(crate) struct Manifest {
-    pub name: String,
-    pub description: String,
+    name: String,
+    description: String,
     /// Bumped when the plugin's behaviour changes, so a stale install can be spotted
     #[serde(default)]
-    pub version: Option<String>,
+    version: Option<String>,
     /// A command the plugin shells out to, which must be on PATH
     #[serde(default)]
-    pub requires: Option<String>,
+    requires: Option<String>,
     /// How to get that command, shown when it is missing
     #[serde(default)]
-    pub install: Option<String>,
+    install: Option<String>,
     /// "caller" runs tools in the invoking directory, the default runs them in the plugin dir
     #[serde(default)]
-    pub cwd: Option<String>,
+    cwd: Option<String>,
     /// A secret written to the tool's stdin, which makes the plugin run only on the broker
     #[serde(default)]
-    pub stdin: Option<String>,
+    stdin: Option<String>,
     #[serde(default, rename = "tool")]
-    pub tools: Vec<Tool>,
+    tools: Vec<Tool>,
 }
 
 #[derive(Deserialize)]
@@ -132,6 +132,23 @@ impl Manifest {
     /// Whether tools run where they were invoked rather than in the plugin directory
     pub(crate) fn runs_in_caller_dir(&self) -> bool {
         self.cwd.as_deref() == Some("caller")
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// The secret written to each tool's stdin, if the plugin reads one
+    pub(crate) fn stdin(&self) -> Option<&str> {
+        self.stdin.as_deref()
+    }
+
+    pub(crate) fn tools(&self) -> impl ExactSizeIterator<Item = &Tool> {
+        self.tools.iter()
     }
 
     pub(crate) fn version(&self) -> &str {
@@ -419,7 +436,7 @@ pub(crate) fn installed(store: &Store) -> Result<Vec<Manifest>> {
             out.push(manifest);
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(out)
 }
 

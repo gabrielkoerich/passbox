@@ -132,8 +132,8 @@ fn tools(store: &Store) -> Value {
     ];
     #[cfg(feature = "host")]
     for manifest in plugin::installed(store).unwrap_or_default() {
-        for tool in &manifest.tools {
-            list.push(plugin_tool_schema(&manifest.name, tool));
+        for tool in manifest.tools() {
+            list.push(plugin_tool_schema(manifest.name(), tool));
         }
     }
     json!({ "tools": list })
@@ -206,7 +206,7 @@ fn plugin_call(store: &Store, agent: &str, name: &str, args: &Value) -> Result<S
             bound.insert(key.clone(), text);
         }
     }
-    if manifest.stdin.is_some() {
+    if manifest.stdin().is_some() {
         let pairs: Vec<(String, String)> = bound.into_iter().collect();
         return broker::plugin_run_remote(store, plugin, action, &pairs, agent);
     }
