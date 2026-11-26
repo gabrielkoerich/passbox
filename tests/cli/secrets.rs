@@ -64,6 +64,19 @@ fn copy_puts_the_value_on_the_clipboard() {
     assert_eq!(String::from_utf8_lossy(&board.stdout), "sekret");
 }
 
+/* A 1Password note with fields and no password imports with an empty first line. Asking for its
+password fails, rather than copying nothing over what was on the clipboard */
+#[test]
+fn an_entry_with_no_password_says_so() {
+    let cli = Cli::new();
+    cli.run(&["add", "bank/main"], Some("\nbank: itau\npix: me@x"))
+        .unwrap();
+    let err = cli
+        .run(&["copy", "bank/main", "--field", "password"], None)
+        .unwrap_err();
+    assert!(err.contains("bank/main has no password"), "{err}");
+}
+
 /// One behaviour, no modes: a read works, and the old mode flag and subcommand are gone
 #[test]
 fn there_are_no_modes() {

@@ -151,6 +151,10 @@ fn read_field(store: &Store, name: &str, field: Option<&str>) -> Result<String> 
     let whole = read_secret(store, name)?;
     match field {
         None => Ok(whole),
+        // A 1Password note or login with fields and no password keeps its first line empty
+        Some("password") if whole.lines().next().is_none_or(str::is_empty) => {
+            bail!("{name} has no password, read one of its fields with --field")
+        }
         Some(want) => fields(&whole)
             .remove(want)
             .with_context(|| format!("{name} has no field {want}")),
@@ -169,7 +173,8 @@ pub(crate) fn get(store: &Store, name: &str, field: Option<&str>) -> Result<()> 
         );
     }
     let value = read_field(store, name, field)?;
-    out.write_all(value.as_bytes())?;
+    // An entry with fields and no password starts with its empty password line
+    out.write_all(value.strip_prefix('\n').unwrap_or(&value).as_bytes())?;
     out.write_all(b"\n")?;
     Ok(())
 }

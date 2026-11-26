@@ -19,7 +19,7 @@ while IFS= read -r name; do
   n=$(quote "$name")
   items+="${items:+,}{\"uid\":$n,\"title\":$n,\"arg\":$n,\"autocomplete\":$n,"
   items+="\"subtitle\":\"Copy the password\","
-  items+="\"mods\":{\"cmd\":{\"arg\":$n,\"subtitle\":\"Copy the username\",\"variables\":{\"field\":\"username\"}}}}"
+  items+="\"mods\":{\"cmd\":{\"arg\":$n,\"subtitle\":\"Copy the password\"}}}"
 done <<<"${names:-}"
 
 printf '{"items":[%s]}\n' "$items"
