@@ -6,7 +6,11 @@ use crate::store::{self, Store};
 use crate::sync;
 use age::x25519;
 use anyhow::{Context, Result, bail};
-use ssh_key::{HashAlg, PrivateKey, PublicKey, Signature};
+use rsa::pkcs1v15::SigningKey;
+use rsa::{BigUint, RsaPrivateKey};
+use sha2::{Sha256, Sha512};
+use ssh_key::private::KeypairData;
+use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey, Signature};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -19,6 +23,9 @@ const SIGN_REQUEST: u8 = 13;
 const SIGN_RESPONSE: u8 = 14;
 const EXTENSION: u8 = 27;
 const USERAUTH_REQUEST: u8 = 50;
+// Sign request flags, the hash a client wants an RSA signature made with
+const RSA_SHA2_256: u32 = 2;
+const RSA_SHA2_512: u32 = 4;
 const SESSION_BIND: &[u8] = b"session-bind@openssh.com";
 /// A forwarded agent rarely chains more than a few hops, so this bounds what one connection holds
 const MAX_BINDS: usize = 16;
@@ -71,10 +78,8 @@ pub(crate) fn remember(store: &Store, value: &str) -> Result<()> {
     if !value.trim_start().starts_with(HEADER) {
         return Ok(());
     }
+    // The caller says why with `sshkey::unoffered`, since it knows the secret's name
     let Some(private) = parse(value) else {
-        eprintln!(
-            "the SSH agent offers only unencrypted Ed25519 and P-256 keys, so it will not offer this one"
-        );
         return Ok(());
     };
     let mut all = offered(store);
@@ -85,6 +90,42 @@ pub(crate) fn remember(store: &Store, value: &str) -> Result<()> {
         all.push(private.public_key().clone());
     }
     write(store, all.into_iter())
+}
+
+/**
+ * RSA goes through the `rsa` crate. ssh-key 0.6.7 rebuilds an RSA key from the prime p twice, so
+ * its own RSA signer always fails, and it signs SHA-512 even when the server asked for SHA-256. No
+ * flag means `ssh-rsa` with SHA-1, which OpenSSH stopped accepting in 8.8
+ **/
+pub(crate) fn sign_with(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature> {
+    let KeypairData::Rsa(pair) = key.key_data() else {
+        return Ok(signature::Signer::try_sign(key, data)?);
+    };
+    let hash = if flags & RSA_SHA2_512 != 0 {
+        HashAlg::Sha512
+    } else if flags & RSA_SHA2_256 != 0 {
+        HashAlg::Sha256
+    } else {
+        bail!("the client asked for an ssh-rsa signature, which uses SHA-1");
+    };
+
+    let private = RsaPrivateKey::from_components(
+        BigUint::try_from(&pair.public.n)?,
+        BigUint::try_from(&pair.public.e)?,
+        BigUint::try_from(&pair.private.d)?,
+        vec![
+            BigUint::try_from(&pair.private.p)?,
+            BigUint::try_from(&pair.private.q)?,
+        ],
+    )?;
+    let bytes = match hash {
+        HashAlg::Sha256 => signature::Signer::try_sign(&SigningKey::<Sha256>::new(private), data)?,
+        _ => signature::Signer::try_sign(&SigningKey::<Sha512>::new(private), data)?,
+    };
+    Ok(Signature::new(
+        Algorithm::Rsa { hash: Some(hash) },
+        signature::SignatureEncoding::to_vec(&bytes),
+    )?)
 }
 
 /// How a prompt names a key: its comment, or its fingerprint when it has none
@@ -337,7 +378,7 @@ pub(crate) fn answer(
     request: &[u8],
     offered: &[PublicKey],
     connection: &mut Connection,
-    sign: impl FnOnce(&PublicKey, &[u8], Option<&PublicKey>) -> Result<Signature>,
+    sign: impl FnOnce(&PublicKey, &[u8], u32, Option<&PublicKey>) -> Result<Signature>,
 ) -> Vec<u8> {
     reply(request, offered, connection, sign).unwrap_or_else(|e| {
         eprintln!("ssh agent: {e:#}");
@@ -350,7 +391,7 @@ fn reply(
     request: &[u8],
     offered: &[PublicKey],
     connection: &mut Connection,
-    sign: impl FnOnce(&PublicKey, &[u8], Option<&PublicKey>) -> Result<Signature>,
+    sign: impl FnOnce(&PublicKey, &[u8], u32, Option<&PublicKey>) -> Result<Signature>,
 ) -> Result<Vec<u8>> {
     let (&kind, mut rest) = request.split_first().context("an empty request")?;
     let mut out = Vec::new();
@@ -366,11 +407,14 @@ fn reply(
         SIGN_REQUEST => {
             let blob = take(&mut rest)?;
             let data = take(&mut rest)?;
+            let flags = rest
+                .first_chunk::<4>()
+                .map_or(0, |f| u32::from_be_bytes(*f));
             let wanted = offered
                 .iter()
                 .find(|k| k.to_bytes().is_ok_and(|b| b == blob))
                 .context("a sign request for a key this agent does not offer")?;
-            let signature = sign(wanted, data, connection.destination(data))?;
+            let signature = sign(wanted, data, flags, connection.destination(data))?;
             out.push(SIGN_RESPONSE);
             put(&mut out, &Vec::<u8>::try_from(signature)?)?;
         }
@@ -401,11 +445,12 @@ fn take<'a>(rest: &mut &'a [u8]) -> Result<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::broker::sshkey::{decrypt, release};
+    use crate::broker::sshkey::{decrypt, release, unoffered};
     use crate::plugin;
     use signature::Verifier;
+    use ssh_key::EcdsaCurve;
     use ssh_key::private::{Ed25519Keypair, KeypairData};
-    use ssh_key::rand_core::{self, CryptoRng, RngCore};
+    use ssh_key::rand_core::{self, CryptoRng, OsRng, RngCore};
 
     /// A fixed seed, so the key is the same on every run and never touches disk
     fn key() -> PrivateKey {
@@ -426,7 +471,7 @@ mod tests {
 
     /// A `session-bind@openssh.com` request as ssh sends it, signed by `signer`
     fn bind(host: &PrivateKey, signer: &PrivateKey, session: &[u8], hop: Hop) -> Vec<u8> {
-        let signature: Signature = signature::Signer::try_sign(signer, session).unwrap();
+        let signature = sign_with(signer, session, RSA_SHA2_512).unwrap();
         let mut out = vec![EXTENSION];
         put(&mut out, SESSION_BIND).unwrap();
         put(&mut out, &host.public_key().to_bytes().unwrap()).unwrap();
@@ -453,7 +498,7 @@ mod tests {
             &request(SIGN_REQUEST, &[&blob, data], 0),
             &[private.public_key().clone()],
             connection,
-            |_, data, host| {
+            |_, data, _, host| {
                 seen = host.cloned();
                 Ok(signature::Signer::try_sign(&private, data)?)
             },
@@ -493,6 +538,80 @@ mod tests {
     }
 
     impl CryptoRng for Fixed {}
+
+    /// Made once per run, since finding RSA primes takes a moment in a debug build
+    fn rsa() -> &'static PrivateKey {
+        static KEY: std::sync::OnceLock<PrivateKey> = std::sync::OnceLock::new();
+        KEY.get_or_init(|| PrivateKey::random(&mut OsRng, Algorithm::Rsa { hash: None }).unwrap())
+    }
+
+    #[test]
+    fn rsa_signs_with_the_hash_the_request_asks_for() {
+        for (flags, hash) in [
+            (RSA_SHA2_256, HashAlg::Sha256),
+            (RSA_SHA2_512, HashAlg::Sha512),
+        ] {
+            let signed = sign_with(rsa(), b"data", flags).unwrap();
+            assert_eq!(signed.algorithm(), Algorithm::Rsa { hash: Some(hash) });
+            Verifier::verify(rsa().public_key(), b"data", &signed).unwrap();
+        }
+        // No flag asks for `ssh-rsa`, which is SHA-1
+        assert!(sign_with(rsa(), b"data", 0).is_err());
+    }
+
+    #[test]
+    fn every_ecdsa_curve_and_rsa_is_offered_and_signs() {
+        for curve in [
+            EcdsaCurve::NistP256,
+            EcdsaCurve::NistP384,
+            EcdsaCurve::NistP521,
+        ] {
+            let key = PrivateKey::random(&mut OsRng, Algorithm::Ecdsa { curve }).unwrap();
+            let text = key.to_openssh(ssh_key::LineEnding::LF).unwrap();
+            assert!(parse(&text).is_some(), "{curve:?} is not offered");
+            let signed = sign_with(&key, b"data", 0).unwrap();
+            Verifier::verify(key.public_key(), b"data", &signed).unwrap();
+        }
+        let text = rsa().to_openssh(ssh_key::LineEnding::LF).unwrap();
+        assert!(parse(&text).is_some());
+        assert_eq!(unoffered("ssh/rsa", &text), None);
+    }
+
+    #[test]
+    fn an_rsa_key_leaves_only_encrypted() {
+        let text = rsa().to_openssh(ssh_key::LineEnding::LF).unwrap();
+        let err = release("ssh/old", &text, "").unwrap_err();
+        assert!(
+            err.to_string().contains("passbox get --encrypt ssh/old"),
+            "{err}"
+        );
+
+        let out = release("ssh/old", &text, "hunter2").unwrap();
+        let locked = PrivateKey::from_openssh(&out).unwrap();
+        assert!(locked.is_encrypted());
+        let plain = locked.decrypt("hunter2").unwrap();
+        assert_eq!(plain.public_key().key_data(), rsa().public_key().key_data());
+    }
+
+    /* pass keeps a key with the passphrase it was made with. Stored as it is, the agent cannot
+    offer it and no export can encrypt it again, so both say how to enter the passphrase once */
+    #[test]
+    fn a_key_stored_with_its_own_passphrase_says_how_to_use_it() {
+        let own = key()
+            .encrypt(&mut Fixed, "hunter2")
+            .unwrap()
+            .to_openssh(ssh_key::LineEnding::LF)
+            .unwrap();
+        assert!(release("ssh/own", &own, "").is_err());
+        let err = release("ssh/own", &own, "pw").unwrap_err();
+        assert!(
+            err.to_string().contains("passbox add --replace ssh/own"),
+            "{err}"
+        );
+        let why = unoffered("ssh/own", &own).expect("a reason");
+        assert!(why.contains("passbox add --replace ssh/own"), "{why}");
+        assert_eq!(unoffered("api/key", "hunter2"), None);
+    }
 
     #[test]
     fn a_passphrase_key_is_stored_decrypted() {
@@ -554,7 +673,7 @@ mod tests {
             &[REQUEST_IDENTITIES],
             std::slice::from_ref(&public),
             &mut Connection::default(),
-            |_, _, _| unreachable!(),
+            |_, _, _, _| unreachable!(),
         );
         let (&kind, rest) = out.split_first().unwrap();
         assert_eq!(kind, IDENTITIES_ANSWER);
@@ -574,7 +693,7 @@ mod tests {
             &request(SIGN_REQUEST, &[&blob, b"challenge"], 0),
             std::slice::from_ref(&public),
             &mut Connection::default(),
-            |wanted, data, host| {
+            |wanted, data, _, host| {
                 assert_eq!(wanted, &public);
                 assert!(host.is_none(), "an unbound connection names no host");
                 Ok(signature::Signer::try_sign(&private, data)?)
@@ -594,14 +713,14 @@ mod tests {
             &request(SIGN_REQUEST, &[&blob, b"x"], 0),
             &[],
             &mut Connection::default(),
-            |_, _, _| unreachable!(),
+            |_, _, _, _| unreachable!(),
         );
         assert_eq!(unknown, [FAILURE]);
         let refused = answer(
             &request(SIGN_REQUEST, &[&blob, b"x"], 0),
             &[public],
             &mut Connection::default(),
-            |_, _, _| bail!("denied"),
+            |_, _, _, _| bail!("denied"),
         );
         assert_eq!(refused, [FAILURE]);
     }
@@ -630,11 +749,11 @@ mod tests {
     fn unsupported_and_malformed_requests_fail() {
         let mut c = Connection::default();
         assert_eq!(
-            answer(&[17], &[], &mut c, |_, _, _| unreachable!()),
+            answer(&[17], &[], &mut c, |_, _, _, _| unreachable!()),
             [FAILURE]
         );
         assert_eq!(
-            answer(&[], &[], &mut c, |_, _, _| unreachable!()),
+            answer(&[], &[], &mut c, |_, _, _, _| unreachable!()),
             [FAILURE]
         );
         assert_eq!(
@@ -642,16 +761,51 @@ mod tests {
                 &[SIGN_REQUEST, 0, 0, 0, 9, 1],
                 &[],
                 &mut c,
-                |_, _, _| unreachable!()
+                |_, _, _, _| unreachable!()
             ),
             [FAILURE]
         );
         let mut other = vec![EXTENSION];
         put(&mut other, b"query").unwrap();
         assert_eq!(
-            answer(&other, &[], &mut c, |_, _, _| unreachable!()),
+            answer(&other, &[], &mut c, |_, _, _, _| unreachable!()),
             [FAILURE]
         );
+    }
+
+    #[test]
+    fn a_session_binds_to_an_ecdsa_or_rsa_host_key() {
+        let hosts = [
+            PrivateKey::random(
+                &mut OsRng,
+                Algorithm::Ecdsa {
+                    curve: EcdsaCurve::NistP384,
+                },
+            )
+            .unwrap(),
+            PrivateKey::random(
+                &mut OsRng,
+                Algorithm::Ecdsa {
+                    curve: EcdsaCurve::NistP521,
+                },
+            )
+            .unwrap(),
+            rsa().clone(),
+        ];
+        for host in hosts {
+            let mut c = Connection::default();
+            let bound = answer(
+                &bind(&host, &host, b"sid", Hop::Direct),
+                &[],
+                &mut c,
+                |_, _, _, _| unreachable!(),
+            );
+            assert_eq!(bound, [SUCCESS], "{:?}", host.algorithm());
+            assert_eq!(
+                destination(&mut c, &login(b"sid")).map(|k| k.key_data().clone()),
+                Some(host.public_key().key_data().clone())
+            );
+        }
     }
 
     #[test]
@@ -663,7 +817,7 @@ mod tests {
                 &bind(&host, &host, b"sid", Hop::Direct),
                 &[],
                 &mut c,
-                |_, _, _| unreachable!()
+                |_, _, _, _| unreachable!()
             ),
             [SUCCESS]
         );
@@ -687,7 +841,7 @@ mod tests {
             &bind(&host, &liar, b"sid", Hop::Direct),
             &[],
             &mut forged,
-            |_, _, _| unreachable!(),
+            |_, _, _, _| unreachable!(),
         );
         assert_eq!(out, [FAILURE]);
         assert!(destination(&mut forged, &login(b"sid")).is_none());
@@ -697,7 +851,7 @@ mod tests {
             &bind(&host, &host, b"sid", Hop::Forwarded),
             &[],
             &mut forwarded,
-            |_, _, _| unreachable!(),
+            |_, _, _, _| unreachable!(),
         );
         assert!(destination(&mut forwarded, &login(b"sid")).is_none());
 
@@ -706,13 +860,13 @@ mod tests {
             &bind(&host, &host, b"sid", Hop::Direct),
             &[],
             &mut chained,
-            |_, _, _| unreachable!(),
+            |_, _, _, _| unreachable!(),
         );
         answer(
             &bind(&liar, &liar, b"sid2", Hop::Direct),
             &[],
             &mut chained,
-            |_, _, _| unreachable!(),
+            |_, _, _, _| unreachable!(),
         );
         assert!(destination(&mut chained, &login(b"sid")).is_none());
     }

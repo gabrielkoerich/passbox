@@ -117,8 +117,14 @@ pub(crate) fn add(store: &Store, name: &str, input: Input<'_>, existing: Existin
     };
     store.put(&id, &secret, &recipient)?;
     eprintln!("stored {name}");
+    // A client has no agent, so only the host offers the key or says why not
     #[cfg(feature = "host")]
-    ssh::remember(store, &secret.value)?;
+    {
+        ssh::remember(store, &secret.value)?;
+        if let Some(why) = sshkey::unoffered(name, &secret.value) {
+            eprintln!("{why}");
+        }
+    }
     Ok(())
 }
 

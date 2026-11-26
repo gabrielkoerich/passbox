@@ -97,13 +97,15 @@ hkdf = "0.12.4"
 libc = "0.2.180"
 rand = "0.10.3"
 rpassword = "7.4.0"
+# ssh-key 0.6.7 cannot sign with RSA, see `ssh::sign_with`
+rsa = { version = "0.9.10", default-features = false, features = ["std"] }
 secrecy = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10.9"
 signature = "2.2.0"
-# Ed25519 and P-256 only. RSA would pull in the `rsa` crate for a key type few still make
-ssh-key = { version = "0.6.7", default-features = false, features = ["std", "ed25519", "p256", "encryption", "getrandom"] }
+# Every key type 1Password makes, so no imported key sits in the store unusable
+ssh-key = { version = "0.6.7", default-features = false, features = ["std", "ed25519", "p256", "p384", "p521", "rsa", "encryption", "getrandom"] }
 toml = "0.9.8"
 x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 zeroize = "1.9.0"
@@ -112,3 +114,10 @@ zeroize = "1.9.0"
 # The test's phone speaks the wire format on its own, as the app will
 base64 = "0.22.1"
 tempfile = "3.24.0"
+
+# Finding RSA primes unoptimized took minutes in the tests, so these two build optimized
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[profile.dev.package.rsa]
+opt-level = 3

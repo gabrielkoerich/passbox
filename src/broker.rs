@@ -350,7 +350,7 @@ impl Broker {
             let Some((id, secret)) = self.store.find(name, &key)? else {
                 continue;
             };
-            if sshkey::parse(&secret.value).is_some() {
+            if sshkey::is_key(&secret.value) {
                 bail!(
                     "{name} is an SSH key, which only the SSH agent signs with, so no token holds it"
                 );

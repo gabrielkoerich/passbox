@@ -7,7 +7,13 @@ use ssh_key::{Algorithm, EcdsaCurve, PrivateKey};
 
 pub(crate) const HEADER: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
 
-/// A secret is an SSH key when its value is an unencrypted Ed25519 or P-256 OpenSSH key
+/// Any OpenSSH private key, of a type the agent signs with or not, encrypted or not
+pub(crate) fn is_key(value: &str) -> bool {
+    value.trim_start().starts_with(HEADER) && PrivateKey::from_openssh(value).is_ok()
+}
+
+/// A key the agent signs with: unencrypted, and Ed25519, ECDSA or RSA
+#[cfg(feature = "host")]
 pub(crate) fn parse(value: &str) -> Option<PrivateKey> {
     if !value.trim_start().starts_with(HEADER) {
         return None;
@@ -21,9 +27,33 @@ fn usable(key: &PrivateKey) -> bool {
         key.algorithm(),
         Algorithm::Ed25519
             | Algorithm::Ecdsa {
-                curve: EcdsaCurve::NistP256
+                curve: EcdsaCurve::NistP256 | EcdsaCurve::NistP384 | EcdsaCurve::NistP521
             }
+            | Algorithm::Rsa { .. }
     )
+}
+
+/// Why the agent does not offer this key, or None when it does or the value is no key
+#[cfg(feature = "host")]
+pub(crate) fn unoffered(name: &str, value: &str) -> Option<String> {
+    if parse(value).is_some() {
+        return None;
+    }
+
+    let key = value
+        .trim_start()
+        .starts_with(HEADER)
+        .then(|| PrivateKey::from_openssh(value).ok())??;
+    Some(if key.is_encrypted() && usable(&key) {
+        format!(
+            "the SSH key has its own passphrase, run `passbox add --replace {name}` at a terminal to enter it once so the agent offers it"
+        )
+    } else {
+        format!(
+            "the SSH agent does not sign with {} keys, so it stores the key but does not offer it",
+            key.algorithm()
+        )
+    })
 }
 
 /// A passphrase-protected key the agent can use, decrypted with the passphrase `ask` returns
@@ -47,19 +77,28 @@ pub(crate) fn decrypt(value: &str, ask: impl FnOnce() -> Result<String>) -> Resu
     Ok(Some(text.trim_end_matches('\n').to_string()))
 }
 
-/// What a read hands out. A key the agent signs with leaves only encrypted with `passphrase`
+/// What a read hands out. Any SSH key, of every type, leaves only encrypted with `passphrase`
 pub(crate) fn release(name: &str, value: &str, passphrase: &str) -> Result<String> {
-    let Some(key) = parse(value) else {
+    if !is_key(value) {
         if !passphrase.is_empty() {
             bail!("{name} is not an SSH key, drop --encrypt to read it");
         }
 
         return Ok(value.to_string());
-    };
+    }
     if passphrase.is_empty() {
         bail!(
             "{name} is an SSH key, which only the SSH agent signs with\n\
              run `passbox get --encrypt {name}` at a terminal to export it with a passphrase"
+        );
+    }
+
+    let key = PrivateKey::from_openssh(value)?;
+    // Encrypting it again would need the passphrase it was stored with
+    if key.is_encrypted() {
+        bail!(
+            "{name} is stored with its own passphrase\n\
+             run `passbox add --replace {name}` at a terminal to enter it once, then export it"
         );
     }
 

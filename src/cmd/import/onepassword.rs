@@ -1,7 +1,6 @@
 //! Bring items across from 1Password through the `op` CLI, which the user has signed in
 
 use super::{Entry, Fetched, Source, under};
-use crate::broker::sshkey;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -75,7 +74,8 @@ struct Url {
 
 /// What one item becomes. Notes name parts of an imported item that were left out
 enum Plan {
-    Value(String, Vec<String>),
+    /// The value, notes for the report, and whether it is a blob that `get --field` does not split
+    Value(String, Vec<String>, bool),
     SshKey(String),
     Document,
     Skip(String),
@@ -159,7 +159,7 @@ fn plan(item: &Item) -> Plan {
         "SSH_KEY" => ssh_key(item),
         "DOCUMENT" => Plan::Document,
         "SECURE_NOTE" => match notes(item) {
-            Some(text) => Plan::Value(text.to_string(), Vec::new()),
+            Some(text) => Plan::Value(text.to_string(), Vec::new(), true),
             None => Plan::Skip("the note is empty".into()),
         },
         _ => record(item),
@@ -203,25 +203,27 @@ fn record(item: &Item) -> Plan {
     let password = first
         .and_then(|i| fields[i].value.as_deref())
         .unwrap_or_default();
-    if password.contains('\n') {
-        return Plan::Skip("the password has more than one line".into());
-    }
-
+    // The first line is the password, so one that spans lines makes the item a blob
+    let blob = password.contains('\n');
     let mut taken: HashSet<String> = HashSet::from(["password".to_string()]);
     let mut lines = Vec::new();
+    let mut blocks = Vec::new();
     let mut notes_left = Vec::new();
-    let mut add =
-        |key: String, value: &str, section: Option<&str>, notes_left: &mut Vec<String>| {
-            if value.contains('\n') {
-                notes_left.push(format!("field {key} has more than one line, not imported"));
-                return;
-            }
-            lines.push(format!(
-                "{}: {}",
-                unique(&mut taken, &key, section),
-                value.trim()
-            ));
-        };
+    let mut add = |key: String,
+                   value: &str,
+                   section: Option<&str>,
+                   notes_left: &mut Vec<String>| {
+        let key = unique(&mut taken, &key, section);
+        // A `key: value` line cannot hold it, so it goes after the notes, whole
+        if value.contains('\n') {
+            notes_left.push(format!(
+                    "field {key} has more than one line, kept after the notes where `get --field` cannot read it"
+                ));
+            blocks.push(format!("{key}:\n{}", value.trim_end_matches('\n')));
+            return;
+        }
+        lines.push(format!("{key}: {}", value.trim()));
+    };
 
     let username = fields
         .iter()
@@ -247,8 +249,9 @@ fn record(item: &Item) -> Plan {
         }
         let key = field_key(f);
         if f.kind == "OTP" {
-            notes_left.push(format!("{key} is a TOTP seed, passbox has no TOTP support"));
-            continue;
+            notes_left.push(format!(
+                "{key} is a TOTP seed, kept as a field, passbox does not make codes from it"
+            ));
         }
         let section = f.section.as_ref().map(|s| s.label.as_str());
         add(
@@ -268,10 +271,17 @@ fn record(item: &Item) -> Plan {
         value.push('\n');
         value.push_str(text);
     }
+    for block in blocks {
+        value.push('\n');
+        value.push_str(&block);
+    }
     if value.trim().is_empty() {
         return Plan::Skip("the item has no values".into());
     }
-    Plan::Value(value, notes_left)
+    if blob {
+        notes_left.push("the password has more than one line, so the item is a blob and `get --field` does not split it".into());
+    }
+    Plan::Value(value, notes_left, blob)
 }
 
 fn has_value(f: &Field) -> bool {
@@ -362,11 +372,7 @@ impl Source for OnePassword {
     fn fetch(&self, handle: &Handle) -> Result<Fetched> {
         let item = item(&handle.vault, &handle.item)?;
         Ok(match plan(&item) {
-            Plan::Value(value, notes) => Fetched::Value {
-                value,
-                notes,
-                blob: item.category == "SECURE_NOTE",
-            },
+            Plan::Value(value, notes, blob) => Fetched::Value { value, notes, blob },
             Plan::Skip(reason) => Fetched::Skip(reason),
             Plan::Document => {
                 let raw = op(&["document", "get", &item.id, "--vault", &handle.vault])?;
@@ -390,17 +396,11 @@ impl Source for OnePassword {
                 } else {
                     text
                 };
-                let text = text.trim_end_matches('\n').to_string();
-                if sshkey::parse(&text).is_some() {
-                    Fetched::Value {
-                        value: text,
-                        notes: Vec::new(),
-                        blob: true,
-                    }
-                } else {
-                    Fetched::Skip(
-                        "the SSH agent signs with unencrypted Ed25519 or P-256 keys only".into(),
-                    )
+                // Every key is kept, `import` notes one the agent does not offer
+                Fetched::Value {
+                    value: text.trim_end_matches('\n').to_string(),
+                    notes: Vec::new(),
+                    blob: true,
                 }
             }
         })
@@ -417,7 +417,7 @@ mod tests {
 
     fn value(plan: Plan) -> (String, Vec<String>) {
         match plan {
-            Plan::Value(v, n) => (v, n),
+            Plan::Value(v, n, _) => (v, n),
             _ => panic!("expected a value"),
         }
     }
@@ -472,11 +472,13 @@ mod tests {
         assert_eq!(
             value,
             "hunter2\nusername: gb\nurl: https://github.com\nurl 2: https://other\n\
-             recovery email: me@x\nline one\nline two"
+             recovery email: me@x\none-time password: otpauth://totp/x\nline one\nline two"
         );
         assert_eq!(
             notes,
-            ["one-time password is a TOTP seed, passbox has no TOTP support"]
+            [
+                "one-time password is a TOTP seed, kept as a field, passbox does not make codes from it"
+            ]
         );
     }
 
@@ -522,15 +524,33 @@ mod tests {
     }
 
     #[test]
-    fn a_multi_line_field_is_reported_not_folded_in() {
+    fn a_multi_line_field_is_kept_after_the_notes() {
         let item = parse(
             r#"{"category":"API_CREDENTIAL","fields":[
               {"id":"credential","type":"CONCEALED","label":"credential","value":"tok"},
               {"id":"k","type":"STRING","label":"cert","value":"a\nb"}]}"#,
         );
         let (value, notes) = value(plan(&item));
-        assert_eq!(value, "tok");
-        assert_eq!(notes, ["field cert has more than one line, not imported"]);
+        assert_eq!(value, "tok\ncert:\na\nb");
+        assert_eq!(
+            notes,
+            [
+                "field cert has more than one line, kept after the notes where `get --field` cannot read it"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_multi_line_password_makes_the_item_a_blob() {
+        let item = parse(
+            r#"{"category":"PASSWORD","fields":[
+              {"id":"password","type":"CONCEALED","purpose":"PASSWORD","value":"one\ntwo"}]}"#,
+        );
+        let Plan::Value(value, _, blob) = plan(&item) else {
+            panic!("expected a value");
+        };
+        assert_eq!(value, "one\ntwo");
+        assert!(blob);
     }
 
     #[test]

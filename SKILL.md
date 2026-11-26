@@ -148,7 +148,7 @@ Every SSH signature prompts, so a job that connects to hosts while the owner is 
 
 - The first login to a listed host prompts once. Later logins with the same key to the same host key skip the prompt until the window ends, at most 24 hours, also with the screen locked, and are audited as `by window`.
 - A host is named as `~/.ssh/known_hosts` lists it, or by its `SHA256:` host key fingerprint. A pattern is refused.
-- It needs OpenSSH 8.9 or later and an Ed25519 or P-256 host key. A forwarded agent and commit signing always prompt. A broker restart ends every window.
+- It needs OpenSSH 8.9 or later and an Ed25519, ECDSA or RSA host key. A forwarded agent and commit signing always prompt. A broker restart ends every window.
 
 ## Fields in one entry
 

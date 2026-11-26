@@ -1280,6 +1280,7 @@ dependencies = [
  "libc",
  "rand 0.10.3",
  "rpassword",
+ "rsa",
  "secrecy",
  "serde",
  "serde_json",
@@ -1871,6 +1872,7 @@ checksum = "3b86f5297f0f04d08cabaa0f6bff7cb6aec4d9c3b49d87990d63da9d9156a8c3"
 dependencies = [
  "bcrypt-pbkdf",
  "ed25519-dalek",
+ "num-bigint-dig",
  "p256",
  "p384",
  "p521",

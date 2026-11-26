@@ -180,32 +180,30 @@ fn importing_from_1password_maps_each_item_and_says_why_it_skipped() {
         "{dry}"
     );
     assert!(dry.contains("Work/AWS: root -> 1p/work/aws-root"), "{dry}");
+    // A key the agent cannot sign with is still imported
     assert!(
-        dry.contains("skipped Personal/Old key, the SSH agent signs"),
+        dry.contains("Personal/Old key -> 1p/personal/old-key"),
         "{dry}"
     );
     assert!(
         dry.contains("skipped Personal/Scan, the document is binary"),
         "{dry}"
     );
-    assert!(dry.contains("would import 3, skipped 2"), "{dry}");
+    assert!(dry.contains("would import 4, skipped 1"), "{dry}");
     assert!(!dry.contains("hunter2"), "a dry run printed a value: {dry}");
     assert_eq!(cli.run(&["ls"], None).unwrap(), "");
 
     let out = import_1password(&cli, &fake, &["personal"]);
-    assert!(
-        out.contains("TOTP seed, passbox has no TOTP support"),
-        "{out}"
-    );
-    assert!(out.contains("imported 2, skipped 2, refused 0"), "{out}");
+    assert!(out.contains("TOTP seed, kept as a field"), "{out}");
+    assert!(out.contains("imported 3, skipped 1, refused 0"), "{out}");
     assert!(!out.contains("hunter2"), "{out}");
     assert_eq!(
         cli.run(&["ls"], None).unwrap(),
-        "personal/github\npersonal/wi-fi-note\n"
+        "personal/github\npersonal/old-key\npersonal/wi-fi-note\n"
     );
     assert_eq!(
         cli.read("personal/github").unwrap(),
-        "hunter2\nusername: gb\nurl: https://github.com"
+        "hunter2\nusername: gb\nurl: https://github.com\none-time password: otpauth://totp/x"
     );
     assert_eq!(
         cli.read("personal/wi-fi-note").unwrap(),
@@ -219,7 +217,7 @@ fn importing_from_1password_maps_each_item_and_says_why_it_skipped() {
         "{again}"
     );
     assert!(
-        again.contains("imported 1, skipped 2, refused 2"),
+        again.contains("imported 1, skipped 1, refused 3"),
         "{again}"
     );
     assert_eq!(cli.read("work/aws-root").unwrap(), "AKIA");

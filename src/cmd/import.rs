@@ -7,7 +7,7 @@ mod pass;
 pub(crate) use onepassword::OnePassword;
 pub(crate) use pass::Pass;
 
-use crate::broker::ssh;
+use crate::broker::{ssh, sshkey};
 use crate::store::{Secret, Store, new_id, now};
 use crate::unlock;
 use age::x25519;
@@ -189,7 +189,12 @@ fn copy<S: Source>(
         let outcome = match source.fetch(&handle) {
             Err(e) => Outcome::Skipped(format!("{e:#}")),
             Ok(Fetched::Skip(reason)) => Outcome::Skipped(reason),
-            Ok(Fetched::Value { value, notes, blob }) => {
+            Ok(Fetched::Value {
+                value,
+                mut notes,
+                blob,
+            }) => {
+                notes.extend(sshkey::unoffered(&name, &value));
                 if mode == Mode::Write {
                     let secret = Secret {
                         name: name.clone(),

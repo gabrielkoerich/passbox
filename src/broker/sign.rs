@@ -16,6 +16,7 @@ impl Broker {
         policy: &ssh::Windows,
         window_key: &SshWindowKey,
         data: &[u8],
+        flags: u32,
         agent: &str,
         caller: &str,
     ) -> Option<Result<ssh_key::Signature>> {
@@ -27,10 +28,10 @@ impl Broker {
             store::now(),
         )?;
         let to = format!("to {} {}", window.host, window_key.1);
-        let signed = signature::Signer::try_sign(&*window.private, data);
+        let signed = ssh::sign_with(&window.private, data, flags);
         Some(
             self.audit_by(agent, &window.name, "by window", caller, &to)
-                .and_then(|()| signed.map_err(|e| anyhow!("could not sign: {e}"))),
+                .and_then(|()| signed.map_err(|e| anyhow!("could not sign: {e:#}"))),
         )
     }
 
@@ -41,6 +42,7 @@ impl Broker {
         &mut self,
         wanted: &ssh_key::PublicKey,
         data: &[u8],
+        flags: u32,
         host: Option<&ssh_key::PublicKey>,
         agent: &str,
         caller: &str,
@@ -55,7 +57,8 @@ impl Broker {
         });
         let window_key = host.map(|h| (fingerprint(wanted), fingerprint(h)));
         if let Some(window_key) = &window_key
-            && let Some(signed) = self.signed_by_window(&policy, window_key, data, agent, caller)
+            && let Some(signed) =
+                self.signed_by_window(&policy, window_key, data, flags, agent, caller)
         {
             return signed;
         }
@@ -147,6 +150,6 @@ impl Broker {
                 ..Entry::default()
             },
         )?;
-        signature::Signer::try_sign(private, data).map_err(|e| anyhow!("could not sign: {e}"))
+        ssh::sign_with(private, data, flags).map_err(|e| anyhow!("could not sign: {e:#}"))
     }
 }
