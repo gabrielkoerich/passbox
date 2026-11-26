@@ -435,14 +435,28 @@ pub(crate) fn machine_add(store: &Store) -> Result<()> {
                 unsealed.len()
             );
         }
+        // A planted copy of a real name is the one to doubt, and escaping stops a name rewriting the prompt
+        let sealed: Vec<String> = store
+            .secrets(&key)?
+            .into_iter()
+            .map(|(_, s)| s.name.clone())
+            .collect();
         for (_, secret) in &unsealed {
-            eprintln!("  {}", secret.name);
+            let twin = if sealed.contains(&secret.name) {
+                "  (a sealed secret already has this name)"
+            } else {
+                ""
+            };
+            eprintln!("  {:?}{twin}", secret.name);
         }
         if !matches!(
-            ask("Are all of these yours? Adopt them? [y/N] ")?
-                .trim()
-                .to_lowercase()
-                .as_str(),
+            ask(&format!(
+                "Are all {} of these yours? Adopt them? [y/N] ",
+                unsealed.len()
+            ))?
+            .trim()
+            .to_lowercase()
+            .as_str(),
             "y" | "yes"
         ) {
             bail!("not bound and nothing adopted, run `passbox machine add` again to choose again");

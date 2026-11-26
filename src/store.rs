@@ -481,7 +481,9 @@ impl Store {
                 write_private(&self.sealing_path(), text.as_bytes())?;
                 text
             };
-            let keep = |path: &Path| file_line(path).is_some_and(|line| listed.contains(&line));
+            let keep = |path: &Path| {
+                file_line(path).is_some_and(|line| listed.lines().any(|l| l == line.trim_end()))
+            };
             self.seal_files(&files, key, keep)?;
         }
         self.mark_sealed()?;
