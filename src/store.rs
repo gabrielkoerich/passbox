@@ -462,13 +462,27 @@ impl Store {
     files are trusted and sealed only on the store's first upgrade, when none is sealed. A sealed
     file means another Mac upgraded, so nothing unsealed is trusted. A file that does not open is
     moved to store/.quarantine, which never syncs, so it neither holds the upgrade back nor locks
-    the store. The client build reads what a Mac sealed, and never adopts */
+    the store. The client build reads what a Mac sealed, and never adopts. Before it writes, the
+    first seal lists every file it will seal with a hash of its bytes, so one cut off resumes on
+    exactly those, and a file a sync brought in between is not adopted */
     fn seal_all(&self, key: &x25519::Identity) -> Result<()> {
         let (files, any_sealed) = self.by_seal(key)?;
-        let first = cfg!(feature = "host") && (!any_sealed || self.sealing_path().exists());
-        if first {
-            write_private(&self.sealing_path(), b"")?;
-            self.seal_files(&files, key)?;
+        let listed = fs::read_to_string(self.sealing_path()).ok();
+        if cfg!(feature = "host") && (!any_sealed || listed.is_some()) {
+            let listed = if let Some(text) = listed {
+                text
+            } else {
+                let text: String = files
+                    .iter()
+                    .map(|(id, _)| self.secret_path(id))
+                    .chain(self.tombed()?.iter().map(|id| self.tomb_path(id)))
+                    .filter_map(|path| file_line(&path))
+                    .collect();
+                write_private(&self.sealing_path(), text.as_bytes())?;
+                text
+            };
+            let keep = |path: &Path| file_line(path).is_some_and(|line| listed.contains(&line));
+            self.seal_files(&files, key, keep)?;
         }
         self.mark_sealed()?;
         let _ = fs::remove_file(self.sealing_path());
@@ -496,17 +510,21 @@ impl Store {
         Ok((files, any_sealed))
     }
 
-    /// Adopts unsealed secrets and tombstones as this store's own
+    /// Adopts the unsealed secrets and tombstones `keep` passes as this store's own
     pub(crate) fn seal_files(
         &self,
         files: &[(String, Secret)],
         key: &x25519::Identity,
+        keep: impl Fn(&Path) -> bool,
     ) -> Result<()> {
         for (id, secret) in files {
-            write_sealed(&self.secret_path(id), id, secret, key)?;
+            let path = self.secret_path(id);
+            if keep(&path) {
+                write_sealed(&path, id, secret, key)?;
+            }
         }
         for id in self.tombed()? {
-            if self.sealed_tomb(&id, key).is_none() {
+            if self.sealed_tomb(&id, key).is_none() && keep(&self.tomb_path(&id)) {
                 let stamp = fs::read_to_string(self.tomb_path(&id))
                     .ok()
                     .and_then(|s| s.split_whitespace().next()?.parse().ok())
@@ -957,6 +975,13 @@ fn write_sealed(path: &Path, id: &str, secret: &Secret, key: &x25519::Identity) 
 /* age lets anyone who knows the public recipient write a file the store key opens, and the
 recipient sits in every synced copy. The seal is an HMAC keyed from the store key, over the file's
 id and the secret, so a planted file has none and a signed one moved to another id fails */
+/// A file's name and the hash of its bytes, one line of the `sealing` list
+fn file_line(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let name = path.file_name()?.to_string_lossy();
+    Some(format!("{name} {}\n", hex::encode(Sha256::digest(&bytes))))
+}
+
 fn mac(key: &x25519::Identity, id: &str, secret: &Secret) -> Result<Hmac<Sha256>> {
     let mut seed = Sha256::new();
     seed.update(b"passbox secret seal\n");
@@ -1313,7 +1338,13 @@ mod tests {
         store
             .put(&new_id(), &secret("done/one", "v"), &key)
             .unwrap();
-        write_private(&store.sealing_path(), b"").unwrap();
+        let list: String = old
+            .iter()
+            .filter_map(|id| file_line(&store.secret_path(id)))
+            .collect();
+        write_private(&store.sealing_path(), list.as_bytes()).unwrap();
+        // A sync brought this in after the cut-off, so it is not on the list
+        let theirs = planted(&store, &secret("old/9", "theirs"), None);
 
         store
             .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
@@ -1324,6 +1355,10 @@ mod tests {
                 "a file the cut-off seal missed was refused"
             );
         }
+        assert!(
+            store.load(&theirs, &key).is_err(),
+            "the resume adopted a file it never listed"
+        );
         assert!(!store.sealing_path().exists());
     }
 
@@ -1344,7 +1379,7 @@ mod tests {
 
         let (files, any_sealed) = store.by_seal(&key).unwrap();
         assert!(!any_sealed);
-        store.seal_files(&files, &key).unwrap();
+        store.seal_files(&files, &key, |_| true).unwrap();
         assert_eq!(store.load(&old, &key).unwrap().value, "mine");
     }
 

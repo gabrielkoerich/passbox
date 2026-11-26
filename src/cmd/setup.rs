@@ -429,7 +429,7 @@ pub(crate) fn machine_add(store: &Store) -> Result<()> {
         ) {
             bail!("not bound and nothing adopted, run `passbox machine add` again to choose again");
         }
-        store.seal_files(&unsealed, &key)?;
+        store.seal_files(&unsealed, &key, |_| true)?;
     }
     store.create_se_wrap(&key)?;
     eprintln!("bound, reads on this Mac will ask for your fingerprint");
