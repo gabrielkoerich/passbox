@@ -310,32 +310,46 @@ impl Store {
         })
     }
 
-    /* age takes any number of recipients, so a second token is added to the same wrap rather
-    than replacing it. Adding one re-encrypts to every recipient, which is why it needs the key. */
-    #[cfg(feature = "host")]
-    pub(crate) fn add_yubikey_recipient(
-        &self,
-        key: &x25519::Identity,
-        recipient: &str,
-    ) -> Result<usize> {
-        let mut all = self.yubikey_recipients();
-        let recipient = recipient.trim().to_string();
-        if !all.contains(&recipient) {
-            all.push(recipient);
-        }
+    fn yubikey_seal_path(&self) -> PathBuf {
+        self.wraps_dir().join("yubikey.seal")
+    }
 
+    /* wraps/yubikey.recipients syncs, and adding a token wraps the store key to every line in it, so a
+    copy that added a line of its own would get the key. The seal, keyed from the store key, shows
+    the list is one this store wrote. A list with no seal predates it, and a person checks it */
+    #[cfg(feature = "host")]
+    pub(crate) fn yubikey_list(&self, key: &x25519::Identity) -> Result<(Vec<String>, bool)> {
+        let all = self.yubikey_recipients();
+        let Ok(seal) = fs::read_to_string(self.yubikey_seal_path()) else {
+            return Ok((all, false));
+        };
+        let holds = hex::decode(seal.trim())
+            .is_ok_and(|seal| list_mac(key, &all).is_ok_and(|mac| mac.verify_slice(&seal).is_ok()));
+        if !holds {
+            bail!(
+                "wraps/yubikey.recipients changed outside passbox, so no key was wrapped. It lists: {}",
+                all.join(", ")
+            );
+        }
+        Ok((all, true))
+    }
+
+    /// age takes any number of recipients, so every token shares one wrap, written with its list
+    /// and the list's seal
+    #[cfg(feature = "host")]
+    pub(crate) fn wrap_to_yubikeys(&self, key: &x25519::Identity, all: &[String]) -> Result<()> {
         let mut to = Vec::new();
-        for text in &all {
+        for text in all {
             to.push(yubikey::recipient(text)?);
         }
 
         let mut plain = secrecy::ExposeSecret::expose_secret(&key.to_string()).to_string();
-        let wrapped = crypto::encrypt(plain.as_bytes(), &to)?;
+        let wrapped = crypto::encrypt(plain.as_bytes(), &to);
         plain.zeroize();
-
-        write_private(&self.yubikey_wrap_path(), &wrapped)?;
+        write_private(&self.yubikey_wrap_path(), &wrapped?)?;
         write_private(&self.yubikey_recipients_path(), all.join("\n").as_bytes())?;
-        Ok(all.len())
+        let seal = hex::encode(list_mac(key, all)?.finalize().into_bytes());
+        write_private(&self.yubikey_seal_path(), seal.as_bytes())
     }
 
     /// The token prompts for a touch itself, so passbox raises nothing here
@@ -816,6 +830,18 @@ fn mac(key: &x25519::Identity, id: &str, secret: &Secret) -> Result<Hmac<Sha256>
     mac.update(id.as_bytes());
     mac.update(b"\n");
     mac.update(&serde_json::to_vec(secret)?);
+    Ok(mac)
+}
+
+/// The YubiKey list's seal, keyed apart from a secret's so one can never pass for the other
+#[cfg(feature = "host")]
+fn list_mac(key: &x25519::Identity, all: &[String]) -> Result<Hmac<Sha256>> {
+    let mut seed = Sha256::new();
+    seed.update(b"passbox yubikey list\n");
+    seed.update(secrecy::ExposeSecret::expose_secret(&key.to_string()).as_bytes());
+    let mut mac = Hmac::<Sha256>::new_from_slice(&seed.finalize())
+        .map_err(|_| anyhow!("could not key the seal"))?;
+    mac.update(all.join("\n").as_bytes());
     Ok(mac)
 }
 
@@ -1417,6 +1443,30 @@ mod tests {
 
         let pass = SecretString::from("hunter2".to_string());
         assert!(store.unlock_with_passphrase(pass).is_err());
+    }
+
+    /* A copy that adds its own "YubiKey" to the list would get the store key at the next yubikey-add.
+    The seal shows the list is one this store wrote, a line added after it is refused, and a list from
+    before sealing is reported unsealed, so a person checks it */
+    #[cfg(feature = "host")]
+    #[test]
+    fn a_yubikey_list_a_copy_added_to_is_refused() {
+        let (_tmp, store, key) = store();
+        let mine = vec!["age1yubikey1mine".to_string()];
+        write_private(&store.yubikey_recipients_path(), mine.join("\n").as_bytes()).unwrap();
+        let (_, sealed) = store.yubikey_list(&key).unwrap();
+        assert!(!sealed, "a list with no seal passed as sealed");
+
+        let seal = hex::encode(list_mac(&key, &mine).unwrap().finalize().into_bytes());
+        write_private(&store.yubikey_seal_path(), seal.as_bytes()).unwrap();
+        assert_eq!(store.yubikey_list(&key).unwrap(), (mine, true));
+
+        let added = "age1yubikey1mine\nage1yubikey1theirs";
+        write_private(&store.yubikey_recipients_path(), added.as_bytes()).unwrap();
+        let Err(err) = store.yubikey_list(&key) else {
+            panic!("a list with a line added passed");
+        };
+        assert!(err.to_string().contains("changed outside passbox"), "{err}");
     }
 
     #[cfg(feature = "host")]

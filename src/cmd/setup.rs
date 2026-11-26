@@ -194,7 +194,7 @@ fn prompt(label: &str) -> Result<String> {
 fn enable_with_yubikey(store: &Store) -> Result<()> {
     let recipient = new_token(store)?;
     let key = unlock(store, "turn on sync with a YubiKey")?;
-    let total = store.add_yubikey_recipient(&key, &recipient)?;
+    let total = wrap_with(store, &key, recipient)?;
     eprintln!("sync is on, and the copy is useless without one of those {total} token(s)");
     eprintln!("add a second with `passbox yubikey-add`, or losing it loses the way back");
     Ok(())
@@ -314,13 +314,40 @@ pub(crate) fn yubikey_add(store: &Store, recipient: Option<&str>) -> Result<()> 
         None => new_token(store)?,
     };
     let key = unlock(store, "wrap the store key to a YubiKey")?;
-    let total = store.add_yubikey_recipient(&key, &recipient)?;
+    let total = wrap_with(store, &key, recipient.clone())?;
     eprintln!("wrapped to {recipient}");
     eprintln!("{total} token(s) can now open this store on any machine");
     if total == 1 {
         eprintln!("add a second with `passbox yubikey-add`, or losing it loses the way back");
     }
     check_token(store, &key, &recipient)
+}
+
+/* The list syncs, so before the store key is wrapped to it a person sees every token it names,
+unless its seal shows this store wrote it */
+#[cfg(feature = "host")]
+fn wrap_with(store: &Store, key: &x25519::Identity, recipient: String) -> Result<usize> {
+    let (mut all, sealed) = store.yubikey_list(key)?;
+    if !all.contains(&recipient) {
+        all.push(recipient);
+    }
+    if !sealed && all.len() > 1 {
+        eprintln!("The store key will be wrapped to every one of these YubiKeys:");
+        for one in &all {
+            eprintln!("  {one}");
+        }
+        if !matches!(
+            ask("Are all of them yours? [y/N] ")?
+                .trim()
+                .to_lowercase()
+                .as_str(),
+            "y" | "yes"
+        ) {
+            bail!("nothing was wrapped");
+        }
+    }
+    store.wrap_to_yubikeys(key, &all)?;
+    Ok(all.len())
 }
 
 /// Opens the wrap with the new token alone, the one proof that it is a way back
