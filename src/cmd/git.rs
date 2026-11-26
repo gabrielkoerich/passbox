@@ -15,7 +15,7 @@ fn ignored() -> impl Iterator<Item = &'static str> {
         .iter()
         .copied()
         .filter(|line| !line.starts_with("/.git"))
-        .chain(["/wraps/se-*.json"])
+        .chain(["/wraps/se-*.json", "*.from-git-*"])
 }
 
 /* git checks out whatever a commit tracks, and a pulled .gitignore can unignore anything, so the
@@ -297,5 +297,9 @@ mod tests {
         assert!(kept_out("store/cafe\u{301}.age"));
         assert!(!kept_out("store/abc.age"));
         assert!(!kept_out(".gitignore"));
+        // Where 2.4.2 set a pulled file aside, which must not sync or be committed
+        assert!(kept_out("config.toml.from-git-1764171726-0"));
+        assert!(kept_out("plugins/demo.from-git-1764171726-1/run.sh"));
+        assert!(kept_out(".from-git/config.toml-1764171726-0"));
     }
 }

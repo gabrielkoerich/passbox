@@ -60,6 +60,8 @@ pub(crate) const MACHINE_LOCAL: &[&str] = &[
     "/store/.quarantine/**",
     // A write's temporary file, left only by a crash
     "*.tmp",
+    // What git tracked that belongs to one machine, set aside and never used
+    "/.from-git/**",
     // A copy cut off before its rename, never a real file
     "*.partial",
     // A grant that travelled would let a machine you have not touched inherit an approval
@@ -74,7 +76,15 @@ pub(crate) const MACHINE_LOCAL: &[&str] = &[
 
 /// Whether a path relative to the store is one of `MACHINE_LOCAL`, ignoring case as macOS does
 pub(crate) fn machine_local(relative: &str) -> bool {
-    MACHINE_LOCAL.iter().any(|p| path_matches(p, relative))
+    MACHINE_LOCAL.iter().any(|p| path_matches(p, relative)) || set_aside_by_2_4_2(relative)
+}
+
+/// 2.4.2 renamed a git-tracked file in place, as `config.toml.from-git-<time>-<n>`
+fn set_aside_by_2_4_2(relative: &str) -> bool {
+    relative
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.to_lowercase().contains(".from-git-"))
 }
 
 pub(crate) fn path_matches(pattern: &str, relative: &str) -> bool {
