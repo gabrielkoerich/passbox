@@ -137,7 +137,7 @@ It reads through the `op` CLI, so sign in with `op signin` first and passbox nev
 | 1Password | passbox |
 |---|---|
 | Login, password, and any item with a concealed field | the password on the first line, the username, URLs and other fields as `key: value` lines, then the notes. A password with more than one line makes the item a blob |
-| Secure note | its text, as a blob |
+| Secure note | its text, as a blob. A note with fields, such as several passwords, is kept as a login is |
 | Document | its text as a blob, or skipped when it is binary |
 | SSH key | the OpenSSH key as a blob, of every type. The agent offers Ed25519 and ECDSA keys, and the report names any other, such as RSA |
 | One-time password | the `otpauth://` seed as a field, passbox does not make codes from it |

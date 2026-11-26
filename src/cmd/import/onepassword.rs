@@ -123,17 +123,46 @@ fn pick<'a>(all: &'a [Vault], wanted: Option<&str>) -> Vec<&'a Vault> {
         .collect()
 }
 
-/// Lowercase, with every run of characters that are not letters, digits, `.` or `_` made one `-`
+/// Lowercase, accents dropped, with every run of characters that are not letters, digits, `.` or
+/// `_` made one `-`
 fn slug(text: &str) -> String {
     let mut out = String::new();
     for c in text.trim().chars().flat_map(char::to_lowercase) {
-        if c.is_alphanumeric() || c == '.' || c == '_' {
+        if let Some(letters) = plain(c) {
+            out.push_str(letters);
+        } else if c.is_alphanumeric() || c == '.' || c == '_' {
             out.push(c);
         } else if !out.ends_with('-') {
             out.push('-');
         }
     }
     out.trim_matches(['-', '.']).to_string()
+}
+
+/// The plain letters a lowercase accented Latin letter is typed as, so `código` names `codigo`
+fn plain(c: char) -> Option<&'static str> {
+    Some(match c {
+        'à'..='å' | 'ā' | 'ă' | 'ą' => "a",
+        'æ' => "ae",
+        'ç' | 'ć' | 'č' => "c",
+        'ð' | 'ď' => "d",
+        'è'..='ë' | 'ē' | 'ė' | 'ę' | 'ě' => "e",
+        'ğ' => "g",
+        'ì'..='ï' | 'ī' | 'į' | 'ı' => "i",
+        'ł' | 'ľ' => "l",
+        'ñ' | 'ń' | 'ň' => "n",
+        'ò'..='ö' | 'ø' | 'ō' | 'ő' => "o",
+        'œ' => "oe",
+        'ř' => "r",
+        'ß' => "ss",
+        'ś' | 'ş' | 'š' => "s",
+        'ť' | 'ţ' => "t",
+        'þ' => "th",
+        'ù'..='ü' | 'ū' | 'ů' | 'ű' | 'ų' => "u",
+        'ý' | 'ÿ' => "y",
+        'ź' | 'ż' | 'ž' => "z",
+        _ => return None,
+    })
 }
 
 /// `<vault>/<title>` slugged, or the item id when the title slugs to nothing
@@ -158,6 +187,15 @@ fn plan(item: &Item) -> Plan {
     match item.category.as_str() {
         "SSH_KEY" => ssh_key(item),
         "DOCUMENT" => Plan::Document,
+        // A note can carry fields too, such as several passwords and no text
+        "SECURE_NOTE"
+            if item
+                .fields
+                .iter()
+                .any(|f| f.purpose != "NOTES" && has_value(f)) =>
+        {
+            record(item)
+        }
         "SECURE_NOTE" => match notes(item) {
             Some(text) => Plan::Value(text.to_string(), Vec::new(), true),
             None => Plan::Skip("the note is empty".into()),
@@ -423,6 +461,18 @@ mod tests {
     }
 
     #[test]
+    fn accents_are_dropped_from_a_name() {
+        assert_eq!(name("Identities", "Código IR", "x"), "identities/codigo-ir");
+        assert_eq!(
+            name("Família", "Ação São Paulo", "x"),
+            "familia/acao-sao-paulo"
+        );
+        assert_eq!(name("Work", "Straße Œuvre", "x"), "work/strasse-oeuvre");
+        // A script with no plain Latin form is kept as it is
+        assert_eq!(name("Work", "東京", "x"), "work/東京");
+    }
+
+    #[test]
     fn titles_become_slugged_names_under_the_vault() {
         assert_eq!(
             name("Personal", "GitHub (work)", "x"),
@@ -432,7 +482,7 @@ mod tests {
             under(Some("1p/"), &name("Private Vault", "AWS: root", "x")),
             "1p/private-vault/aws-root"
         );
-        assert_eq!(name("Personal", "Café Wi-Fi", "x"), "personal/café-wi-fi");
+        assert_eq!(name("Personal", "Café Wi-Fi", "x"), "personal/cafe-wi-fi");
         assert_eq!(name("Personal", "!!!", "AbC"), "personal/abc");
     }
 
@@ -538,6 +588,28 @@ mod tests {
                 "field cert has more than one line, kept after the notes where `get --field` cannot read it"
             ]
         );
+    }
+
+    #[test]
+    fn a_secure_note_with_fields_keeps_every_field_and_its_text() {
+        let fields = r#"
+          {"id":"a","type":"CONCEALED","label":"password","value":"one"},
+          {"id":"b","type":"CONCEALED","label":"password","value":"two"},
+          {"id":"c","type":"CONCEALED","label":"password","value":"three"}"#;
+        let bare = parse(&format!(
+            r#"{{"category":"SECURE_NOTE","fields":[
+              {{"id":"notesPlain","purpose":"NOTES","value":""}},{fields}]}}"#
+        ));
+        let (fields_only, notes) = value(plan(&bare));
+        assert_eq!(fields_only, "one\npassword 2: two\npassword 3: three");
+        assert!(notes.is_empty(), "{notes:?}");
+
+        let with_text = parse(&format!(
+            r#"{{"category":"SECURE_NOTE","fields":[
+              {{"id":"notesPlain","purpose":"NOTES","value":"wifi codes"}},{fields}]}}"#
+        ));
+        let (both, _) = value(plan(&with_text));
+        assert_eq!(both, "one\npassword 2: two\npassword 3: three\nwifi codes");
     }
 
     #[test]
