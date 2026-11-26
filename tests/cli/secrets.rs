@@ -89,6 +89,35 @@ fn fields_lists_the_labels_and_no_value() {
     let out = cli.run(&["fields", "bank/main"], None).unwrap();
     assert_eq!(out, "password\nusername\npix\n");
     assert!(!out.contains("hunter2") && !out.contains("me@x"), "{out}");
+
+    // A note is one text, so it names no field even when a line holds a colon
+    cli.run(&["add", "notes/wifi", "--blob"], Some("home\npass: abc\n"))
+        .unwrap();
+    assert_eq!(cli.run(&["fields", "notes/wifi"], None).unwrap(), "");
+}
+
+/* Alfred's ⌘⏎ asks every entry for its password. A note has none, so asking it for a field fails
+rather than handing out its first line */
+#[test]
+fn a_note_has_no_field_to_read() {
+    let cli = Cli::new();
+    cli.run(
+        &["add", "notes/wifi", "--blob"],
+        Some("home network\npass: abc\n"),
+    )
+    .unwrap();
+    let err = cli
+        .run(&["copy", "notes/wifi", "--field", "password"], None)
+        .unwrap_err();
+    assert!(err.contains("notes/wifi is a note"), "{err}");
+    assert!(!err.contains("home network"), "{err}");
+
+    cli.run(&["add", "bank/main"], Some("pw\npix: me@x"))
+        .unwrap();
+    let err = cli
+        .run(&["copy", "bank/main", "--field", "agency"], None)
+        .unwrap_err();
+    assert!(err.contains("bank/main has no field agency"), "{err}");
 }
 
 /// One behaviour, no modes: a read works, and the old mode flag and subcommand are gone

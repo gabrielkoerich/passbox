@@ -578,6 +578,29 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+impl Secret {
+    /// A blob is one text, such as a note, so it lists no fields and a picker copies it whole
+    pub(crate) fn labels(&self) -> Vec<String> {
+        if self.blob {
+            return Vec::new();
+        }
+
+        labels(&self.value)
+    }
+
+    /// One field, and none from a note, which is one text
+    pub(crate) fn field(&self, want: &str) -> Result<String> {
+        if self.blob {
+            bail!(
+                "{} is a note, which has no fields, read it without --field",
+                self.name
+            );
+        }
+
+        pick(&self.name, &self.value, want)
+    }
+}
+
 /* The `pass` layout, which import keeps: the first line is the secret and later `key: value`
 lines are fields. Reading one field hands a caller the password without the note beside it. */
 pub(crate) fn fields(value: &str) -> Vec<(String, String)> {
@@ -595,6 +618,21 @@ pub(crate) fn fields(value: &str) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// One field of a value, where an empty first line is no password
+pub(crate) fn pick(name: &str, value: &str, want: &str) -> Result<String> {
+    if want == "password" && value.lines().next().is_none_or(str::is_empty) {
+        bail!("{name} has no password, read one of its fields with --field");
+    }
+
+    // A key written twice reads as its last value
+    fields(value)
+        .into_iter()
+        .rev()
+        .find(|(key, _)| key == want)
+        .map(|(_, v)| v)
+        .with_context(|| format!("{name} has no field {want}"))
 }
 
 /// The fields `get --field` reads, each once and in the order they are written, and no value

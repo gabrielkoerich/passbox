@@ -93,6 +93,30 @@ fn a_prompt_left_open_holds_up_no_token_read_and_raises_no_second_prompt() {
 
 const SHOW_AB: &str = "printf %s,%s \"$A\" \"$B\"";
 
+/// The broker cuts the field out, so asking a note for one is refused there and audited
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn the_broker_refuses_a_field_from_a_note() {
+    let bound = Bound::new();
+    bound
+        .run(
+            &["add", "notes/wifi", "--blob"],
+            Some("home network\npass: abc\n"),
+        )
+        .unwrap();
+    bound.forget_prompts();
+    let err = bound
+        .run(&["copy", "notes/wifi", "--field", "password"], None)
+        .unwrap_err();
+    assert!(err.contains("notes/wifi is a note"), "{err}");
+    assert!(!err.contains("home network"), "{err}");
+    let log = bound.audit();
+    assert!(decided(&log, "notes/wifi", "withheld"), "{log}");
+}
+
 #[test]
 #[cfg_attr(
     not(feature = "mock-enclave"),

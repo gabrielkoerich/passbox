@@ -25,7 +25,9 @@ pub(crate) use audit::append_audit;
 pub(crate) use caller::own_ancestry;
 #[cfg(feature = "host")]
 pub(crate) use client::plugin_approve;
-pub(crate) use client::{export, fields, grant, list, plugin_run_remote, request, request_token};
+pub(crate) use client::{
+    export, fields, grant, list, plugin_run_remote, request, request_field, request_token,
+};
 #[cfg(feature = "host")]
 pub(crate) use client::{phone_open, phone_test};
 #[cfg(feature = "host")]
@@ -143,6 +145,9 @@ pub(crate) struct Request {
     /// Set on a Get of an SSH key, which is released only encrypted with it
     #[serde(default)]
     pub passphrase: String,
+    /// One field of the value, cut out here so the rest of the entry never leaves the broker
+    #[serde(default)]
+    pub field: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -330,7 +335,7 @@ impl Broker {
             bail!("no secret named {}", request.name);
         };
         self.audit(&key, &request.agent, &request.name, "fields listed", caller)?;
-        Ok(store::labels(&secret.value).join("\n"))
+        Ok(secret.labels().join("\n"))
     }
 
     /* One approval covers a name or a whole namespace, and yields a token that opens exactly
@@ -439,7 +444,11 @@ impl Broker {
                     ..Entry::default()
                 },
             )?;
-            return sshkey::release(&request.name, &value, "");
+            let value = sshkey::release(&request.name, &value, "")?;
+            return match request.field.as_str() {
+                "" => Ok(value),
+                want => store::pick(&request.name, &value, want),
+            };
         }
 
         // A read prompts every time. The only way past the prompt is a token or, for the
@@ -465,6 +474,16 @@ impl Broker {
                 self.audit(&key, &request.agent, &request.name, "withheld", caller)?;
                 return Err(e);
             }
+        };
+        let value = match request.field.as_str() {
+            "" => value,
+            want => match secret.field(want) {
+                Ok(field) => field,
+                Err(e) => {
+                    self.audit(&key, &request.agent, &request.name, "withheld", caller)?;
+                    return Err(e);
+                }
+            },
         };
         let outcome = if request.passphrase.is_empty() {
             outcome

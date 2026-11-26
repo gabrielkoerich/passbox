@@ -433,11 +433,16 @@ fn agent() -> String {
 }
 
 fn read_secret(store: &Store, name: &str) -> Result<String> {
-    read_secret_as(store, name, &agent())
+    read_secret_as(store, name, None, &agent())
+}
+
+/// One field, which only leaves the broker on its own
+fn read_secret_field(store: &Store, name: &str, field: &str) -> Result<String> {
+    read_secret_as(store, name, Some(field), &agent())
 }
 
 pub(crate) fn agent_read_secret(store: &Store, name: &str, agent: &str) -> Result<String> {
-    read_secret_as(store, name, agent)
+    read_secret_as(store, name, None, agent)
 }
 
 // A configured host wins over this disk, or a client with no wraps falls through to asking
@@ -448,22 +453,35 @@ fn brokered(store: &Store) -> bool {
 
 /// The broker owns windows and the audit log, so every read goes through it when it can.
 /// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
-fn read_secret_as(store: &Store, name: &str, agent: &str) -> Result<String> {
-    if brokered(store) {
-        return broker::request(store, name, agent);
+fn read_secret_as(store: &Store, name: &str, field: Option<&str>, agent: &str) -> Result<String> {
+    match (brokered(store), field) {
+        (true, None) => return broker::request(store, name, agent),
+        (true, Some(want)) => {
+            let value = broker::request_field(store, name, agent, want)?;
+            // A broker before 2.4 ignores the field and sends the whole entry, and a field is one line
+            if value.contains('\n') {
+                return store::pick(name, &value, want);
+            }
+            return Ok(value);
+        }
+        (false, _) => {}
     }
     let key = unlock(store, &format!("release the password for {name}"))?;
     let (_, secret) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
     let caller = broker::own_ancestry();
-    if let Err(e) = broker::sshkey::release(name, &secret.value, "") {
-        broker::append_audit(store, agent, name, "withheld", &caller, "")?;
-        return Err(e);
-    }
-
-    broker::append_audit(store, agent, name, "released", &caller, "")?;
-    Ok(secret.value.clone())
+    let value = broker::sshkey::release(name, &secret.value, "").and_then(|value| match field {
+        Some(want) => secret.field(want),
+        None => Ok(value),
+    });
+    let decision = if value.is_ok() {
+        "released"
+    } else {
+        "withheld"
+    };
+    broker::append_audit(store, agent, name, decision, &caller, "")?;
+    value
 }
 
 /// `PASSBOX_PASSPHRASE` says nobody is at the keyboard, and a fingerprint needs somebody

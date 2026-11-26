@@ -12,6 +12,26 @@ pub(crate) fn request(store: &Store, name: &str, agent: &str) -> Result<String> 
     request_token(store, name, agent, crate::held_token().unwrap_or_default())
 }
 
+/// One field, which the broker cuts out so the rest of the entry never reaches this process
+pub(crate) fn request_field(store: &Store, name: &str, agent: &str, field: &str) -> Result<String> {
+    ask_broker(
+        store,
+        &Request {
+            name: name.to_string(),
+            agent: agent.to_string(),
+            op: Op::Get,
+            token: crate::held_token().unwrap_or_default().to_string(),
+            ttl: 0,
+            names: Vec::new(),
+            action: String::new(),
+            params: Vec::new(),
+            run: false,
+            passphrase: String::new(),
+            field: field.to_string(),
+        },
+    )
+}
+
 /// A read carrying a token the caller already holds, such as the one exec mints for its batch
 pub(crate) fn request_token(store: &Store, name: &str, agent: &str, token: &str) -> Result<String> {
     ask_broker(
@@ -27,6 +47,7 @@ pub(crate) fn request_token(store: &Store, name: &str, agent: &str, token: &str)
             params: Vec::new(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
 }
@@ -46,6 +67,7 @@ pub(crate) fn export(store: &Store, name: &str, agent: &str, passphrase: &str) -
             params: Vec::new(),
             run: false,
             passphrase: passphrase.to_string(),
+            field: String::new(),
         },
     )
 }
@@ -65,6 +87,7 @@ pub(crate) fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
             params: Vec::new(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )?;
     Ok(names.lines().map(str::to_string).collect())
@@ -85,6 +108,7 @@ pub(crate) fn fields(store: &Store, name: &str, agent: &str) -> Result<Vec<Strin
             params: Vec::new(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )?;
     Ok(labels.lines().map(str::to_string).collect())
@@ -105,6 +129,7 @@ pub(crate) fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> R
             params: Vec::new(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
 }
@@ -132,6 +157,7 @@ pub(crate) fn plugin_approve(
             params: params.clone().into_iter().collect(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
     .map(|_| ())
@@ -159,6 +185,7 @@ pub(crate) fn plugin_run_remote(
             params: params.to_vec(),
             run: true,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
 }
@@ -179,6 +206,7 @@ fn phone_step(store: &Store, action: &str) -> Result<String> {
             params: Vec::new(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
 }

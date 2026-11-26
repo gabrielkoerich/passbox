@@ -9,7 +9,7 @@ use crate::crypto;
 #[cfg(feature = "host")]
 use crate::se;
 use crate::store::{self, Secret, Store};
-use crate::{agent, broker, brokered, read_secret, unlock};
+use crate::{agent, broker, brokered, read_secret, read_secret_field, unlock};
 use crate::{agent_list_names, held_token};
 use age::x25519;
 use anyhow::{Context, Result, bail};
@@ -128,22 +128,10 @@ pub(crate) fn add(store: &Store, name: &str, input: Input<'_>, existing: Existin
     Ok(())
 }
 
-/// A key written twice reads as its last value
-fn fields(value: &str) -> std::collections::HashMap<String, String> {
-    store::fields(value).into_iter().collect()
-}
-
 fn read_field(store: &Store, name: &str, field: Option<&str>) -> Result<String> {
-    let whole = read_secret(store, name)?;
     match field {
-        None => Ok(whole),
-        // A 1Password note or login with fields and no password keeps its first line empty
-        Some("password") if whole.lines().next().is_none_or(str::is_empty) => {
-            bail!("{name} has no password, read one of its fields with --field")
-        }
-        Some(want) => fields(&whole)
-            .remove(want)
-            .with_context(|| format!("{name} has no field {want}")),
+        None => read_secret(store, name),
+        Some(want) => read_secret_field(store, name, want),
     }
 }
 
@@ -257,7 +245,7 @@ pub(crate) fn list_fields(store: &Store, name: &str) -> Result<()> {
         let (_, secret) = store
             .find(name, &key)?
             .with_context(|| format!("no secret named {name}"))?;
-        store::labels(&secret.value)
+        secret.labels()
     };
     let mut out = std::io::stdout();
     for label in labels {
@@ -453,7 +441,12 @@ fn extra_lines(input: impl std::io::BufRead) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extra_lines, fields, named_fields};
+    use super::{extra_lines, named_fields};
+    use crate::store;
+
+    fn fields(value: &str) -> std::collections::HashMap<String, String> {
+        store::fields(value).into_iter().collect()
+    }
 
     #[test]
     fn each_named_field_is_asked_once_and_reads_back() {

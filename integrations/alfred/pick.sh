@@ -22,7 +22,9 @@ while IFS= read -r label; do
   items+="\"arg\":$n,\"variables\":{\"field\":$l}}"
 done <<<"${labels:-}"
 
+# No field names means a note, one text with nothing to pick from, so one row copies it whole
 if [ -z "$items" ]; then
-  items="{\"title\":$n,\"subtitle\":\"No field to copy\",\"valid\":false}"
+  items="{\"uid\":\"note\",\"title\":\"note\",\"subtitle\":\"•••••••••• ⏎ to copy\","
+  items+="\"arg\":$n,\"variables\":{\"whole\":\"1\"}}"
 fi
 printf '{"items":[%s]}\n' "$items"
