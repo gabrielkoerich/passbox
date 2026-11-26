@@ -412,6 +412,25 @@ pub(crate) fn machine_add(store: &Store) -> Result<()> {
         eprintln!("Binding this Mac needs the recovery passphrase once.");
         store.unlock_with_passphrase(SecretString::from(ask("recovery passphrase: ")?))?
     };
+    // A copy no 2.4.2 or later passbox wrote to has no seal, and neither has one whose seals were taken out
+    let (unsealed, any_sealed) = store.by_seal(&key)?;
+    if !any_sealed && !unsealed.is_empty() {
+        eprintln!(
+            "This copy holds {} secrets and none is sealed. A copy last written by passbox 2.4.1 or \
+             older looks like this, and so does one whose seals someone took out.",
+            unsealed.len()
+        );
+        if !matches!(
+            ask("Is this copy yours? Adopt them all? [y/N] ")?
+                .trim()
+                .to_lowercase()
+                .as_str(),
+            "y" | "yes"
+        ) {
+            bail!("not bound and nothing adopted, run `passbox machine add` again to choose again");
+        }
+        store.seal_files(&unsealed, &key)?;
+    }
     store.create_se_wrap(&key)?;
     eprintln!("bound, reads on this Mac will ask for your fingerprint");
     Ok(())
