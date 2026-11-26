@@ -136,23 +136,14 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     cli.run(&["add", "a/b"], Some("v")).unwrap();
     cli.run(&["git", "init"], None).unwrap();
 
-    let ignore = std::fs::read_to_string(cli.path().join(".gitignore")).unwrap();
-    assert!(ignore.contains("wraps/se-*.json"), "{ignore}");
-    assert!(ignore.contains("wraps/phone-*.json"), "{ignore}");
-
-    /* A .gitignore from an older passbox gets every line it lacks on the next git command, and a
-    plugin it let git track leaves the index, so a pull can no longer write plugin code here */
-    std::fs::write(cli.path().join(".gitignore"), "wraps/se-*.json").unwrap();
-    std::fs::create_dir_all(cli.path().join("plugins/demo")).unwrap();
-    std::fs::write(cli.path().join("plugins/demo/run.sh"), "echo hi").unwrap();
-    cli.run(&["git", "add", "-f", "plugins"], None).unwrap();
-    cli.run(&["git", "status"], None).unwrap();
-    let ignore = std::fs::read_to_string(cli.path().join(".gitignore")).unwrap();
-    assert!(ignore.starts_with("wraps/se-*.json\n"), "{ignore}");
+    // In .git/info/exclude, which no pull can change, unlike a tracked .gitignore
+    let exclude = cli.path().join(".git/info/exclude");
+    let ignore = std::fs::read_to_string(&exclude).unwrap();
     for line in [
+        "/wraps/se-*.json",
+        "/wraps/phone-*.json",
         "/plugins/**",
         "/config.toml",
-        "/wraps/phone-*.json",
         "/recipient.pin",
     ] {
         assert!(
@@ -160,23 +151,30 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
             "{line} missing: {ignore}"
         );
     }
+
+    /* A pulled .gitignore that unignores plugins changes nothing. A plugin git tracks is set aside
+    outside plugins/ and leaves the index, so a pull cannot hand the broker code */
+    std::fs::write(cli.path().join(".gitignore"), "!/plugins/**\n").unwrap();
+    std::fs::create_dir_all(cli.path().join("plugins/demo")).unwrap();
+    std::fs::write(cli.path().join("plugins/demo/run.sh"), "echo hi").unwrap();
+    cli.run(&["git", "add", "-f", "plugins"], None).unwrap();
+    cli.run(&["git", "status"], None).unwrap();
+
     let tracked = cli.run(&["git", "ls-files", "plugins"], None).unwrap();
     assert_eq!(tracked, "", "a plugin is still tracked");
-    // What git brought is moved aside, never run, and never deleted
     assert!(!cli.path().join("plugins/demo").exists());
-    let aside: Vec<String> = std::fs::read_dir(cli.path().join("plugins"))
+    let aside: Vec<String> = std::fs::read_dir(cli.path().join(".from-git/plugins"))
         .unwrap()
         .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().to_string()))
-        .filter(|name| name.starts_with("demo.from-git-"))
+        .filter(|name| name.starts_with("demo-"))
         .collect();
     assert_eq!(aside.len(), 1, "{aside:?}");
-    assert!(
-        cli.path()
-            .join("plugins")
-            .join(&aside[0])
-            .join("run.sh")
-            .exists()
-    );
+    let kept = cli
+        .path()
+        .join(".from-git/plugins")
+        .join(&aside[0])
+        .join("run.sh");
+    assert!(kept.exists(), "the set-aside plugin was lost");
 }
 
 /* A pull writes whatever a commit tracks, in any case, and the Mac's disk ignores case. A `Host`
@@ -210,7 +208,7 @@ fn git_runs_inside_the_store_and_ignores_the_socket() {
     cli.run(&["add", "a/b"], Some("v")).unwrap();
     cli.run(&["git", "init"], None).unwrap();
 
-    let ignore = std::fs::read_to_string(cli.path().join(".gitignore")).unwrap();
+    let ignore = std::fs::read_to_string(cli.path().join(".git/info/exclude")).unwrap();
     assert!(ignore.contains("broker.sock"), "{ignore}");
     assert!(ignore.contains("store/.versions/"), "{ignore}");
 

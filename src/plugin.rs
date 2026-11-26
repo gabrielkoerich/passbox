@@ -411,6 +411,13 @@ pub(crate) fn valid_name(name: &str) -> Result<()> {
 
 pub(crate) fn load(store: &Store, name: &str) -> Result<Manifest> {
     valid_name(name)?;
+    // A plugins folder that is a link could point anywhere, such as at a folder git checked out
+    if std::fs::symlink_metadata(store.plugins_dir()).is_ok_and(|m| m.file_type().is_symlink()) {
+        bail!(
+            "{} is a link, so passbox will not run plugins from it",
+            store.plugins_dir().display()
+        );
+    }
     // A plugin git checked out is code someone else chose, which the broker would run
     if store.git_tracks(&format!("plugins/{name}")) {
         bail!(

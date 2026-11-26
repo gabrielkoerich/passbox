@@ -58,6 +58,10 @@ pub(crate) const MACHINE_LOCAL: &[&str] = &[
     "/store/.versions/**",
     // A file that did not open when this Mac sealed its store, kept aside rather than lost
     "/store/.quarantine/**",
+    // A write's temporary file, left only by a crash
+    "*.tmp",
+    // What git tracked that belongs to one machine, set aside by `passbox git` and never used
+    "/.from-git/**",
     // A copy cut off before its rename, never a real file
     "*.partial",
     // A grant that travelled would let a machine you have not touched inherit an approval
@@ -69,6 +73,34 @@ pub(crate) const MACHINE_LOCAL: &[&str] = &[
     "/recipient.pin",
     "/signed",
 ];
+
+/// Whether a path relative to the store is one of `MACHINE_LOCAL`, ignoring case as macOS does
+pub(crate) fn machine_local(relative: &str) -> bool {
+    MACHINE_LOCAL.iter().any(|p| path_matches(p, relative))
+}
+
+pub(crate) fn path_matches(pattern: &str, relative: &str) -> bool {
+    let (pattern, relative) = (pattern.to_lowercase(), relative.to_lowercase());
+    let (pattern, text) = match pattern.strip_prefix('/') {
+        Some(rooted) => (rooted, relative.as_str()),
+        None => (
+            pattern.as_str(),
+            relative.rsplit('/').next().unwrap_or(&relative),
+        ),
+    };
+    if let Some(dir) = pattern.strip_suffix("/**") {
+        return text == dir || text.starts_with(&format!("{dir}/"));
+    }
+    match pattern.split_once('*') {
+        Some((head, tail)) => {
+            text.len() >= head.len() + tail.len()
+                && text.starts_with(head)
+                && text.ends_with(tail)
+                && !text[head.len()..text.len() - tail.len()].contains('/')
+        }
+        None => text == pattern,
+    }
+}
 
 pub(crate) fn now() -> u64 {
     SystemTime::now()
@@ -781,6 +813,10 @@ impl Store {
             let Some(stamp) = self.sealed_tomb(id, key) else {
                 continue;
             };
+            // The name was added back, so an old tombstone a copy put back prunes nothing
+            if self.secret_path(id).exists() {
+                continue;
+            }
             if now().saturating_sub(stamp) < TOMB_TTL_SECS {
                 continue;
             }
@@ -1404,6 +1440,21 @@ mod tests {
 
         assert_eq!(store.ids().unwrap().len(), 1);
         assert_eq!(store.load(&id, &key).unwrap().value, "back");
+    }
+
+    /// A name added back reuses its id, so a copy that puts the old sealed tombstone back must not
+    /// prune the history of the secret that lives there now
+    #[test]
+    fn an_old_tombstone_beside_a_live_secret_prunes_nothing() {
+        let (_tmp, store, key) = store();
+        let id = new_id();
+        store.put(&id, &secret("db", "v1"), &key).unwrap();
+        store.delete(&id, &key).unwrap();
+        store.put(&id, &secret("db", "v2"), &key).unwrap();
+        store.write_tomb(&id, 1, &key).unwrap();
+
+        assert_eq!(store.prune_tombs(&key).unwrap(), 0);
+        assert!(store.versions_dir().join(&id).exists());
     }
 
     #[test]

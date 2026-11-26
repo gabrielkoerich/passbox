@@ -16,6 +16,8 @@ const MIN_PASSPHRASE: usize = 12;
 
 #[cfg(feature = "host")]
 pub(crate) fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
+    // A machine joining takes its whole store from the copy, so it adopts nothing unsealed in it
+    let joining = !store.is_initialised();
     // An empty directory is a machine joining, and the wrap it needs arrives with the pull
     if store.is_initialised() && !store.has_portable_wrap() {
         bail!(
@@ -47,12 +49,17 @@ pub(crate) fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
             git_push(store);
         }
     }
+    if joining && store.is_initialised() {
+        store.join()?;
+    }
     Ok(())
 }
 
 pub(crate) fn init(store: &Store) -> Result<()> {
     let key = store.init()?;
     eprintln!("store ready at {}", store.dir.display());
+    // A Mac joining later compares this, and a replacement Mac has nothing else to compare it with
+    eprintln!("its key is {}, keep a note of it", key.to_public());
 
     // Without an Enclave there is nothing holding the key, so a passphrase is the only option
     #[cfg(not(feature = "host"))]
@@ -388,7 +395,9 @@ pub(crate) fn machine_add(store: &Store) -> Result<()> {
     their own. Only a person comparing the key with a Mac already using the store can tell, so it is
     shown and confirmed before it is pinned, and nothing unsealed in the copy is adopted */
     eprintln!("This store's key is {}", store.fingerprint()?);
-    eprintln!("On a Mac already using it, `cat ~/.passbox/recipient.pin` must show the same.");
+    eprintln!(
+        "It must match `cat ~/.passbox/recipient.pin` on a Mac already using it, or the key `init` showed."
+    );
     if !matches!(
         ask("Same key? [y/N] ")?.trim().to_lowercase().as_str(),
         "y" | "yes"

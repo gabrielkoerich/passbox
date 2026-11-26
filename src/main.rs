@@ -326,6 +326,15 @@ fn main() {
     }
 }
 
+/// A clone or a plain git pull may have checked out machine local files, set aside before any is read
+fn set_aside_git_files(store: &Store) {
+    if store.dir.join(".git").exists()
+        && let Err(e) = cmd::git::ensure_store_gitignore(store)
+    {
+        eprintln!("could not check the files git tracks: {e:#}");
+    }
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     if let Command::Skill { action } = cli.command {
@@ -336,6 +345,7 @@ fn run() -> Result<()> {
     }
     let store = Store::open()?;
     store.remove_name_index()?;
+    set_aside_git_files(&store);
 
     match cli.command {
         Command::Init => init(&store),

@@ -1,6 +1,6 @@
 //! The store as a git repository: a commit on every write, the mirror, and the push.
 
-use crate::store::{MACHINE_LOCAL, Store, now};
+use crate::store::{MACHINE_LOCAL, Store, machine_local, now, path_matches};
 #[cfg(feature = "host")]
 use crate::sync;
 use anyhow::{Context, Result};
@@ -18,13 +18,20 @@ fn ignored() -> impl Iterator<Item = &'static str> {
         .chain(["/wraps/se-*.json"])
 }
 
-/* A .gitignore from an older passbox misses later lines, so they are added. A machine local file
-git tracks came in through a pull or an older passbox, and a pull writes whatever a commit
-tracks, so it leaves the index and is renamed aside with `.from-git`, a plugin by its whole
-folder. Nothing is deleted, and nothing git brought is used */
+/* git checks out whatever a commit tracks, and a pulled .gitignore can unignore anything, so the
+ignore lines go in .git/info/exclude, which no pull changes, and every tracked path is checked
+with passbox's own list rather than git's ignore rules. A machine local file git tracks was
+pulled, or committed by an older passbox. It moves to .from-git, which never syncs, and only then
+leaves the index. One that cannot move stays tracked, and a tracked plugin or host file is refused
+where it is used, so nothing is deleted and nothing git brought is used */
 pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
-    let path = store.dir.join(".gitignore");
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    if !in_git(store) {
+        return Ok(());
+    }
+    let info = store.dir.join(".git/info");
+    std::fs::create_dir_all(&info)?;
+    let exclude = info.join("exclude");
+    let text = std::fs::read_to_string(&exclude).unwrap_or_default();
     let missing: Vec<&str> = ignored()
         .filter(|line| !text.lines().any(|l| l == *line))
         .collect();
@@ -34,70 +41,103 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
         } else {
             "\n"
         };
-        std::fs::write(&path, format!("{text}{gap}{}\n", missing.join("\n")))?;
+        std::fs::write(&exclude, format!("{text}{gap}{}\n", missing.join("\n")))?;
     }
 
-    if in_git(store) {
-        let tracked = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&store.dir)
-            .args([
-                "ls-files",
-                "-z",
-                "--cached",
-                "--ignored",
-                "--exclude-standard",
-            ])
-            .output()
-            .context("git is not on PATH")?;
-        // A plugin moves as a folder, so no file of it is left to run
-        let mut aside = std::collections::BTreeSet::new();
-        for file in tracked.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
-            let file = String::from_utf8_lossy(file).to_string();
-            let top = match file.split_once('/') {
-                Some((dir, rest)) if dir.eq_ignore_ascii_case("plugins") => {
-                    format!("{dir}/{}", rest.split('/').next().unwrap_or(rest))
-                }
-                _ => file,
-            };
-            aside.insert(top);
+    let tracked = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&store.dir)
+        .args(["ls-files", "-z", "--cached"])
+        .output()
+        .context("git is not on PATH")?;
+    // A plugin moves as a folder, so no file of it is left to run
+    let mut aside = std::collections::BTreeSet::new();
+    for file in tracked.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+        let file = String::from_utf8_lossy(file).to_string();
+        if !kept_out(&file) {
+            continue;
         }
-        // Moved first and only then untracked, so a pulled file is never left in place untracked
-        for (n, path) in aside.into_iter().enumerate() {
-            let from = store.dir.join(&path);
-            let to = store.dir.join(format!("{path}.from-git-{}-{n}", now()));
-            if from.exists() && std::fs::rename(&from, &to).is_err() {
-                let gone = if from.is_dir() {
-                    std::fs::remove_dir_all(&from)
-                } else {
-                    std::fs::remove_file(&from)
-                };
-                if let Err(e) = gone {
-                    eprintln!("could not set {path} aside or remove it: {e}");
-                    continue;
-                }
-                eprintln!("{path} came from git and could not be moved, so passbox removed it");
-            } else if to.exists() {
-                eprintln!(
-                    "{path} came from git, so passbox moved it to {}",
-                    to.display()
-                );
+        let top = match file.split_once('/') {
+            Some((dir, rest)) if dir.eq_ignore_ascii_case("plugins") => {
+                format!("{dir}/{}", rest.split('/').next().unwrap_or(rest))
             }
+            _ => file,
+        };
+        aside.insert(top);
+    }
+    for (n, path) in aside.into_iter().enumerate() {
+        let from = store.dir.join(&path);
+        let to = store
+            .dir
+            .join(".from-git")
+            .join(format!("{path}-{}-{n}", now()));
+        if from.exists() {
+            let moved = to
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::rename(&from, &to));
+            if let Err(e) = moved {
+                eprintln!(
+                    "{path} is tracked by git and could not be set aside, so it stays tracked and unused: {e}"
+                );
+                continue;
+            }
+            eprintln!(
+                "{path} was tracked by git, pulled or committed by an older passbox, so it moved to {}",
+                to.display()
+            );
+        }
+        git_quietly(
+            store,
+            &[
+                "--literal-pathspecs",
+                "rm",
+                "-r",
+                "--cached",
+                "--quiet",
+                "--ignore-unmatch",
+                "--",
+                &path,
+            ],
+        );
+    }
+    Ok(())
+}
+
+/// A pulled .gitignore can unignore a machine local file, which `add -A` then stages. It leaves
+/// the index and stays where it is, since it is this Mac's own
+fn unstage(store: &Store) {
+    let Ok(staged) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&store.dir)
+        .args(["ls-files", "-z", "--cached"])
+        .output()
+    else {
+        return;
+    };
+    for file in staged.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+        let file = String::from_utf8_lossy(file);
+        if kept_out(&file) {
             git_quietly(
                 store,
                 &[
+                    "--literal-pathspecs",
                     "rm",
-                    "-r",
                     "--cached",
                     "--quiet",
-                    "--ignore-unmatch",
                     "--",
-                    &path,
+                    &file,
                 ],
             );
         }
     }
-    Ok(())
+}
+
+/// What git must not carry: every machine local path, the .gitignore itself aside, and the
+/// Enclave wraps, which sync carries since each names its Mac
+fn kept_out(relative: &str) -> bool {
+    !relative.eq_ignore_ascii_case(".gitignore")
+        && (machine_local(relative) || path_matches("/wraps/se-*.json", relative))
 }
 
 /// Saves cd-ing into the store. Values stay encrypted, so git only ever sees opaque files.
@@ -149,6 +189,7 @@ fn commit(store: &Store, what: &str) {
     }
     let _ = ensure_store_gitignore(store);
     git_quietly(store, &["add", "-A"]);
+    unstage(store);
     git_quietly(store, &["commit", "-m", what]);
 }
 
