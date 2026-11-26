@@ -60,8 +60,6 @@ pub(crate) const MACHINE_LOCAL: &[&str] = &[
     "/store/.quarantine/**",
     // A write's temporary file, left only by a crash
     "*.tmp",
-    // What git tracked that belongs to one machine, set aside by `passbox git` and never used
-    "/.from-git/**",
     // A copy cut off before its rename, never a real file
     "*.partial",
     // A grant that travelled would let a machine you have not touched inherit an approval

@@ -163,7 +163,7 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     let tracked = cli.run(&["git", "ls-files", "plugins"], None).unwrap();
     assert_eq!(tracked, "", "a plugin is still tracked");
     assert!(!cli.path().join("plugins/demo").exists());
-    let aside: Vec<String> = std::fs::read_dir(cli.path().join(".from-git/plugins"))
+    let aside: Vec<String> = std::fs::read_dir(cli.path().join(".git/passbox/from-git/plugins"))
         .unwrap()
         .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().to_string()))
         .filter(|name| name.starts_with("demo-"))
@@ -171,10 +171,36 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     assert_eq!(aside.len(), 1, "{aside:?}");
     let kept = cli
         .path()
-        .join(".from-git/plugins")
+        .join(".git/passbox/from-git/plugins")
         .join(&aside[0])
         .join("run.sh");
     assert!(kept.exists(), "the set-aside plugin was lost");
+}
+
+/// A machine local file git brought that cannot be set aside stops every command, so it is never read
+#[test]
+fn a_git_file_that_cannot_be_set_aside_stops_passbox() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    cli.run(&["git", "init"], None).unwrap();
+    // A file where the set-aside folder goes, so the move fails
+    std::fs::write(cli.path().join(".git/passbox"), "").unwrap();
+    std::fs::write(cli.path().join("config.toml"), "").unwrap();
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(cli.path())
+        .args(["add", "-f", "config.toml"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+
+    let err = cli.run(&["ls"], None).unwrap_err();
+    assert!(err.contains("will not read the store"), "{err}");
+    assert!(
+        cli.path().join("config.toml").exists(),
+        "nothing is deleted"
+    );
 }
 
 /* A pull writes whatever a commit tracks, in any case, and the Mac's disk ignores case. A `Host`

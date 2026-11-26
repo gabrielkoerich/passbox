@@ -3,7 +3,7 @@
 use crate::store::{MACHINE_LOCAL, Store, machine_local, now, path_matches};
 #[cfg(feature = "host")]
 use crate::sync;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 /* git carries the encrypted secrets and nothing that opens them. The Enclave wraps are useless
 off the Mac that made them, so they stay out. The recovery wrap only exists once sync is on, and
@@ -21,9 +21,9 @@ fn ignored() -> impl Iterator<Item = &'static str> {
 /* git checks out whatever a commit tracks, and a pulled .gitignore can unignore anything, so the
 ignore lines go in .git/info/exclude, which no pull changes, and every tracked path is checked
 with passbox's own list rather than git's ignore rules. A machine local file git tracks was
-pulled, or committed by an older passbox. It moves to .from-git, which never syncs, and only then
-leaves the index. One that cannot move stays tracked, and a tracked plugin or host file is refused
-where it is used, so nothing is deleted and nothing git brought is used */
+pulled, or committed by an older passbox. It moves into .git/passbox, where no checkout writes,
+and only then leaves the index. One that cannot move stops passbox, so nothing is deleted and
+nothing git brought is read */
 pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
     if !in_git(store) {
         return Ok(());
@@ -50,6 +50,13 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
         .args(["ls-files", "-z", "--cached"])
         .output()
         .context("git is not on PATH")?;
+    if !tracked.status.success() {
+        bail!(
+            "git could not list what it tracks in {}: {}",
+            store.dir.display(),
+            String::from_utf8_lossy(&tracked.stderr).trim()
+        );
+    }
     // A plugin moves as a folder, so no file of it is left to run
     let mut aside = std::collections::BTreeSet::new();
     for file in tracked.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
@@ -65,21 +72,21 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
         };
         aside.insert(top);
     }
+    let mut stuck = Vec::new();
     for (n, path) in aside.into_iter().enumerate() {
         let from = store.dir.join(&path);
         let to = store
             .dir
-            .join(".from-git")
+            .join(".git/passbox/from-git")
             .join(format!("{path}-{}-{n}", now()));
-        if from.exists() {
+        // A link is moved as a link, never followed
+        if std::fs::symlink_metadata(&from).is_ok() {
             let moved = to
                 .parent()
                 .map_or(Ok(()), std::fs::create_dir_all)
                 .and_then(|()| std::fs::rename(&from, &to));
             if let Err(e) = moved {
-                eprintln!(
-                    "{path} is tracked by git and could not be set aside, so it stays tracked and unused: {e}"
-                );
+                stuck.push(format!("{path}: {e}"));
                 continue;
             }
             eprintln!(
@@ -99,6 +106,13 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
                 "--",
                 &path,
             ],
+        );
+    }
+    if !stuck.is_empty() {
+        bail!(
+            "git tracks files that belong to this Mac alone, and passbox could not set them aside, \
+             so it will not read the store until they are out of git and gone:\n{}",
+            stuck.join("\n")
         );
     }
     Ok(())
@@ -134,10 +148,12 @@ fn unstage(store: &Store) {
 }
 
 /// What git must not carry: every machine local path, the .gitignore itself aside, and the
-/// Enclave wraps, which sync carries since each names its Mac
+/// Enclave wraps, which sync carries since each names its Mac. Every path passbox writes is ASCII,
+/// and macOS folds case and accents in ways a text match misses, so any other path is kept out
 fn kept_out(relative: &str) -> bool {
-    !relative.eq_ignore_ascii_case(".gitignore")
-        && (machine_local(relative) || path_matches("/wraps/se-*.json", relative))
+    !relative.is_ascii()
+        || !relative.eq_ignore_ascii_case(".gitignore")
+            && (machine_local(relative) || path_matches("/wraps/se-*.json", relative))
 }
 
 /// Saves cd-ing into the store. Values stay encrypted, so git only ever sees opaque files.
@@ -265,5 +281,21 @@ fn push(store: &Store) {
             String::from_utf8_lossy(&o.stderr).trim()
         ),
         Err(e) => eprintln!("not pushed to {remote}: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kept_out;
+
+    #[test]
+    fn a_path_macos_would_fold_onto_a_machine_local_file_is_kept_out() {
+        assert!(kept_out("config.toml"));
+        assert!(kept_out("CONFIG.toml"));
+        // A ligature and a decomposed accent, which a text match does not fold
+        assert!(kept_out("con\u{fb01}g.toml"));
+        assert!(kept_out("store/cafe\u{301}.age"));
+        assert!(!kept_out("store/abc.age"));
+        assert!(!kept_out(".gitignore"));
     }
 }
