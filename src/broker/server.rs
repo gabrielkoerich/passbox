@@ -1,7 +1,9 @@
 //! The broker process: its sockets, one thread per connection, and the watchdog that ends it.
 
 use super::audit::{Entry, append_audit_to};
-use super::caller::{ancestry, caller_cwd, peer_pid, prompt_agent, remote_agent, ssh_requester};
+use super::caller::{
+    ancestry, caller_cwd, peer_pid, prompt_agent, remote_agent, signature_context, ssh_requester,
+};
 use super::phone::{self, PhoneState};
 use super::ssh;
 use super::tailnet;
@@ -32,14 +34,25 @@ fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
             while let Ok(Some(request)) = ssh::read_message(&mut stream) {
                 IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
                 let offered = ssh::offered(&shared.store);
+                let peer = connection.peer();
                 let reply = ssh::answer(&request, &offered, &mut connection, |key, data, host| {
                     let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
                     let agent = ssh_requester(&caller);
-                    shared
-                        .broker
-                        .lock()
-                        .expect("broker")
-                        .sign(key, data, host, &agent, &caller)
+                    // A signature names no host, so the folder it was made in, a git repository, says what it is for
+                    let place = if data.starts_with(b"SSHSIG") {
+                        pid.map(signature_context)
+                    } else {
+                        None
+                    };
+                    let asked = super::sign::Asked {
+                        data,
+                        host,
+                        peer,
+                        place: place.as_deref(),
+                        agent: &agent,
+                        caller: &caller,
+                    };
+                    shared.broker.lock().expect("broker").sign(key, &asked)
                 });
                 LAST_SEEN.store(store::now(), Ordering::Relaxed);
                 IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);

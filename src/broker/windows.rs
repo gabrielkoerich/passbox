@@ -33,8 +33,8 @@ pub(super) fn ssh_window_open<'a>(
     }
 
     let window = windows.get(key)?;
-    let secs = policy.hosts.get(&window.host)?;
-    (now < window.opened.saturating_add(*secs)).then_some(window)
+    let secs = policy.secs(&window.host)?;
+    (now < window.opened.saturating_add(secs)).then_some(window)
 }
 
 pub(super) fn fingerprint(key: &ssh_key::PublicKey) -> String {

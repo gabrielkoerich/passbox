@@ -1,13 +1,24 @@
 //! SSH signatures: the prompt, or the signing window that covers one key and one host key.
 
 use super::Broker;
-use super::audit::{Entry, append_audit_to};
+use super::caller::short_chain;
 use super::clock;
 use super::ssh;
 use super::windows::{SshWindow, SshWindowKey, fingerprint, ssh_window_open};
 use crate::{project, store};
 use anyhow::{Result, anyhow, bail};
 use std::fmt::Write as _;
+
+/// One sign request: the data, the host key a login proves, who is asking and from where
+#[derive(Clone, Copy)]
+pub(super) struct Asked<'a> {
+    pub(super) data: &'a [u8],
+    pub(super) host: Option<&'a ssh_key::PublicKey>,
+    pub(super) peer: ssh::Peer,
+    pub(super) place: Option<&'a str>,
+    pub(super) agent: &'a str,
+    pub(super) caller: &'a str,
+}
 
 impl Broker {
     /// The signature a live window covers, made with no prompt and no store key
@@ -26,7 +37,11 @@ impl Broker {
             window_key,
             store::now(),
         )?;
-        let to = format!("to {} {}", window.host, window_key.1);
+        let to = if window.host == window_key.1 {
+            format!("to {}", window.host)
+        } else {
+            format!("to {} {}", window.host, window_key.1)
+        };
         let signed = signature::Signer::try_sign(&*window.private, data);
         Some(
             self.audit_by(agent, &window.name, "by window", caller, &to)
@@ -34,17 +49,23 @@ impl Broker {
         )
     }
 
-    /* A signature prompts unless a window from `[ssh.windows]` covers this key and host key. The
+    /* A signature prompts unless a window covers it: one from `[ssh.windows]` for this key and host
+    key, or one from `[ssh.signing]` for this key and namespace, for a program on this Mac only. The
     prompt names the key by its comment, since its secret name is inside the ciphertext the prompt
     opens, and the store decides which key signs, not the list */
     pub(super) fn sign(
         &mut self,
         wanted: &ssh_key::PublicKey,
-        data: &[u8],
-        host: Option<&ssh_key::PublicKey>,
-        agent: &str,
-        caller: &str,
+        asked: &Asked<'_>,
     ) -> Result<ssh_key::Signature> {
+        let Asked {
+            data,
+            host,
+            peer,
+            place,
+            agent,
+            caller,
+        } = *asked;
         let label = ssh::label(wanted);
         let slot = format!("ssh:{label}");
         let purpose = ssh::purpose(data);
@@ -53,28 +74,29 @@ impl Broker {
             eprintln!("{} {e:#}", clock());
             ssh::Windows::default()
         });
-        let window_key = host.map(|h| (fingerprint(wanted), fingerprint(h)));
+        let (window_key, listed, shown) = target(&policy, wanted, data, host, peer);
         if let Some(window_key) = &window_key
             && let Some(signed) = self.signed_by_window(&policy, window_key, data, agent, caller)
         {
             return signed;
         }
 
-        let known = host.map_or_default(|_| ssh::known_hosts());
-        let listed = host.and_then(|h| policy.listed(h, &known));
-        let shown = match (&listed, host) {
-            (Some((name, _)), _) => Some(name.clone()),
-            (None, Some(h)) => ssh::known_names(&known, h).into_iter().next(),
-            (None, None) => None,
-        };
         let to = shown.as_ref().map_or_default(|n| format!(" to {n}"));
-        let mut reason = format!("sign {purpose}{to} with SSH key {label} for {agent}");
+        let place = place.unwrap_or_default();
+        let by = requested_by(agent, caller);
+        let mut reason = format!("sign {purpose}{place}{to} with SSH key {label} for {by}");
         if let Some((name, secs)) = &listed {
             let span = project::span(*secs);
-            let _ = write!(
-                reason,
-                ", and its logins to {name} for {span} without asking"
-            );
+            let _ = match name.strip_prefix("sig:") {
+                Some(ns) => write!(
+                    reason,
+                    ", and its {ns} signatures for {span} without asking"
+                ),
+                None => write!(
+                    reason,
+                    ", and its logins to {name} for {span} without asking"
+                ),
+            };
         }
 
         let stored = ssh::approved(&self.store);
@@ -134,19 +156,44 @@ impl Broker {
                 },
             );
         }
-        let to = key.to_public();
-        append_audit_to(
-            &self.store,
-            &to,
-            &Entry {
-                agent,
-                secret: name,
-                decision: "signed",
-                caller,
-                args: &args,
-                ..Entry::default()
-            },
-        )?;
+        self.audit_by(agent, name, "signed", caller, &args)?;
         signature::Signer::try_sign(private, data).map_err(|e| anyhow!("could not sign: {e}"))
     }
+}
+
+/* What a window for this signature is keyed and listed by, and the name the prompt shows the host
+by. A login is keyed by the host key it proves. A signature names no host, so it is keyed by its
+namespace, such as git, and only for a connection with no bind: a forwarded agent always binds
+first, so a server it reaches never signs under a window opened on this Mac */
+fn target(
+    policy: &ssh::Windows,
+    wanted: &ssh_key::PublicKey,
+    data: &[u8],
+    host: Option<&ssh_key::PublicKey>,
+    peer: ssh::Peer,
+) -> (Option<SshWindowKey>, Option<(String, u64)>, Option<String>) {
+    if let Some(h) = host {
+        let known = ssh::known_hosts();
+        let listed = policy.listed(h, &known);
+        let shown = listed
+            .as_ref()
+            .map(|(name, _)| name.clone())
+            .or_else(|| ssh::known_names(&known, h).into_iter().next());
+        return (Some((fingerprint(wanted), fingerprint(h))), listed, shown);
+    }
+    let Some(ns) = ssh::namespace(data).filter(|_| peer == ssh::Peer::Local) else {
+        return (None, None, None);
+    };
+    let name = format!("sig:{ns}");
+    let listed = policy.namespaces.get(&ns).map(|secs| (name.clone(), *secs));
+    (Some((fingerprint(wanted), name)), listed, None)
+}
+
+/// The requester and, when it says more, the chain of programs that asked
+fn requested_by(agent: &str, caller: &str) -> String {
+    let chain = short_chain(caller);
+    if chain.is_empty() || chain == agent {
+        return agent.to_string();
+    }
+    format!("{agent} ({chain})")
 }
