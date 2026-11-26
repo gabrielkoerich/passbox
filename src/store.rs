@@ -123,14 +123,13 @@ impl Store {
     fn pin_path(&self) -> PathBuf {
         self.dir.join("recipient.pin")
     }
-    /// The signing this Mac is on: absent before any, empty for 2.4.2's tag, `seal` once every
-    /// file is sealed. A file signed below it is refused
+    /// Present once this Mac has sealed its files, after which an unsealed one is refused
     fn signed_path(&self) -> PathBuf {
         self.dir.join("signed")
     }
 
     fn sealed(&self) -> bool {
-        fs::read_to_string(self.signed_path()).is_ok_and(|s| s.trim() == "seal")
+        self.signed_path().exists()
     }
     fn recovery_path(&self) -> PathBuf {
         self.wraps_dir().join("recovery.age")
@@ -203,7 +202,7 @@ impl Store {
         let public = key.to_public().to_string();
         write_private(&self.recipient_path(), public.as_bytes())?;
         write_private(&self.pin_path(), public.as_bytes())?;
-        write_private(&self.signed_path(), b"seal")?;
+        write_private(&self.signed_path(), b"")?;
         Ok(key)
     }
 
@@ -344,26 +343,25 @@ impl Store {
         Ok(key)
     }
 
-    /* Once per Mac, as it upgrades, in place so a tombstone and the versions stay as they are. A file
-    with 2.4.2's tag is resealed. An unsigned file is trusted and sealed only when no file is signed
-    yet, the first upgrade of the store. Once one is, another Mac has upgraded, and an unsigned file
-    is one nobody here wrote, so it stays refused */
+    /* Once per Mac, as it upgrades, in place so a tombstone and the versions stay as they are. The
+    files are trusted and sealed only on the store's first upgrade: every file opens and none is
+    sealed. A sealed file means another Mac upgraded, and a file that does not open may be a sealed
+    one a copy wrecked to make the store look new, so either way nothing unsealed is trusted */
     fn seal_all(&self, key: &x25519::Identity) -> Result<()> {
-        let files: Vec<(String, Secret, Signed)> = self
-            .ids_with_files()?
-            .into_iter()
-            .filter_map(|id| {
-                let (secret, signed) = open(&self.secret_path(&id), &id, key).ok()?;
-                Some((id, secret, signed))
-            })
-            .collect();
-        let first = files.iter().all(|(_, _, signed)| *signed == Signed::No);
-        for (id, secret, signed) in &files {
-            if *signed == Signed::Tag || (first && *signed == Signed::No) {
+        let mut files = Vec::new();
+        let mut first = true;
+        for id in self.ids_with_files()? {
+            match open(&self.secret_path(&id), &id, key) {
+                Ok((secret, false)) => files.push((id, secret)),
+                Ok((_, true)) | Err(_) => first = false,
+            }
+        }
+        if first {
+            for (id, secret) in &files {
                 write_sealed(&self.secret_path(id), id, secret, key)?;
             }
         }
-        write_private(&self.signed_path(), b"seal")
+        write_private(&self.signed_path(), b"")
     }
 
     pub(crate) fn unlock_with_passphrase(
@@ -469,17 +467,8 @@ impl Store {
 
     pub(crate) fn load(&self, id: &str, key: &x25519::Identity) -> Result<Secret> {
         let (secret, signed) = open(&self.secret_path(id), id, key)?;
-        // Below the signing this Mac is on, a file was not written by passbox here
-        let required = if self.sealed() {
-            Signed::Seal
-        } else if self.signed_path().exists() {
-            Signed::Tag
-        } else {
-            Signed::No
-        };
-        if signed == Signed::No && required != Signed::No
-            || signed == Signed::Tag && required == Signed::Seal
-        {
+        // Once this Mac has sealed its files, an unsealed one was not written by passbox here
+        if !signed && self.sealed() {
             bail!("it is not sealed by this store's key for this file");
         }
         Ok(secret)
@@ -708,21 +697,11 @@ fn id_of(path: &Path) -> String {
     name.map_or_else(String::new, |n| n.to_string_lossy().to_string())
 }
 
-/// How a file was signed. `Tag` is 2.4.2's, which did not bind the file's id
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Signed {
-    No,
-    Tag,
-    Seal,
-}
-
 /// What a secret file holds: the secret, and the seal only the store key can make
 #[derive(Deserialize)]
 struct Sealed {
     #[serde(flatten)]
     secret: Secret,
-    #[serde(default)]
-    tag: Option<String>,
     #[serde(default)]
     seal: Option<String>,
 }
@@ -734,28 +713,26 @@ struct SealedRef<'a> {
     seal: String,
 }
 
-/// The secret in a file, and how it was signed. A seal or tag that is there and wrong is refused
-fn open(path: &Path, id: &str, key: &x25519::Identity) -> Result<(Secret, Signed)> {
+/// The secret in a file, and whether it carries this store's seal for this id. A seal that is there
+/// and wrong is refused
+fn open(path: &Path, id: &str, key: &x25519::Identity) -> Result<(Secret, bool)> {
     let raw = fs::read(path)?;
     let mut plain = crypto::decrypt(&raw, &[Box::new(key.clone())])?;
     let sealed: Result<Sealed> =
         serde_json::from_slice(&plain).context("secret file is not valid json");
     plain.zeroize();
     let sealed = sealed?;
-    let signed = match (sealed.seal.as_deref(), sealed.tag.as_deref()) {
-        (Some(seal), _) if matches(key, Some(id), &sealed.secret, seal) => Signed::Seal,
-        (Some(_), _) => bail!("it carries a seal this store did not make for this file"),
-        (None, Some(tag)) if matches(key, None, &sealed.secret, tag) => Signed::Tag,
-        (None, Some(_)) => bail!("it carries a tag this store did not make"),
-        (None, None) => Signed::No,
-    };
-    Ok((sealed.secret, signed))
+    match sealed.seal.as_deref() {
+        Some(seal) if matches(key, id, &sealed.secret, seal) => Ok((sealed.secret, true)),
+        Some(_) => bail!("it carries a seal this store did not make for this file"),
+        None => Ok((sealed.secret, false)),
+    }
 }
 
 fn write_sealed(path: &Path, id: &str, secret: &Secret, key: &x25519::Identity) -> Result<()> {
     let sealed = SealedRef {
         secret,
-        seal: hex::encode(mac(key, Some(id), secret)?.finalize().into_bytes()),
+        seal: hex::encode(mac(key, id, secret)?.finalize().into_bytes()),
     };
     let mut json = serde_json::to_vec(&sealed)?;
     let ct = crypto::encrypt(&json, &[Box::new(key.to_public())]);
@@ -766,25 +743,19 @@ fn write_sealed(path: &Path, id: &str, secret: &Secret, key: &x25519::Identity) 
 /* age lets anyone who knows the public recipient write a file the store key opens, and the
 recipient sits in every synced copy. The seal is an HMAC keyed from the store key, over the file's
 id and the secret, so a planted file has none and a signed one moved to another id fails */
-fn mac(key: &x25519::Identity, id: Option<&str>, secret: &Secret) -> Result<Hmac<Sha256>> {
+fn mac(key: &x25519::Identity, id: &str, secret: &Secret) -> Result<Hmac<Sha256>> {
     let mut seed = Sha256::new();
-    seed.update(if id.is_some() {
-        b"passbox secret seal\n".as_slice()
-    } else {
-        b"passbox secret tag\n".as_slice()
-    });
+    seed.update(b"passbox secret seal\n");
     seed.update(secrecy::ExposeSecret::expose_secret(&key.to_string()).as_bytes());
     let mut mac = Hmac::<Sha256>::new_from_slice(&seed.finalize())
         .map_err(|_| anyhow!("could not key the seal"))?;
-    if let Some(id) = id {
-        mac.update(id.as_bytes());
-        mac.update(b"\n");
-    }
+    mac.update(id.as_bytes());
+    mac.update(b"\n");
     mac.update(&serde_json::to_vec(secret)?);
     Ok(mac)
 }
 
-fn matches(key: &x25519::Identity, id: Option<&str>, secret: &Secret, given: &str) -> bool {
+fn matches(key: &x25519::Identity, id: &str, secret: &Secret, given: &str) -> bool {
     let (Ok(mac), Ok(given)) = (mac(key, id, secret), hex::decode(given)) else {
         return false;
     };
@@ -963,12 +934,13 @@ mod tests {
         }
     }
 
-    /// What anyone holding a synced copy can write: a file the store key opens, sealed with `tag`
-    fn planted(store: &Store, secret: &Secret, tag: Option<String>) -> String {
+    /// What anyone holding a synced copy can write: a file the store key opens, sealed by `sealer`
+    fn planted(store: &Store, secret: &Secret, sealer: Option<&x25519::Identity>) -> String {
         let id = new_id();
         let mut json = serde_json::to_value(secret).unwrap();
-        if let Some(tag) = tag {
-            json["tag"] = tag.into();
+        if let Some(sealer) = sealer {
+            let seal = mac(sealer, &id, secret).unwrap().finalize().into_bytes();
+            json["seal"] = hex::encode(seal).into();
         }
         let to = store.recipient().unwrap();
         let ct = crypto::encrypt(json.to_string().as_bytes(), &[Box::new(to)]).unwrap();
@@ -999,17 +971,15 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_another_key_made_is_refused() {
+    fn a_seal_another_key_made_is_refused() {
         let (_tmp, store, key) = store();
         let other = x25519::Identity::generate();
-        let forged = secret("wallet/main", "theirs");
-        let tag = hex::encode(mac(&other, None, &forged).unwrap().finalize().into_bytes());
-        let id = planted(&store, &forged, Some(tag));
+        let id = planted(&store, &secret("wallet/main", "theirs"), Some(&other));
         let Err(err) = store.load(&id, &key) else {
-            panic!("a forged tag loaded");
+            panic!("a forged seal loaded");
         };
         assert!(
-            err.to_string().contains("tag this store did not make"),
+            err.to_string().contains("seal this store did not make"),
             "{err}"
         );
     }
@@ -1046,22 +1016,26 @@ mod tests {
         assert_eq!(store.names(&key).unwrap(), ["wallet/main"]);
     }
 
-    /// 2.4.2 signed without the id. Its files still open, and the next unlock reseals them
+    /* A copy that wrecks the sealed files, so they no longer open, and plants an unsealed one must not
+    make a Mac with no marker take the store for one never sealed and seal the planted file */
     #[test]
-    fn a_tag_from_2_4_2_is_resealed_with_its_id() {
+    fn wrecked_sealed_files_do_not_make_a_store_look_unsealed() {
         let (_tmp, store, key) = store();
-        let old = secret("db/old", "v");
-        let tag = hex::encode(mac(&key, None, &old).unwrap().finalize().into_bytes());
-        let id = planted(&store, &old, Some(tag));
-        write_private(&store.signed_path(), b"").unwrap();
-        assert_eq!(store.load(&id, &key).unwrap().value, "v");
+        let id = new_id();
+        store
+            .put(&id, &secret("wallet/main", "mine"), &key)
+            .unwrap();
+        write_private(&store.secret_path(&id), b"not age").unwrap();
+        let theirs = planted(&store, &secret("wallet/main", "theirs"), None);
+        fs::remove_file(store.signed_path()).unwrap();
 
         store
             .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
             .unwrap();
-        let (_, signed) = open(&store.secret_path(&id), &id, &key).unwrap();
-        assert!(signed == Signed::Seal, "not resealed");
-        assert!(store.sealed());
+        assert!(
+            store.load(&theirs, &key).is_err(),
+            "the planted file was sealed"
+        );
     }
 
     /* A synced copy that swapped wraps/recipient for its own key would get every later write. Writes
@@ -1123,7 +1097,7 @@ mod tests {
             .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
             .unwrap();
         let (_, signed) = open(&store.secret_path(&old), &old, &key).unwrap();
-        assert!(signed == Signed::Seal, "not sealed");
+        assert!(signed, "not sealed");
         let late = planted(&store, &secret("db/late", "v"), None);
         assert!(store.load(&late, &key).is_err());
 
