@@ -56,6 +56,8 @@ pub(crate) const MACHINE_LOCAL: &[&str] = &[
     "/.git/**",
     "/.gitignore",
     "/store/.versions/**",
+    // A file that did not open when this Mac sealed its store, kept aside rather than lost
+    "/store/.quarantine/**",
     // A copy cut off before its rename, never a real file
     "*.partial",
     // A grant that travelled would let a machine you have not touched inherit an approval
@@ -411,28 +413,24 @@ impl Store {
 
     /* Once per Mac, as it upgrades, in place so a tombstone and the versions stay as they are. The
     files are trusted and sealed only on the store's first upgrade, when none is sealed. A sealed
-    file means another Mac upgraded, so nothing unsealed is trusted. A file that does not open may
-    be a sealed one a copy broke to make the store look new, so then nothing is sealed and the
-    store reads as before until the file is gone. The client build reads what a Mac sealed, and
-    never adopts */
+    file means another Mac upgraded, so nothing unsealed is trusted. A file that does not open is
+    moved to store/.quarantine, which never syncs, so it neither holds the upgrade back nor locks
+    the store. The client build reads what a Mac sealed, and never adopts */
     fn seal_all(&self, key: &x25519::Identity) -> Result<()> {
         let mut files = Vec::new();
-        let mut broken = Vec::new();
         let mut first = cfg!(feature = "host");
         for id in self.ids_with_files()? {
-            match open(&self.secret_path(&id), &id, key) {
+            let path = self.secret_path(&id);
+            match open(&path, &id, key) {
                 Ok((secret, false)) => files.push((id, secret)),
                 Ok((_, true)) => first = false,
-                Err(_) => broken.push(self.secret_path(&id).display().to_string()),
+                Err(e) => {
+                    let aside = self.secrets_dir().join(".quarantine");
+                    private_dir(&aside)?;
+                    fs::rename(&path, aside.join(format!("{id}.age")))?;
+                    eprintln!("moved {} aside, it does not open: {e:#}", path.display());
+                }
             }
-        }
-        if first && !broken.is_empty() {
-            eprintln!(
-                "passbox did not seal this store, these files do not open: {}\n\
-                 remove them and unlock again, until then it reads unsealed files as before",
-                broken.join(", ")
-            );
-            return Ok(());
         }
         if first {
             for (id, secret) in &files {
@@ -1112,21 +1110,27 @@ mod tests {
         assert_eq!(store.names(&key).unwrap(), ["wallet/main"]);
     }
 
-    /* A file that will not open may be a sealed one a copy broke so the store looks never sealed. The
-    upgrade then seals nothing and sets no marker, so the store reads as before rather than locking */
+    /// A file that does not open is moved aside, so it neither keeps the store unsealed nor locks it
     #[test]
-    fn one_broken_file_holds_the_upgrade_without_locking_the_store() {
+    fn one_broken_file_is_moved_aside_on_upgrade() {
         let (_tmp, store, key) = store();
         fs::remove_file(store.pin_path()).unwrap();
         fs::remove_file(store.signed_path()).unwrap();
         let mine = planted(&store, &secret("wallet/main", "mine"), None);
-        write_private(&store.secret_path(&new_id()), b"not age").unwrap();
+        let broken = new_id();
+        write_private(&store.secret_path(&broken), b"not age").unwrap();
 
         store
             .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
             .unwrap();
-        assert!(!store.sealed(), "it sealed beside a broken file");
+        assert!(store.sealed());
         assert_eq!(store.load(&mine, &key).unwrap().value, "mine");
+        assert!(!store.secret_path(&broken).exists());
+        let aside = store
+            .secrets_dir()
+            .join(".quarantine")
+            .join(format!("{broken}.age"));
+        assert!(aside.exists(), "the broken file was lost");
     }
 
     /* A Mac joining takes the store from a copy that may have had its sealed files taken out and its
