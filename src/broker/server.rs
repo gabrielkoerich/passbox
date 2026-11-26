@@ -225,6 +225,51 @@ fn tailnet_port() -> u16 {
     TAILNET_PORT
 }
 
+/// A broker launchd starts at login runs before Tailscale connects, so it keeps trying until it can
+fn listen_tailnet(shared: &std::sync::Arc<Shared>) {
+    let port = tailnet_port();
+    let tcp = listen_when(
+        || tailnet::address().is_some(),
+        || std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)),
+        || std::thread::sleep(std::time::Duration::from_secs(30)),
+    );
+    eprintln!(
+        "{} listening on 127.0.0.1:{port}; expose it with\n  {}",
+        clock(),
+        tailnet::serve_command()
+    );
+    serve_tailnet(&tcp, shared);
+}
+
+/// The listener, once Tailscale is connected and the port binds. Takes the checks as functions so
+/// a test drives it with no Tailscale, no socket and no waiting
+fn listen_when<L>(
+    connected: impl Fn() -> bool,
+    bind: impl Fn() -> std::io::Result<L>,
+    pause: impl Fn(),
+) -> L {
+    let mut said = false;
+    loop {
+        let why = if connected() {
+            match bind() {
+                Ok(listener) => return listener,
+                Err(e) => e.to_string(),
+            }
+        } else {
+            "Tailscale is not connected".to_string()
+        };
+        // Once, or a Mac without Tailscale would log it every 30 seconds
+        if !said {
+            eprintln!(
+                "{} not listening for tailnet peers yet: {why}, trying again",
+                clock()
+            );
+            said = true;
+        }
+        pause();
+    }
+}
+
 pub(crate) fn serve(store: Store) -> Result<()> {
     #[cfg(target_os = "macos")]
     harden();
@@ -258,20 +303,8 @@ pub(crate) fn serve(store: Store) -> Result<()> {
 
     Loopback has none of the unix socket's 0600 protection, so any local user can reach this
     port. That is the cost of the only inbound path macOS actually delivers. */
-    if tailnet::address().is_some() {
-        let port = tailnet_port();
-        match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
-            Ok(tcp) => {
-                eprintln!(
-                    "listening on 127.0.0.1:{port}; expose it with\n  {}",
-                    tailnet::serve_command()
-                );
-                let shared = std::sync::Arc::clone(&shared);
-                std::thread::spawn(move || serve_tailnet(&tcp, &shared));
-            }
-            Err(e) => eprintln!("not listening for tailnet peers: {e}"),
-        }
-    }
+    let for_tailnet = std::sync::Arc::clone(&shared);
+    std::thread::spawn(move || listen_tailnet(&for_tailnet));
 
     // A daemon that prints nothing looks like a hang, so say plainly that it is working
     eprintln!(
@@ -402,7 +435,47 @@ mod tests {
     use super::*;
     use crate::broker::tokens::TokenGrant;
     use age::x25519;
+    use std::cell::Cell;
     use std::collections::HashMap;
+
+    /* A broker launchd starts at login runs before Tailscale connects. It found no address once,
+    never opened the tailnet port, and the phone reached nothing until the next restart */
+    #[test]
+    fn the_tailnet_port_is_bound_once_tailscale_connects() {
+        let (checks, binds, pauses) = (Cell::new(0), Cell::new(0), Cell::new(0));
+        let listener = listen_when(
+            || {
+                checks.set(checks.get() + 1);
+                checks.get() == 3
+            },
+            || {
+                binds.set(binds.get() + 1);
+                Ok("listener")
+            },
+            || pauses.set(pauses.get() + 1),
+        );
+        assert_eq!(listener, "listener");
+        assert_eq!((checks.get(), binds.get(), pauses.get()), (3, 1, 2));
+    }
+
+    #[test]
+    fn a_port_still_in_use_is_tried_again() {
+        let (binds, pauses) = (Cell::new(0), Cell::new(0));
+        let listener = listen_when(
+            || true,
+            || {
+                binds.set(binds.get() + 1);
+                if binds.get() == 1 {
+                    Err(std::io::ErrorKind::AddrInUse.into())
+                } else {
+                    Ok("listener")
+                }
+            },
+            || pauses.set(pauses.get() + 1),
+        );
+        assert_eq!(listener, "listener");
+        assert_eq!((binds.get(), pauses.get()), (2, 1));
+    }
 
     #[test]
     fn a_repointed_or_deleted_binary_reads_as_replaced() {
