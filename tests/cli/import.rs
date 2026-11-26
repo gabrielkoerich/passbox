@@ -224,7 +224,7 @@ fn importing_from_1password_maps_each_item_and_says_why_it_skipped() {
 }
 
 #[test]
-fn two_1password_items_with_one_name_import_the_first_and_skip_the_second() {
+fn two_1password_items_with_one_name_both_import_the_later_numbered() {
     let cli = Cli::new();
     let fake = tempfile::tempdir().unwrap();
     let shim = fake.path().join("op");
@@ -245,10 +245,22 @@ esac
 
     let out = import_1password(&cli, &fake, &[]);
     assert!(
-        out.contains("skipped Dev/github!, dev/github is already taken by Dev/GitHub"),
+        out.contains("dev/github-2: named dev/github-2, since Dev/GitHub took dev/github"),
         "{out}"
     );
     assert!(!out.contains("already in the store"), "{out}");
-    assert!(out.contains("imported 1, skipped 1, refused 0"), "{out}");
+    assert!(out.contains("imported 2, skipped 0, refused 0"), "{out}");
     assert_eq!(cli.read("dev/github").unwrap(), "one");
+    assert_eq!(cli.read("dev/github-2").unwrap(), "two");
+
+    // A second run refuses both, and numbers nothing new
+    let again = import_1password(&cli, &fake, &[]);
+    assert!(
+        again.contains("imported 0, skipped 0, refused 2"),
+        "{again}"
+    );
+    assert_eq!(
+        cli.run(&["ls"], None).unwrap(),
+        "dev/github\ndev/github-2\n"
+    );
 }

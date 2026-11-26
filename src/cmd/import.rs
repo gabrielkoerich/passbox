@@ -177,14 +177,20 @@ fn copy<S: Source>(
             continue;
         }
 
-        if let Some(first) = claimed.get(&name) {
-            report.push(Line {
-                outcome: Outcome::Skipped(format!("{name} is already taken by {first}")),
-                item: label,
-                name,
-            });
-            continue;
-        }
+        // Two items with one title, such as two `MyAlgo` in a vault, both import, the later numbered
+        let mut renamed = None;
+        let name = match claimed.get(&name) {
+            Some(first) => {
+                // One more number than names in use, so a free one is always there
+                let free = (2..=claimed.len() + taken.len() + 2)
+                    .map(|n| format!("{name}-{n}"))
+                    .find(|n| !taken.contains(n) && !claimed.contains_key(n))
+                    .unwrap_or_default();
+                renamed = Some(format!("named {free}, since {first} took {name}"));
+                free
+            }
+            None => name,
+        };
 
         let outcome = match source.fetch(&handle) {
             Err(e) => Outcome::Skipped(format!("{e:#}")),
@@ -194,6 +200,7 @@ fn copy<S: Source>(
                 mut notes,
                 blob,
             }) => {
+                notes.extend(renamed);
                 notes.extend(sshkey::unoffered(&name, &value));
                 if mode == Mode::Write {
                     let secret = Secret {
