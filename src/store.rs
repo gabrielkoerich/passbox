@@ -578,9 +578,110 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+impl Secret {
+    /// A note is one text, so it lists no fields and a picker copies it whole. Any other entry
+    /// with no name to list fails, so a picker never mistakes it for a note
+    pub(crate) fn field_names(&self) -> Result<Vec<String>> {
+        if self.blob {
+            return Ok(Vec::new());
+        }
+
+        let names = labels(&self.value);
+        if names.is_empty() {
+            bail!("{} has no field to copy", self.name);
+        }
+        Ok(names)
+    }
+
+    /// One field, and none from a note, which is one text
+    pub(crate) fn field(&self, want: &str) -> Result<String> {
+        if self.blob {
+            bail!(
+                "{} is a note, which has no fields, read it without --field",
+                self.name
+            );
+        }
+
+        pick(&self.name, &self.value, want)
+    }
+}
+
+/* The `pass` layout, which import keeps: the first line is the secret and later `key: value`
+lines are fields. Reading one field hands a caller the password without the note beside it. */
+pub(crate) fn fields(value: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut lines = value.lines();
+    if let Some(first) = lines.next() {
+        out.push(("password".to_string(), first.to_string()));
+    }
+    for line in lines {
+        if let Some((key, v)) = line.split_once(':') {
+            let (key, v) = (key.trim().to_lowercase(), v.trim());
+            if !key.is_empty() && !v.is_empty() {
+                out.push((key, v.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// One field of a value, where an empty first line is no password
+pub(crate) fn pick(name: &str, value: &str, want: &str) -> Result<String> {
+    if want == "password" && value.lines().next().is_none_or(str::is_empty) {
+        bail!("{name} has no password, read one of its fields with --field");
+    }
+
+    // A key written twice reads as its last value
+    fields(value)
+        .into_iter()
+        .rev()
+        .find(|(key, _)| key == want)
+        .map(|(_, v)| v)
+        .with_context(|| format!("{name} has no field {want}"))
+}
+
+/// The fields `get --field` reads, each once and in the order they are written, and no value
+pub(crate) fn labels(value: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (key, v) in fields(value) {
+        if !v.is_empty() && looks_like_a_label(&key) && !out.contains(&key) {
+            out.push(key);
+        }
+    }
+    out
+}
+
+/* A note's free text can hold `my pin is 4821: bank` or a token before a colon, which the parse
+reads as a key. Listing only short, plain names keeps such a line out of a picker and its logs,
+and `--field` still reads it by its exact name */
+fn looks_like_a_label(key: &str) -> bool {
+    let plain = key
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '.' | '-'));
+    let digits = key
+        .split(|c: char| !c.is_ascii_digit())
+        .all(|run| run.len() < 4);
+    plain
+        && digits
+        && key.chars().count() <= 32
+        && key.split_whitespace().all(|w| w.chars().count() <= 20)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_follow_the_order_written_and_skip_an_empty_password() {
+        let login = "pw\nusername: gb\nurl: x\na note line\npassword 2: b\nurl: y";
+        assert_eq!(labels(login), ["password", "username", "url", "password 2"]);
+        let note = "\nbank: itau\npix: me@x";
+        assert_eq!(labels(note), ["bank", "pix"]);
+        // A note line that only happens to hold a colon names no field a picker should show
+        let text = "pw\nuser: gb\nmy pin is 4821: bank\nsk_live_9f3a8c2b7d6e5f4a3b2c1d: old";
+        assert_eq!(labels(text), ["password", "user"]);
+        assert_eq!(labels(""), Vec::<String>::new());
+    }
 
     #[test]
     fn removing_an_old_name_index_is_idempotent() {

@@ -93,6 +93,110 @@ fn a_prompt_left_open_holds_up_no_token_read_and_raises_no_second_prompt() {
 
 const SHOW_AB: &str = "printf %s,%s \"$A\" \"$B\"";
 
+/* Only the field leaves the broker, after a prompt or under a token, and the reply says it was cut.
+A note under a token refuses a field as it does after a prompt */
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_field_read_sends_only_that_field_by_prompt_and_by_token() {
+    let bound = Bound::new();
+    bound
+        .run(
+            &["add", "web/login"],
+            Some("hunter2\nusername: gb\nsome note"),
+        )
+        .unwrap();
+    bound
+        .run(
+            &["add", "notes/wifi", "--blob"],
+            Some("home network\npass: abc\n"),
+        )
+        .unwrap();
+    // A read starts the broker, which a raw request needs listening
+    bound.read("demo/one").unwrap();
+    let ask = |token: &str, name: &str, extra: &str| {
+        ask_socket(
+            &bound,
+            &format!(r#"{{"name":"{name}","agent":"raw","op":"get","token":"{token}"{extra}}}"#),
+        )
+    };
+    let only_the_username = |reply: &str| {
+        assert!(reply.contains(r#""value":"gb""#), "{reply}");
+        assert!(reply.contains(r#""field":"username""#), "{reply}");
+        assert!(
+            !reply.contains("hunter2") && !reply.contains("some note"),
+            "{reply}"
+        );
+    };
+
+    only_the_username(&ask("", "web/login", r#","field":"username""#));
+
+    let token = bound
+        .run(&["grant", "web/login", "notes/wifi", "--for", "60"], None)
+        .unwrap();
+    let token = token.trim();
+    only_the_username(&ask(token, "web/login", r#","field":"username""#));
+    let note = ask(token, "notes/wifi", r#","field":"password""#);
+    assert!(note.contains("notes/wifi is a note"), "{note}");
+    assert!(!note.contains("home network"), "{note}");
+
+    let export = ask(
+        "",
+        "web/login",
+        r#","field":"username","passphrase":"twelve chars plus""#,
+    );
+    assert!(export.contains("an export takes the whole key"), "{export}");
+
+    // The note under a token released nothing, so the log does not say it did
+    let log = bound.audit();
+    assert!(decided(&log, "notes/wifi", "withheld"), "{log}");
+    assert!(!decided(&log, "notes/wifi", "by token"), "{log}");
+}
+
+/// The broker cuts the field out, so asking a note for one is refused there and audited
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn the_broker_refuses_a_field_from_a_note() {
+    let bound = Bound::new();
+    bound
+        .run(
+            &["add", "notes/wifi", "--blob"],
+            Some("home network\npass: abc\n"),
+        )
+        .unwrap();
+    bound.forget_prompts();
+    let err = bound
+        .run(&["copy", "notes/wifi", "--field", "password"], None)
+        .unwrap_err();
+    assert!(err.contains("notes/wifi is a note"), "{err}");
+    assert!(!err.contains("home network"), "{err}");
+    let log = bound.audit();
+    assert!(decided(&log, "notes/wifi", "withheld"), "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn fields_through_the_broker_prompts_once_and_is_audited_without_a_value() {
+    let bound = Bound::new();
+    let out = bound.run(&["fields", "demo/one"], None).unwrap();
+    assert_eq!(out, "password\n");
+    assert_eq!(
+        bound.prompts(),
+        ["list the fields of demo/one for test-agent"]
+    );
+    let log = bound.audit();
+    assert!(decided(&log, "demo/one", "fields listed"), "{log}");
+    assert!(!log.contains("value-one"), "{log}");
+}
+
 #[test]
 #[cfg_attr(
     not(feature = "mock-enclave"),

@@ -152,9 +152,20 @@ jobs:
           names="$names" ./filter.sh > "$RUNNER_TEMP/alfred.json"
           python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); assert sorted(i["title"] for i in d["items"]) == ["db/password", "github/token"], d' "$RUNNER_TEMP/alfred.json"
           error="denied" ./filter.sh | grep -q '"passbox ls failed"'
+          # fields.sh hands one name's field names to pick.sh the same way, and no value travels
+          PASSBOX="$(command -v passbox)" ./fields.sh github/token > "$RUNNER_TEMP/fields.json"
+          labels=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["alfredworkflow"]["variables"]["labels"])' "$RUNNER_TEMP/fields.json")
+          name=github/token labels="$labels" ./pick.sh > "$RUNNER_TEMP/pick.json"
+          python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); assert [i["variables"]["field"] for i in d["items"]] == ["password"], d' "$RUNNER_TEMP/pick.json"
+          error="denied" ./pick.sh | grep -q '"passbox fields failed"'
+          # A note lists no field, so its box holds one row that copies the whole text
+          printf 'home\npass: abc\n' | passbox add notes/wifi --blob
+          PASSBOX="$(command -v passbox)" ./fields.sh notes/wifi > "$RUNNER_TEMP/note.json"
+          labels=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["alfredworkflow"]["variables"]["labels"])' "$RUNNER_TEMP/note.json")
+          name=notes/wifi labels="$labels" ./pick.sh | python3 -c 'import json, sys; d = json.load(sys.stdin); assert [i["variables"] for i in d["items"]] == [{"whole": "1"}], d'
           # The same package the release attaches
           ./build.sh 0.0.0 "$RUNNER_TEMP/passbox.alfredworkflow"
-          unzip -Z1 "$RUNNER_TEMP/passbox.alfredworkflow" | sort | tr '\n' ' ' | grep -qx 'copy.sh filter.sh icon.png info.plist list.sh '
+          unzip -Z1 "$RUNNER_TEMP/passbox.alfredworkflow" | sort | tr '\n' ' ' | grep -qx 'copy.sh fields.sh filter.sh icon.png info.plist list.sh pick.sh '
           # Alfred shows a broken icon without an error, so check every chunk and the 512 square
           python3 - "$RUNNER_TEMP/passbox.alfredworkflow" <<'PY'
           import struct, sys, zipfile, zlib

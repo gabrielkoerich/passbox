@@ -9,7 +9,7 @@ use crate::crypto;
 #[cfg(feature = "host")]
 use crate::se;
 use crate::store::{self, Secret, Store};
-use crate::{agent, broker, brokered, read_secret, unlock};
+use crate::{agent, broker, brokered, read_secret, read_secret_field, unlock};
 use crate::{agent_list_names, held_token};
 use age::x25519;
 use anyhow::{Context, Result, bail};
@@ -128,36 +128,10 @@ pub(crate) fn add(store: &Store, name: &str, input: Input<'_>, existing: Existin
     Ok(())
 }
 
-/* The `pass` layout, which import keeps: the first line is the secret and later `key: value`
-lines are fields. Reading one field hands a caller the password without the note beside it. */
-fn fields(value: &str) -> std::collections::HashMap<String, String> {
-    let mut out = std::collections::HashMap::new();
-    let mut lines = value.lines();
-    if let Some(first) = lines.next() {
-        out.insert("password".to_string(), first.to_string());
-    }
-    for line in lines {
-        if let Some((key, v)) = line.split_once(':') {
-            let (key, v) = (key.trim().to_lowercase(), v.trim());
-            if !key.is_empty() && !v.is_empty() {
-                out.insert(key, v.to_string());
-            }
-        }
-    }
-    out
-}
-
 fn read_field(store: &Store, name: &str, field: Option<&str>) -> Result<String> {
-    let whole = read_secret(store, name)?;
     match field {
-        None => Ok(whole),
-        // A 1Password note or login with fields and no password keeps its first line empty
-        Some("password") if whole.lines().next().is_none_or(str::is_empty) => {
-            bail!("{name} has no password, read one of its fields with --field")
-        }
-        Some(want) => fields(&whole)
-            .remove(want)
-            .with_context(|| format!("{name} has no field {want}")),
+        None => read_secret(store, name),
+        Some(want) => read_secret_field(store, name, want),
     }
 }
 
@@ -258,6 +232,31 @@ pub(crate) fn ls(store: &Store) -> Result<()> {
         for name in names {
             writeln!(out, "{name}")?;
         }
+    }
+    Ok(())
+}
+
+/// One label a line, and no value, so Alfred can offer each field to `copy --field`
+pub(crate) fn list_fields(store: &Store, name: &str) -> Result<()> {
+    let labels = if brokered(store) {
+        broker::fields(store, name, &agent())?
+    } else {
+        let key = unlock(store, &format!("list the fields of {name}"))?;
+        let (_, secret) = store
+            .find(name, &key)?
+            .with_context(|| format!("no secret named {name}"))?;
+        let names = secret.field_names();
+        let decision = if names.is_ok() {
+            "fields listed"
+        } else {
+            "withheld"
+        };
+        broker::append_audit(store, &agent(), name, decision, &broker::own_ancestry(), "")?;
+        names?
+    };
+    let mut out = std::io::stdout();
+    for label in labels {
+        writeln!(out, "{label}")?;
     }
     Ok(())
 }
@@ -449,7 +448,12 @@ fn extra_lines(input: impl std::io::BufRead) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extra_lines, fields, named_fields};
+    use super::{extra_lines, named_fields};
+    use crate::store;
+
+    fn fields(value: &str) -> std::collections::HashMap<String, String> {
+        store::fields(value).into_iter().collect()
+    }
 
     #[test]
     fn each_named_field_is_asked_once_and_reads_back() {

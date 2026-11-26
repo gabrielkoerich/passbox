@@ -8,8 +8,35 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
-pub(crate) fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
-    request_token(store, name, agent, crate::held_token().unwrap_or_default())
+/// A read, of the whole entry or of one `field`, which the broker cuts out so the rest of the entry
+/// never reaches this process. The flag says it did, since a broker older than the field cannot
+pub(crate) fn request(
+    store: &Store,
+    name: &str,
+    agent: &str,
+    field: &str,
+) -> Result<(String, bool)> {
+    let response = ask(
+        store,
+        &Request {
+            name: name.to_string(),
+            agent: agent.to_string(),
+            op: Op::Get,
+            token: crate::held_token().unwrap_or_default().to_string(),
+            ttl: 0,
+            names: Vec::new(),
+            action: String::new(),
+            params: Vec::new(),
+            run: false,
+            passphrase: String::new(),
+            field: field.to_string(),
+        },
+    )?;
+    let cut = !field.is_empty() && response.field.as_deref() == Some(field);
+    let value = response
+        .value
+        .ok_or_else(|| anyhow!("broker sent no value"))?;
+    Ok((value, cut))
 }
 
 /// A read carrying a token the caller already holds, such as the one exec mints for its batch
@@ -27,6 +54,7 @@ pub(crate) fn request_token(store: &Store, name: &str, agent: &str, token: &str)
             params: Vec::new(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
 }
@@ -46,6 +74,7 @@ pub(crate) fn export(store: &Store, name: &str, agent: &str, passphrase: &str) -
             params: Vec::new(),
             run: false,
             passphrase: passphrase.to_string(),
+            field: String::new(),
         },
     )
 }
@@ -65,9 +94,31 @@ pub(crate) fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
             params: Vec::new(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )?;
     Ok(names.lines().map(str::to_string).collect())
+}
+
+/// One entry's field labels, one per line, so the caller can copy a field without seeing any value
+pub(crate) fn fields(store: &Store, name: &str, agent: &str) -> Result<Vec<String>> {
+    let labels = ask_broker(
+        store,
+        &Request {
+            name: name.to_string(),
+            agent: agent.to_string(),
+            op: Op::Fields,
+            token: String::new(),
+            ttl: 0,
+            names: Vec::new(),
+            action: String::new(),
+            params: Vec::new(),
+            run: false,
+            passphrase: String::new(),
+            field: String::new(),
+        },
+    )?;
+    Ok(labels.lines().map(str::to_string).collect())
 }
 
 /// Approve once and get a token back, with the names it covers listed after it
@@ -85,6 +136,7 @@ pub(crate) fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> R
             params: Vec::new(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
 }
@@ -112,6 +164,7 @@ pub(crate) fn plugin_approve(
             params: params.clone().into_iter().collect(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
     .map(|_| ())
@@ -139,6 +192,7 @@ pub(crate) fn plugin_run_remote(
             params: params.to_vec(),
             run: true,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
 }
@@ -159,6 +213,7 @@ fn phone_step(store: &Store, action: &str) -> Result<String> {
             params: Vec::new(),
             run: false,
             passphrase: String::new(),
+            field: String::new(),
         },
     )
 }
@@ -177,6 +232,12 @@ pub(crate) fn phone_test(store: &Store) -> Result<String> {
 
 /// Ask a running broker, starting one if the socket is dead.
 fn ask_broker(store: &Store, request: &Request) -> Result<String> {
+    ask(store, request)?
+        .value
+        .ok_or_else(|| anyhow!("broker sent no value"))
+}
+
+fn ask(store: &Store, request: &Request) -> Result<Response> {
     /* A configured host means this machine has no store of its own worth unlocking, so the
     request goes over the tailnet to one that has. The reply is the value, and the finger that
     released it was somewhere else. */
@@ -191,7 +252,7 @@ fn ask_broker(store: &Store, request: &Request) -> Result<String> {
         writeln!(stream, "{}", serde_json::to_string(request)?)?;
         let mut line = String::new();
         BufReader::new(stream.try_clone()?).read_line(&mut line)?;
-        return unwrap_response(&line);
+        return checked(&line);
     }
 
     let socket = store.socket_path();
@@ -214,11 +275,11 @@ fn ask_broker(store: &Store, request: &Request) -> Result<String> {
 
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
-    unwrap_response(&line)
+    checked(&line)
 }
 
 /// The same reply shape whether it arrived over a socket or the tailnet
-fn unwrap_response(line: &str) -> Result<String> {
+fn checked(line: &str) -> Result<Response> {
     let response: Response = serde_json::from_str(line).context("broker sent nonsense")?;
     if !response.ok {
         bail!(
@@ -226,9 +287,7 @@ fn unwrap_response(line: &str) -> Result<String> {
             response.error.unwrap_or_else(|| "refused".to_string())
         );
     }
-    response
-        .value
-        .ok_or_else(|| anyhow!("broker sent no value"))
+    Ok(response)
 }
 
 #[cfg(feature = "host")]

@@ -5,6 +5,9 @@ set -u
 quote() {
   local s=${1//\\/\\\\}
   s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
   printf '"%s"' "$s"
 }
 
@@ -18,7 +21,7 @@ while IFS= read -r name; do
   [ -n "$name" ] || continue
   n=$(quote "$name")
   items+="${items:+,}{\"uid\":$n,\"title\":$n,\"arg\":$n,\"autocomplete\":$n,"
-  items+="\"subtitle\":\"Copy the password\","
+  items+="\"subtitle\":\"⏎ shows its fields, ⌘⏎ copies the password\","
   items+="\"mods\":{\"cmd\":{\"arg\":$n,\"subtitle\":\"Copy the password\"}}}"
 done <<<"${names:-}"
 

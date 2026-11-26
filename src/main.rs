@@ -36,7 +36,9 @@ use cmd::phone::{phone_add, phone_ls, phone_rm};
 use cmd::plugins::plugin_cmd;
 #[cfg(feature = "host")]
 use cmd::secrets::audit;
-use cmd::secrets::{Existing, Input, Notes, add, copy, get, get_encrypted, grant, ls, restore, rm};
+use cmd::secrets::{
+    Existing, Input, Notes, add, copy, get, get_encrypted, grant, list_fields, ls, restore, rm,
+};
 use cmd::setup::init;
 #[cfg(feature = "host")]
 use cmd::setup::{enable_sync, machine_add, run_sync, yubikey_add};
@@ -123,6 +125,8 @@ enum Command {
     },
     /// List secret names
     Ls,
+    /// List the field names of one secret, never a value, for a picker that copies one field
+    Fields { name: String },
     /// Delete a secret, leaving a tombstone so the delete survives a sync
     Rm { name: String },
     /// List or restore earlier versions of a secret
@@ -360,6 +364,7 @@ fn run() -> Result<()> {
             grant(&store, &names, r#for)
         }
         Command::Ls => ls(&store),
+        Command::Fields { name } => list_fields(&store, &name),
         Command::Rm { name } => rm(&store, &name).inspect(|()| written(&store, "remove a secret")),
         Command::Restore { name, index } => restore(&store, &name, index)
             .inspect(|()| written(&store, "restore an earlier version")),
@@ -428,11 +433,16 @@ fn agent() -> String {
 }
 
 fn read_secret(store: &Store, name: &str) -> Result<String> {
-    read_secret_as(store, name, &agent())
+    read_secret_as(store, name, None, &agent())
+}
+
+/// One field, which only leaves the broker on its own
+fn read_secret_field(store: &Store, name: &str, field: &str) -> Result<String> {
+    read_secret_as(store, name, Some(field), &agent())
 }
 
 pub(crate) fn agent_read_secret(store: &Store, name: &str, agent: &str) -> Result<String> {
-    read_secret_as(store, name, agent)
+    read_secret_as(store, name, None, agent)
 }
 
 // A configured host wins over this disk, or a client with no wraps falls through to asking
@@ -443,22 +453,31 @@ fn brokered(store: &Store) -> bool {
 
 /// The broker owns windows and the audit log, so every read goes through it when it can.
 /// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
-fn read_secret_as(store: &Store, name: &str, agent: &str) -> Result<String> {
+fn read_secret_as(store: &Store, name: &str, field: Option<&str>, agent: &str) -> Result<String> {
     if brokered(store) {
-        return broker::request(store, name, agent);
+        let (value, cut) = broker::request(store, name, agent, field.unwrap_or_default())?;
+        // A broker older than the field sends the whole entry, so the field is cut here
+        return match field {
+            Some(want) if !cut => store::pick(name, &value, want),
+            _ => Ok(value),
+        };
     }
     let key = unlock(store, &format!("release the password for {name}"))?;
     let (_, secret) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
     let caller = broker::own_ancestry();
-    if let Err(e) = broker::sshkey::release(name, &secret.value, "") {
-        broker::append_audit(store, agent, name, "withheld", &caller, "")?;
-        return Err(e);
-    }
-
-    broker::append_audit(store, agent, name, "released", &caller, "")?;
-    Ok(secret.value.clone())
+    let value = broker::sshkey::release(name, &secret.value, "").and_then(|value| match field {
+        Some(want) => secret.field(want),
+        None => Ok(value),
+    });
+    let decision = if value.is_ok() {
+        "released"
+    } else {
+        "withheld"
+    };
+    broker::append_audit(store, agent, name, decision, &caller, "")?;
+    value
 }
 
 /// `PASSBOX_PASSPHRASE` says nobody is at the keyboard, and a fingerprint needs somebody

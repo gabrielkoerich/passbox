@@ -95,24 +95,36 @@ fn reply<S: std::io::Read + Write>(
             let answer = match (by_token, child) {
                 // Before the lock: the phone answers the very prompt that is holding it
                 _ if request.op == Op::Phone => phone::handle(shared, &request, caller, origin),
-                (Some((value, grant)), _) => shared
-                    .store
-                    .recipient()
-                    .and_then(|to| {
-                        append_audit_to(
-                            &shared.store,
-                            &to,
-                            &Entry {
-                                agent: &request.agent,
-                                secret: &request.name,
-                                decision: "by token",
-                                caller,
-                                grant: &grant,
-                                ..Entry::default()
-                            },
-                        )
-                    })
-                    .map(|()| value),
+                (Some((secret, grant)), _) => {
+                    let answer = match request.field.as_str() {
+                        "" => Ok(secret.value.clone()),
+                        want => secret.field(want),
+                    };
+                    // A refused field released nothing, so the log says so
+                    let decision = if answer.is_ok() {
+                        "by token"
+                    } else {
+                        "withheld"
+                    };
+                    shared
+                        .store
+                        .recipient()
+                        .and_then(|to| {
+                            append_audit_to(
+                                &shared.store,
+                                &to,
+                                &Entry {
+                                    agent: &request.agent,
+                                    secret: &request.name,
+                                    decision,
+                                    caller,
+                                    grant: &grant,
+                                    ..Entry::default()
+                                },
+                            )
+                        })
+                        .and(answer)
+                }
                 (None, Some(answer)) => answer,
                 (None, None) => shared
                     .broker
@@ -128,11 +140,13 @@ fn reply<S: std::io::Read + Write>(
                     ok: true,
                     value: Some(value),
                     error: None,
+                    field: (!request.field.is_empty()).then(|| request.field.clone()),
                 },
                 Err(e) => Response {
                     ok: false,
                     value: None,
                     error: Some(format!("{e:#}")),
+                    field: None,
                 },
             }
         }
@@ -140,6 +154,7 @@ fn reply<S: std::io::Read + Write>(
             ok: false,
             value: None,
             error: Some(format!("bad request: {e}")),
+            field: None,
         },
     };
     writeln!(stream, "{}", serde_json::to_string(&response)?)?;
@@ -164,6 +179,7 @@ fn serve_tailnet(listener: &std::net::TcpListener, shared: &std::sync::Arc<Share
                         "the broker cannot tell which host asked, run on the Mac:\n  {}",
                         tailnet::serve_command()
                     )),
+                    field: None,
                 };
                 let _ = writeln!(
                     stream,
@@ -522,6 +538,7 @@ mod tests {
             "t".into(),
             TokenGrant {
                 values: HashMap::from([("a/b".into(), "v".into())]),
+                notes: std::collections::HashSet::new(),
                 stamps: HashMap::new(),
                 expires: store::now() + 43_200,
                 grant: "g".into(),
@@ -534,7 +551,9 @@ mod tests {
         broker.sweep(KEY_TTL_SECS);
         assert!(broker.key.is_none());
         assert_eq!(
-            broker.value_for_token("t", "a/b"),
+            broker
+                .value_for_token("t", "a/b")
+                .map(|(secret, grant)| (secret.value.clone(), grant)),
             Some(("v".into(), "g".into()))
         );
 
