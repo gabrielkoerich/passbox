@@ -1,37 +1,58 @@
 //! The store as a git repository: a commit on every write, the mirror, and the push.
 
-use crate::store::Store;
+use crate::store::{MACHINE_LOCAL, Store};
 #[cfg(feature = "host")]
 use crate::sync;
 use anyhow::{Context, Result};
-
-/// A phone's wrap is as machine bound as the Enclave's own, it names the node that dials this Mac
-const PHONE_WRAPS: &str = "wraps/phone-*.json";
 
 /* git carries the encrypted secrets and nothing that opens them. The Enclave wraps are useless
 off the Mac that made them, so they stay out. The recovery wrap only exists once sync is on, and
 then it belongs in the backup, because without it the backup cannot be restored anywhere. */
 
+/// Everything sync leaves out, and the Enclave wraps, which sync carries since each names its Mac
+fn ignored() -> impl Iterator<Item = &'static str> {
+    MACHINE_LOCAL
+        .iter()
+        .copied()
+        .filter(|line| !line.starts_with("/.git"))
+        .chain(["/wraps/se-*.json"])
+}
+
+/* A .gitignore from an older passbox misses later lines, and a file it let in stays tracked after
+its line is added. A pull would then write it back, which for plugins/ is code the broker runs,
+so missing lines are added and anything ignored is taken out of the index */
 pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
     let path = store.dir.join(".gitignore");
-    if !path.exists() {
-        std::fs::write(
-            &path,
-            format!(
-                "broker.sock\nnames\nremote\nconfig.toml\nstore/.versions/\nwraps/se-*.json\n{PHONE_WRAPS}\ngrants-*.age\nwindows-*.json\n"
-            ),
-        )?;
-        return Ok(());
-    }
-    // A store whose .gitignore predates phones gets the one line, so a phone wrap stays out too
-    let text = std::fs::read_to_string(&path)?;
-    if !text.lines().any(|line| line == PHONE_WRAPS) {
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let missing: Vec<&str> = ignored()
+        .filter(|line| !text.lines().any(|l| l == *line))
+        .collect();
+    if !missing.is_empty() {
         let gap = if text.is_empty() || text.ends_with('\n') {
             ""
         } else {
             "\n"
         };
-        std::fs::write(&path, format!("{text}{gap}{PHONE_WRAPS}\n"))?;
+        std::fs::write(&path, format!("{text}{gap}{}\n", missing.join("\n")))?;
+    }
+
+    if in_git(store) {
+        let tracked = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&store.dir)
+            .args([
+                "ls-files",
+                "-z",
+                "--cached",
+                "--ignored",
+                "--exclude-standard",
+            ])
+            .output()
+            .context("git is not on PATH")?;
+        for file in tracked.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+            let file = String::from_utf8_lossy(file);
+            git_quietly(store, &["rm", "--cached", "--quiet", "--", &file]);
+        }
     }
     Ok(())
 }

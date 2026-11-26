@@ -1,6 +1,7 @@
 //! Copying the store to a directory or a git remote.
 
 use super::*;
+use age::x25519::Recipient;
 
 /// Sync is off until asked for, so a fresh store holds nothing an offline attacker could grind
 #[test]
@@ -38,6 +39,60 @@ fn sync_enable_picks_a_directory_and_copies_into_it() {
         std::fs::read_dir(remote.path()).unwrap().count() > 0,
         "nothing was copied: {err}"
     );
+}
+
+/* The attack a backup invites. age lets anyone holding the public recipient, which every backup
+carries, write a file the store key opens, and sync takes whichever side is newer. So whoever can
+write the backup swaps wraps/recipient for their own key and plants a secret under a name in use.
+Before the store signed its files, the next write was encrypted to their key and the planted value
+could win the name. Now the swap is undone and the planted file ignored */
+#[test]
+fn a_backup_that_swaps_the_recipient_and_plants_a_secret_gets_nothing() {
+    let remote = tempfile::tempdir().unwrap();
+    let cli = Cli::new();
+    cli.run(&["add", "wallet/main"], Some("mine")).unwrap();
+    cli.note(
+        &["sync", "--enable"],
+        Some(&format!("2\n{}\n", remote.path().display())),
+    );
+
+    // The attacker reads the public recipient from the backup and writes two files, newer than ours
+    std::thread::sleep(Duration::from_millis(1100));
+    let theirs = Identity::generate();
+    let wraps = remote.path().join("wraps/recipient");
+    let ours: Recipient = std::fs::read_to_string(&wraps)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let forged = br#"{"name":"wallet/main","value":"theirs","created":1,"updated":1}"#;
+    std::fs::write(
+        remote
+            .path()
+            .join("store/00000000000000000000000000000000.age"),
+        age::encrypt(&ours, forged).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(&wraps, theirs.to_public().to_string()).unwrap();
+
+    // The owner syncs, adds a secret, and syncs again, which puts it in the backup
+    cli.run(&["sync"], None).unwrap();
+    cli.run(&["add", "bank/new"], Some("fresh-secret")).unwrap();
+    cli.run(&["sync"], None).unwrap();
+
+    let stolen: Vec<String> = std::fs::read_dir(remote.path().join("store"))
+        .unwrap()
+        .filter_map(|entry| std::fs::read(entry.ok()?.path()).ok())
+        .filter_map(|ct| age::decrypt(&theirs, &ct).ok())
+        .map(|plain| String::from_utf8_lossy(&plain).to_string())
+        .filter(|plain| plain.contains("fresh-secret"))
+        .collect();
+    assert!(
+        stolen.is_empty(),
+        "the attacker decrypted a new secret: {stolen:?}"
+    );
+    assert_eq!(cli.read("wallet/main").unwrap(), "mine");
+    assert_eq!(cli.run(&["ls"], None).unwrap(), "bank/new\nwallet/main\n");
 }
 
 /// A git remote makes the store a repo and pushes it, and a second `--enable` asks before changing it
@@ -85,11 +140,28 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     assert!(ignore.contains("wraps/se-*.json"), "{ignore}");
     assert!(ignore.contains("wraps/phone-*.json"), "{ignore}");
 
-    // A store whose .gitignore was written before phones gets the line on its next git command
+    /* A .gitignore from an older passbox gets every line it lacks on the next git command, and a
+    plugin it let git track leaves the index, so a pull can no longer write plugin code here */
     std::fs::write(cli.path().join(".gitignore"), "wraps/se-*.json").unwrap();
+    std::fs::create_dir_all(cli.path().join("plugins/demo")).unwrap();
+    std::fs::write(cli.path().join("plugins/demo/run.sh"), "echo hi").unwrap();
+    cli.run(&["git", "add", "-f", "plugins"], None).unwrap();
     cli.run(&["git", "status"], None).unwrap();
     let ignore = std::fs::read_to_string(cli.path().join(".gitignore")).unwrap();
-    assert_eq!(ignore, "wraps/se-*.json\nwraps/phone-*.json\n");
+    assert!(ignore.starts_with("wraps/se-*.json\n"), "{ignore}");
+    for line in [
+        "/plugins/**",
+        "/config.toml",
+        "/wraps/phone-*.json",
+        "/recipient.pin",
+    ] {
+        assert!(
+            ignore.lines().any(|l| l == line),
+            "{line} missing: {ignore}"
+        );
+    }
+    let tracked = cli.run(&["git", "ls-files", "plugins"], None).unwrap();
+    assert_eq!(tracked, "", "a plugin is still tracked");
 }
 
 #[test]

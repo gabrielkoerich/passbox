@@ -61,7 +61,6 @@ pub(crate) enum Existing {
 }
 
 pub(crate) fn add(store: &Store, name: &str, input: Input<'_>, existing: Existing) -> Result<()> {
-    let recipient = store.recipient()?;
     let mut blob = !matches!(input, Input::Fields { .. });
     // A replace opens the store first, to learn whether the old entry is a blob
     let mut replaced = None;
@@ -91,16 +90,14 @@ pub(crate) fn add(store: &Store, name: &str, input: Input<'_>, existing: Existin
     })?
     .unwrap_or(value);
 
-    // Spotting a duplicate needs the name to id map, which only the key can produce
+    // The key signs the file, and spotting a duplicate needs the name to id map only it can produce
+    let key = match key {
+        Some(key) => key,
+        None => unlock(store, &format!("add {name}"))?,
+    };
     let id = if let Some(id) = replaced {
         id
-    } else if store.ids_with_files()?.is_empty() && !store.versions_dir().exists() {
-        store::new_id()
     } else {
-        let key = match key {
-            Some(key) => key,
-            None => unlock(store, &format!("add {name}"))?,
-        };
         if store.find(name, &key)?.is_some() {
             bail!("{name} already exists, use --replace or run `passbox rm {name}` first");
         }
@@ -115,7 +112,7 @@ pub(crate) fn add(store: &Store, name: &str, input: Input<'_>, existing: Existin
         updated: store::now(),
         blob,
     };
-    store.put(&id, &secret, &recipient)?;
+    store.put(&id, &secret, &key)?;
     eprintln!("stored {name}");
     // A client has no agent, so only the host offers the key or says why not
     #[cfg(feature = "host")]

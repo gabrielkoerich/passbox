@@ -11,7 +11,7 @@ use crate::broker::{ssh, sshkey};
 use crate::store::{Secret, Store, new_id, now};
 use crate::unlock;
 use age::x25519;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 
 /// A password manager passbox can copy secrets out of
@@ -100,8 +100,8 @@ fn run<S: Source>(
 ) -> Result<()> {
     // Listing reads no value, so a bad selection fails before any prompt
     let entries = source.entries(from, prefix)?;
-    // One approval covers the whole import, it only reads the names to refuse a duplicate
-    let key = if store.ids()?.is_empty() {
+    // One approval covers the whole import: it signs each file and reads the names to refuse a duplicate
+    let key = if mode == Mode::DryRun && store.ids()?.is_empty() {
         None
     } else {
         Some(unlock(store, &format!("import from {}", source.name()))?)
@@ -159,7 +159,6 @@ fn copy<S: Source>(
     };
     // Names this run gave out, so a second entry that maps to the same name is not reported as in the store
     let mut claimed: HashMap<String, String> = HashMap::new();
-    let recipient = store.recipient()?;
     let mut report = Vec::new();
 
     for entry in entries {
@@ -210,7 +209,8 @@ fn copy<S: Source>(
                         updated: now(),
                         blob,
                     };
-                    store.put(&new_id(), &secret, &recipient)?;
+                    let key = key.context("an import that writes holds the store key")?;
+                    store.put(&new_id(), &secret, key)?;
                     ssh::remember(store, &secret.value)?;
                 }
                 Outcome::Imported(notes)

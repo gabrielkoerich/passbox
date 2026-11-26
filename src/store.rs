@@ -5,8 +5,10 @@ use crate::crypto;
 use crate::{se, yubikey};
 use age::{scrypt, x25519};
 use anyhow::{Context, Result, anyhow, bail};
+use hmac::{Hmac, Mac};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -33,6 +35,38 @@ impl Drop for Secret {
         self.value.zeroize();
     }
 }
+
+/* What never syncs and git never tracks, in rclone filter syntax so `sync_via_rclone` excludes
+the same list. A
+leading `/` anchors the pattern at the store root, without one it matches a file name anywhere.
+Matching ignores case, as macOS and iCloud Drive do. */
+pub(crate) const MACHINE_LOCAL: &[&str] = &[
+    // Live endpoints, and the public keys this machine rebuilds whenever the store key opens
+    "/broker.sock",
+    "/ssh-agent.sock",
+    "/ssh-keys.pub",
+    // A client's broker address, which on another Mac would send its reads to this one's host
+    "/host",
+    // A USB path on one Mac means nothing on another
+    "/remote",
+    "/config.toml",
+    "/names",
+    "/plugins/**",
+    // The repo is this machine's history, and the remote is a mirror rather than a clone
+    "/.git/**",
+    "/.gitignore",
+    "/store/.versions/**",
+    // A copy cut off before its rename, never a real file
+    "*.partial",
+    // A grant that travelled would let a machine you have not touched inherit an approval
+    "/grants-*.age",
+    "/windows-*.json",
+    // A phone enrolls with one Mac, and its wrap names the node that dials that Mac
+    "/wraps/phone-*.json",
+    // What this Mac knows of the store key and its signing, which a copy must never change
+    "/recipient.pin",
+    "/signed",
+];
 
 pub(crate) fn now() -> u64 {
     SystemTime::now()
@@ -84,6 +118,14 @@ impl Store {
     }
     fn recipient_path(&self) -> PathBuf {
         self.wraps_dir().join("recipient")
+    }
+    /// The recipient this Mac last saw the store key make. Machine local, so no synced copy changes it
+    fn pin_path(&self) -> PathBuf {
+        self.dir.join("recipient.pin")
+    }
+    /// Present once this Mac has signed its files, after which an unsigned one is refused
+    fn signed_path(&self) -> PathBuf {
+        self.dir.join("signed")
     }
     fn recovery_path(&self) -> PathBuf {
         self.wraps_dir().join("recovery.age")
@@ -153,10 +195,10 @@ impl Store {
         private_dir(&self.wraps_dir())?;
 
         let key = x25519::Identity::generate();
-        write_private(
-            &self.recipient_path(),
-            key.to_public().to_string().as_bytes(),
-        )?;
+        let public = key.to_public().to_string();
+        write_private(&self.recipient_path(), public.as_bytes())?;
+        write_private(&self.pin_path(), public.as_bytes())?;
+        write_private(&self.signed_path(), b"")?;
         Ok(key)
     }
 
@@ -245,13 +287,68 @@ impl Store {
         let wrapped = fs::read(self.yubikey_wrap_path()).context("no YubiKey wrap")?;
         let raw = crypto::decrypt(&wrapped, &[yubikey::identity()?])
             .context("the YubiKey refused, or it is not the one this was wrapped to")?;
-        key_from_bytes(&raw)
+        self.trusted(key_from_bytes(&raw)?)
     }
 
+    /// The store's public key, refused when it differs from what the store key made on this Mac
     pub(crate) fn recipient(&self) -> Result<x25519::Recipient> {
         let raw = fs::read_to_string(self.recipient_path())
             .with_context(|| format!("no store at {}, run `passbox init`", self.dir.display()))?;
+        if let Ok(pin) = fs::read_to_string(self.pin_path())
+            && pin.trim() != raw.trim()
+        {
+            bail!(
+                "wraps/recipient is not the key this store opens with, a synced copy may have \
+                 replaced it, so nothing was written. Unlocking the store puts the right one back"
+            );
+        }
         x25519::Recipient::from_str(raw.trim()).map_err(|e| anyhow!("bad recipient file: {e}"))
+    }
+
+    /* wraps/recipient and the wraps sync, so a copy could swap either. The pin, which never syncs,
+    names the store's key: a key that differs is refused, a swapped recipient is put back, and the
+    first unlock on this Mac signs the files already here */
+    fn trusted(&self, key: x25519::Identity) -> Result<x25519::Identity> {
+        let public = key.to_public().to_string();
+        let on_disk = fs::read_to_string(self.recipient_path()).unwrap_or_default();
+        match fs::read_to_string(self.pin_path()) {
+            // A wrap is a key sealed to a public key, so a synced copy can plant one that opens to a
+            // key of its own choosing. Only the pinned key is the store's
+            Ok(pin) if pin.trim() != public => bail!(
+                "the key this wrap opened is not the store key this Mac knows, a synced copy may \
+                 have replaced the wrap, so nothing was opened"
+            ),
+            Ok(_) => {
+                if on_disk.trim() != public {
+                    eprintln!(
+                        "wraps/recipient did not match the store key, so passbox put it back"
+                    );
+                    write_private(&self.recipient_path(), public.as_bytes())?;
+                }
+            }
+            // The first unlock after an upgrade pins the key only when the recipient agrees
+            Err(_) if on_disk.trim() != public => bail!(
+                "wraps/recipient and the store key disagree, and this Mac has no record of which is \
+                 right. Restore wraps/recipient, or the wrap you unlocked with, from a backup you trust"
+            ),
+            Err(_) => write_private(&self.pin_path(), public.as_bytes())?,
+        }
+        if !self.signed_path().exists() {
+            self.sign_unsigned(&key)?;
+        }
+        Ok(key)
+    }
+
+    /// Once per Mac, as it upgrades: the files here are trusted as they were, and signed in place,
+    /// so a tombstone and the versions beside each file stay as they are
+    fn sign_unsigned(&self, key: &x25519::Identity) -> Result<()> {
+        for id in self.ids_with_files()? {
+            let path = self.secret_path(&id);
+            if let Ok((secret, false)) = open(&path, key) {
+                write_sealed(&path, &secret, key)?;
+            }
+        }
+        write_private(&self.signed_path(), b"")
     }
 
     pub(crate) fn unlock_with_passphrase(
@@ -261,7 +358,7 @@ impl Store {
         let wrapped = fs::read(self.recovery_path()).context("no recovery wrap")?;
         let raw = crypto::decrypt(&wrapped, &[Box::new(scrypt::Identity::new(passphrase))])
             .context("wrong passphrase")?;
-        key_from_bytes(&raw)
+        self.trusted(key_from_bytes(&raw)?)
     }
 
     /// Bind the store key to this Mac's Secure Enclave. Neither step raises a prompt.
@@ -284,7 +381,7 @@ impl Store {
     #[cfg(feature = "host")]
     pub(crate) fn unlock_with_se(&self, reason: &str) -> Result<x25519::Identity> {
         let plain = se::unwrap(&self.se_wrap()?, reason)?;
-        key_from_bytes(&plain)
+        self.trusted(key_from_bytes(&plain)?)
     }
 
     /// The same prompt, left on screen while the caller also waits for a phone. `done` runs on
@@ -295,8 +392,9 @@ impl Store {
         reason: &str,
         done: impl FnOnce(Result<x25519::Identity>) + Send + 'static,
     ) -> Result<se::Prompt> {
+        let store = self.clone();
         se::unwrap_in_background(&self.se_wrap()?, reason, move |plain| {
-            done(plain.and_then(|plain| key_from_bytes(&plain)));
+            done(plain.and_then(|plain| store.trusted(key_from_bytes(&plain)?)));
         })
     }
 
@@ -308,7 +406,7 @@ impl Store {
         if key.to_public().to_string() != self.recipient()?.to_string() {
             bail!("the phone opened a different key, not this store's");
         }
-        Ok(key)
+        self.trusted(key)
     }
 
     /// Ids with a secret file and no tombstone.
@@ -355,7 +453,29 @@ impl Store {
     }
 
     pub(crate) fn load(&self, id: &str, key: &x25519::Identity) -> Result<Secret> {
-        load_path(&self.secret_path(id), key)
+        let (secret, signed) = open(&self.secret_path(id), key)?;
+        // Once this Mac has signed its files, an unsigned one was not written by passbox here
+        if !signed && self.signed_path().exists() {
+            bail!("it is not signed by this store's key");
+        }
+        Ok(secret)
+    }
+
+    /// Every secret that opens and is signed. A file that is not is skipped and named, so one
+    /// planted or broken file cannot hide the rest
+    pub(crate) fn secrets(&self, key: &x25519::Identity) -> Result<Vec<(String, Secret)>> {
+        let mut out = Vec::new();
+        for id in self.ids()? {
+            match self.load(&id, key) {
+                Ok(secret) => out.push((id, secret)),
+                Err(e) => self.skipped(&id, &e),
+            }
+        }
+        Ok(out)
+    }
+
+    fn skipped(&self, id: &str, e: &anyhow::Error) {
+        eprintln!("skipped {}: {e:#}", self.secret_path(id).display());
     }
 
     /// A hash of the secret file's bytes, which changes whenever the entry is rewritten
@@ -379,9 +499,10 @@ impl Store {
         key: &x25519::Identity,
     ) -> Result<Option<(String, Secret)>> {
         for id in self.ids()? {
-            let secret = self.load(&id, key)?;
-            if secret.name == name {
-                return Ok(Some((id, secret)));
+            match self.load(&id, key) {
+                Ok(secret) if secret.name == name => return Ok(Some((id, secret))),
+                Ok(_) => {}
+                Err(e) => self.skipped(&id, &e),
             }
         }
         Ok(None)
@@ -416,34 +537,20 @@ impl Store {
     /* serde skips a field the struct does not name without building it, so the value is never
     copied out of the decrypted buffer, which wipes itself when dropped. */
     pub(crate) fn names(&self, key: &x25519::Identity) -> Result<Vec<String>> {
-        #[derive(Deserialize)]
-        struct NameOnly {
-            name: String,
-        }
-        let mut out = Vec::new();
-        for id in self.ids()? {
-            let raw = fs::read(self.secret_path(&id))?;
-            let plain = crypto::decrypt(&raw, &[Box::new(key.clone())])?;
-            let entry: NameOnly =
-                serde_json::from_slice(&plain).context("secret file is not valid json")?;
-            out.push(entry.name);
-        }
+        let mut out: Vec<String> = self
+            .secrets(key)?
+            .into_iter()
+            .map(|(_, secret)| secret.name.clone())
+            .collect();
         out.sort();
         Ok(out)
     }
 
     /// Encrypt and write, keeping the previous file as a version.
-    pub(crate) fn put(
-        &self,
-        id: &str,
-        secret: &Secret,
-        recipient: &x25519::Recipient,
-    ) -> Result<()> {
+    pub(crate) fn put(&self, id: &str, secret: &Secret, key: &x25519::Identity) -> Result<()> {
         private_dir(&self.secrets_dir())?;
-        let json = serde_json::to_vec(secret)?;
-        let ct = crypto::encrypt(&json, &[Box::new(recipient.clone())])?;
         self.keep_version(id)?;
-        write_private(&self.secret_path(id), &ct)?;
+        write_sealed(&self.secret_path(id), secret, key)?;
         let tomb = self.tomb_path(id);
         if tomb.exists() {
             fs::remove_file(tomb)?;
@@ -561,13 +668,73 @@ pub(crate) fn private_dir(path: &Path) -> Result<()> {
 }
 
 /// Write through a temporary file so a crash cannot leave a half written secret.
-/// One encrypted secret file, wherever it sits, such as an earlier version
+/// One encrypted secret file, wherever it sits, such as an earlier version. Versions never sync,
+/// so one from before signing is still read
 pub(crate) fn load_path(path: &Path, key: &x25519::Identity) -> Result<Secret> {
+    open(path, key).map(|(secret, _)| secret)
+}
+
+/// What a secret file holds: the secret, and the tag only the store key can make
+#[derive(Deserialize)]
+struct Sealed {
+    #[serde(flatten)]
+    secret: Secret,
+    #[serde(default)]
+    tag: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SealedRef<'a> {
+    #[serde(flatten)]
+    secret: &'a Secret,
+    tag: String,
+}
+
+/// The secret in a file, and whether it carries this store's tag. A tag that is there and wrong
+/// is refused
+fn open(path: &Path, key: &x25519::Identity) -> Result<(Secret, bool)> {
     let raw = fs::read(path)?;
     let mut plain = crypto::decrypt(&raw, &[Box::new(key.clone())])?;
-    let secret = serde_json::from_slice(&plain).context("secret file is not valid json");
+    let sealed: Result<Sealed> =
+        serde_json::from_slice(&plain).context("secret file is not valid json");
     plain.zeroize();
-    secret
+    let sealed = sealed?;
+    match sealed.tag.as_deref() {
+        None => Ok((sealed.secret, false)),
+        Some(tag) if tag_matches(key, &sealed.secret, tag) => Ok((sealed.secret, true)),
+        Some(_) => bail!("it carries a tag this store did not make"),
+    }
+}
+
+fn write_sealed(path: &Path, secret: &Secret, key: &x25519::Identity) -> Result<()> {
+    let sealed = SealedRef {
+        secret,
+        tag: hex::encode(tagger(key, secret)?.finalize().into_bytes()),
+    };
+    let mut json = serde_json::to_vec(&sealed)?;
+    let ct = crypto::encrypt(&json, &[Box::new(key.to_public())]);
+    json.zeroize();
+    write_private(path, &ct?)
+}
+
+/* age lets anyone who knows the public recipient write a file the store key opens, and the
+recipient sits in every synced copy. The tag is an HMAC keyed from the store key, which only this
+store can make, so a file planted in a synced copy is refused rather than read as a secret */
+fn tagger(key: &x25519::Identity, secret: &Secret) -> Result<Hmac<Sha256>> {
+    let mut seed = Sha256::new();
+    seed.update(b"passbox secret tag\n");
+    seed.update(secrecy::ExposeSecret::expose_secret(&key.to_string()).as_bytes());
+    let mut mac = Hmac::<Sha256>::new_from_slice(&seed.finalize())
+        .map_err(|_| anyhow!("could not key the tag"))?;
+    mac.update(&serde_json::to_vec(secret)?);
+    Ok(mac)
+}
+
+fn tag_matches(key: &x25519::Identity, secret: &Secret, tag: &str) -> bool {
+    let (Ok(mac), Ok(tag)) = (tagger(key, secret), hex::decode(tag)) else {
+        return false;
+    };
+    mac.verify_slice(&tag).is_ok()
 }
 
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -706,14 +873,14 @@ mod tests {
             updated: 0,
             blob: false,
         };
-        store.put("id1", &secret("one"), &key.to_public()).unwrap();
+        store.put("id1", &secret("one"), &key).unwrap();
         let stamp = store.stamp("id1").unwrap();
         assert!(store.is_current("id1", stamp));
 
         store.delete("id1").unwrap();
         assert!(!store.is_current("id1", stamp));
 
-        store.put("id1", &secret("two"), &key.to_public()).unwrap();
+        store.put("id1", &secret("two"), &key).unwrap();
         assert!(!store.is_current("id1", stamp));
         assert!(store.is_current("id1", store.stamp("id1").unwrap()));
     }
@@ -741,12 +908,138 @@ mod tests {
         }
     }
 
+    /// What anyone holding a synced copy can write: a file the store key opens, sealed with `tag`
+    fn planted(store: &Store, secret: &Secret, tag: Option<String>) -> String {
+        let id = new_id();
+        let mut json = serde_json::to_value(secret).unwrap();
+        if let Some(tag) = tag {
+            json["tag"] = tag.into();
+        }
+        let to = store.recipient().unwrap();
+        let ct = crypto::encrypt(json.to_string().as_bytes(), &[Box::new(to)]).unwrap();
+        write_private(&store.secret_path(&id), &ct).unwrap();
+        id
+    }
+
+    /* age lets anyone with the public recipient, which sits in every synced copy, write a file the
+    store key opens. Without this store's tag it is skipped, so it neither shadows nor adds a name */
+    #[test]
+    fn a_file_planted_with_the_public_recipient_is_skipped() {
+        let (_tmp, store, key) = store();
+        store
+            .put(&new_id(), &secret("wallet/main", "mine"), &key)
+            .unwrap();
+        let theirs = planted(&store, &secret("wallet/main", "theirs"), None);
+        planted(&store, &secret("extra/name", "theirs"), None);
+
+        assert_eq!(
+            store.find("wallet/main", &key).unwrap().unwrap().1.value,
+            "mine"
+        );
+        assert_eq!(store.names(&key).unwrap(), ["wallet/main"]);
+        let Err(err) = store.load(&theirs, &key) else {
+            panic!("a planted file loaded");
+        };
+        assert!(err.to_string().contains("not signed"), "{err}");
+    }
+
+    #[test]
+    fn a_tag_another_key_made_is_refused() {
+        let (_tmp, store, key) = store();
+        let other = x25519::Identity::generate();
+        let forged = secret("wallet/main", "theirs");
+        let tag = hex::encode(tagger(&other, &forged).unwrap().finalize().into_bytes());
+        let id = planted(&store, &forged, Some(tag));
+        let Err(err) = store.load(&id, &key) else {
+            panic!("a forged tag loaded");
+        };
+        assert!(
+            err.to_string().contains("tag this store did not make"),
+            "{err}"
+        );
+    }
+
+    /* A synced copy that swapped wraps/recipient for its own key would get every later write. Writes
+    refuse it, and opening the store puts the store's own back */
+    #[test]
+    fn a_swapped_recipient_is_refused_and_put_back_on_unlock() {
+        let (_tmp, store, key) = store();
+        let theirs = x25519::Identity::generate().to_public().to_string();
+        write_private(&store.recipient_path(), theirs.as_bytes()).unwrap();
+        let err = store.recipient().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not the key this store opens with"),
+            "{err}"
+        );
+
+        store
+            .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
+            .unwrap();
+        assert_eq!(
+            store.recipient().unwrap().to_string(),
+            key.to_public().to_string()
+        );
+    }
+
+    /// A wrap is a key sealed to a public key, so a copy can plant one that opens to its own key
+    #[test]
+    fn a_wrap_that_opens_another_key_is_refused() {
+        let (_tmp, store, _key) = store();
+        let theirs = x25519::Identity::generate();
+        store
+            .create_recovery_wrap_with_factor(
+                &theirs,
+                SecretString::from("theirs".to_string()),
+                Some(10),
+            )
+            .unwrap();
+        let Err(err) = store.unlock_with_passphrase(SecretString::from("theirs".to_string()))
+        else {
+            panic!("the wrong key opened");
+        };
+        assert!(
+            err.to_string().contains("not the store key this Mac knows"),
+            "{err}"
+        );
+    }
+
+    /// An upgraded Mac trusts the files it already has once, signs them, and from then on refuses
+    /// an unsigned one. With no pin yet, a recipient and key that disagree pin nothing
+    #[test]
+    fn the_first_unlock_after_an_upgrade_signs_what_is_there() {
+        let (_tmp, store, key) = store();
+        fs::remove_file(store.pin_path()).unwrap();
+        fs::remove_file(store.signed_path()).unwrap();
+        let old = planted(&store, &secret("db/old", "v"), None);
+        assert_eq!(store.load(&old, &key).unwrap().value, "v");
+
+        store
+            .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
+            .unwrap();
+        assert!(
+            open(&store.secret_path(&old), &key).unwrap().1,
+            "not signed"
+        );
+        let late = planted(&store, &secret("db/late", "v"), None);
+        assert!(store.load(&late, &key).is_err());
+
+        fs::remove_file(store.pin_path()).unwrap();
+        let theirs = x25519::Identity::generate().to_public().to_string();
+        write_private(&store.recipient_path(), theirs.as_bytes()).unwrap();
+        let Err(err) = store.unlock_with_passphrase(SecretString::from("hunter2".to_string()))
+        else {
+            panic!("the wrong key opened");
+        };
+        assert!(err.to_string().contains("disagree"), "{err}");
+        assert!(!store.pin_path().exists());
+    }
+
     #[test]
     fn round_trip_by_name() {
         let (_tmp, store, key) = store();
-        let r = store.recipient().unwrap();
         store
-            .put(&new_id(), &secret("github/token", "ghp_abc"), &r)
+            .put(&new_id(), &secret("github/token", "ghp_abc"), &key)
             .unwrap();
 
         let (_id, found) = store.find("github/token", &key).unwrap().unwrap();
@@ -756,10 +1049,9 @@ mod tests {
 
     #[test]
     fn filename_never_holds_the_name() {
-        let (_tmp, store, _key) = store();
-        let r = store.recipient().unwrap();
+        let (_tmp, store, key) = store();
         store
-            .put(&new_id(), &secret("github/token", "ghp_abc"), &r)
+            .put(&new_id(), &secret("github/token", "ghp_abc"), &key)
             .unwrap();
 
         for id in store.ids().unwrap() {
@@ -780,10 +1072,9 @@ mod tests {
     #[test]
     fn overwrite_keeps_a_version() {
         let (_tmp, store, key) = store();
-        let r = store.recipient().unwrap();
         let id = new_id();
-        store.put(&id, &secret("db", "old"), &r).unwrap();
-        store.put(&id, &secret("db", "new"), &r).unwrap();
+        store.put(&id, &secret("db", "old"), &key).unwrap();
+        store.put(&id, &secret("db", "new"), &key).unwrap();
 
         assert_eq!(store.load(&id, &key).unwrap().value, "new");
         assert_eq!(store.versions(&id).unwrap().len(), 1);
@@ -791,21 +1082,21 @@ mod tests {
 
     #[test]
     fn versions_are_trimmed() {
-        let (_tmp, store, _key) = store();
-        let r = store.recipient().unwrap();
+        let (_tmp, store, key) = store();
         let id = new_id();
         for i in 0..KEEP_VERSIONS + 4 {
-            store.put(&id, &secret("db", &format!("v{i}")), &r).unwrap();
+            store
+                .put(&id, &secret("db", &format!("v{i}")), &key)
+                .unwrap();
         }
         assert_eq!(store.versions(&id).unwrap().len(), KEEP_VERSIONS);
     }
 
     #[test]
     fn delete_leaves_a_tombstone_and_hides_the_id() {
-        let (_tmp, store, _key) = store();
-        let r = store.recipient().unwrap();
+        let (_tmp, store, key) = store();
         let id = new_id();
-        store.put(&id, &secret("db", "v"), &r).unwrap();
+        store.put(&id, &secret("db", "v"), &key).unwrap();
         store.delete(&id).unwrap();
 
         assert_eq!(store.ids().unwrap(), Vec::<String>::new());
@@ -816,11 +1107,10 @@ mod tests {
     #[test]
     fn writing_again_clears_the_tombstone() {
         let (_tmp, store, key) = store();
-        let r = store.recipient().unwrap();
         let id = new_id();
-        store.put(&id, &secret("db", "v"), &r).unwrap();
+        store.put(&id, &secret("db", "v"), &key).unwrap();
         store.delete(&id).unwrap();
-        store.put(&id, &secret("db", "back"), &r).unwrap();
+        store.put(&id, &secret("db", "back"), &key).unwrap();
 
         assert_eq!(store.ids().unwrap().len(), 1);
         assert_eq!(store.load(&id, &key).unwrap().value, "back");
@@ -828,10 +1118,9 @@ mod tests {
 
     #[test]
     fn fresh_tombstones_survive_pruning() {
-        let (_tmp, store, _key) = store();
-        let r = store.recipient().unwrap();
+        let (_tmp, store, key) = store();
         let id = new_id();
-        store.put(&id, &secret("db", "v"), &r).unwrap();
+        store.put(&id, &secret("db", "v"), &key).unwrap();
         store.delete(&id).unwrap();
 
         assert_eq!(store.prune_tombs().unwrap(), 0);
@@ -850,9 +1139,8 @@ mod tests {
             return;
         };
         let (tmp, store, key) = store();
-        let r = store.recipient().unwrap();
         let id = new_id();
-        store.put(&id, &secret("db", "swordfish"), &r).unwrap();
+        store.put(&id, &secret("db", "swordfish"), &key).unwrap();
 
         let identity = tmp.path().join("identity.txt");
         fs::write(
@@ -910,9 +1198,8 @@ mod tests {
     #[test]
     fn a_tampered_secret_file_is_refused() {
         let (_tmp, store, key) = store();
-        let r = store.recipient().unwrap();
         let id = new_id();
-        store.put(&id, &secret("db", "swordfish"), &r).unwrap();
+        store.put(&id, &secret("db", "swordfish"), &key).unwrap();
 
         let path = store.secret_path(&id);
         let mut raw = fs::read(&path).unwrap();
@@ -927,9 +1214,8 @@ mod tests {
     #[test]
     fn a_truncated_secret_file_is_refused() {
         let (_tmp, store, key) = store();
-        let r = store.recipient().unwrap();
         let id = new_id();
-        store.put(&id, &secret("db", "swordfish"), &r).unwrap();
+        store.put(&id, &secret("db", "swordfish"), &key).unwrap();
 
         let path = store.secret_path(&id);
         let raw = fs::read(&path).unwrap();
@@ -993,11 +1279,10 @@ mod tests {
     #[test]
     fn a_blob_flag_survives_and_an_old_entry_reads_as_not_a_blob() {
         let (_tmp, store, key) = store();
-        let r = store.recipient().unwrap();
         let mut blob = secret("tls/key", "a\nb: c");
         blob.blob = true;
-        store.put("id1", &blob, &r).unwrap();
-        store.put("id2", &secret("plain", "x"), &r).unwrap();
+        store.put("id1", &blob, &key).unwrap();
+        store.put("id2", &secret("plain", "x"), &key).unwrap();
 
         assert!(store.load("id1", &key).unwrap().blob);
         assert!(!store.load("id2", &key).unwrap().blob);

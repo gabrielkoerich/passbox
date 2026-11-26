@@ -1,6 +1,6 @@
 //! Copies the store to and from a directory. No shared mutable file, so there is nothing to merge.
 
-use crate::store::{Store, write_private};
+use crate::store::{MACHINE_LOCAL, Store, write_private};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::fs;
@@ -242,34 +242,6 @@ pub(crate) fn default_destination(store: &Store) -> Result<Destination> {
     Engine::Icloud { directory: None }.resolve()
 }
 
-/* What never syncs, in rclone filter syntax so `sync_via_rclone` excludes the same list. A
-leading `/` anchors the pattern at the store root, without one it matches a file name anywhere.
-Matching ignores case, as macOS and iCloud Drive do. */
-const NEVER_SYNCED: &[&str] = &[
-    // Live endpoints, and the public keys this machine rebuilds whenever the store key opens
-    "/broker.sock",
-    "/ssh-agent.sock",
-    "/ssh-keys.pub",
-    // A client's broker address, which on another Mac would send its reads to this one's host
-    "/host",
-    // A USB path on one Mac means nothing on another
-    "/remote",
-    "/config.toml",
-    "/names",
-    "/plugins/**",
-    // The repo is this machine's history, and the remote is a mirror rather than a clone
-    "/.git/**",
-    "/.gitignore",
-    "/store/.versions/**",
-    // A copy cut off before its rename, never a real file
-    "*.partial",
-    // A grant that travelled would let a machine you have not touched inherit an approval
-    "/grants-*.age",
-    "/windows-*.json",
-    // A phone enrolls with one Mac, and its wrap names the node that dials that Mac
-    "/wraps/phone-*.json",
-];
-
 fn matches(pattern: &str, relative: &str) -> bool {
     let (pattern, relative) = (pattern.to_lowercase(), relative.to_lowercase());
     let (pattern, text) = match pattern.strip_prefix('/') {
@@ -295,7 +267,7 @@ fn matches(pattern: &str, relative: &str) -> bool {
 
 fn skip(relative: &Path) -> bool {
     let text = relative.to_string_lossy();
-    NEVER_SYNCED.iter().any(|p| matches(p, &text))
+    MACHINE_LOCAL.iter().any(|p| matches(p, &text))
 }
 
 fn walk(root: &Path, base: &Path, out: &mut BTreeMap<PathBuf, SystemTime>) -> Result<()> {
@@ -474,7 +446,7 @@ fn rclone_args(store: &Store, remote: &str) -> Vec<std::ffi::OsString> {
         remote.into(),
         "--ignore-case".into(),
     ];
-    for pattern in NEVER_SYNCED {
+    for pattern in MACHINE_LOCAL {
         args.push("--exclude".into());
         args.push(pattern.into());
     }
@@ -499,7 +471,7 @@ pub(crate) fn sync_via_rclone(store: &Store, remote: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::store::{Secret, new_id, now};
-    use crate::{plugin, project};
+    use crate::{crypto, plugin, project};
     use age::x25519;
     use secrecy::SecretString;
 
@@ -730,12 +702,7 @@ mod tests {
         let remote = tempfile::tempdir().unwrap();
 
         let (one, key) = store(a.path());
-        one.put(
-            &new_id(),
-            &secret("from/one", "1"),
-            &one.recipient().unwrap(),
-        )
-        .unwrap();
+        one.put(&new_id(), &secret("from/one", "1"), &key).unwrap();
         sync(&one, remote.path()).unwrap();
 
         // The second machine joins by pulling the whole store, keys included
@@ -743,12 +710,7 @@ mod tests {
             dir: b.path().to_path_buf(),
         };
         sync(&two, remote.path()).unwrap();
-        two.put(
-            &new_id(),
-            &secret("from/two", "2"),
-            &two.recipient().unwrap(),
-        )
-        .unwrap();
+        two.put(&new_id(), &secret("from/two", "2"), &key).unwrap();
         sync(&two, remote.path()).unwrap();
         sync(&one, remote.path()).unwrap();
 
@@ -764,12 +726,8 @@ mod tests {
 
         let (one, key) = store(a.path());
         let id = new_id();
-        one.put(
-            &id,
-            &secret("banking/login", "swordfish"),
-            &one.recipient().unwrap(),
-        )
-        .unwrap();
+        one.put(&id, &secret("banking/login", "swordfish"), &key)
+            .unwrap();
         sync(&one, remote.path()).unwrap();
 
         let two = Store {
@@ -798,9 +756,7 @@ mod tests {
 
         let (one, key) = store(a.path());
         let id = new_id();
-        let recipient = one.recipient().unwrap();
-        one.put(&id, &secret("db/token", "old"), &recipient)
-            .unwrap();
+        one.put(&id, &secret("db/token", "old"), &key).unwrap();
         sync(&one, remote.path()).unwrap();
         let two = Store {
             dir: b.path().to_path_buf(),
@@ -811,8 +767,7 @@ mod tests {
         sync(&one, remote.path()).unwrap();
         // add reuses the id of a deleted name, as `passbox add` does
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        one.put(&id, &secret("db/token", "new"), &recipient)
-            .unwrap();
+        one.put(&id, &secret("db/token", "new"), &key).unwrap();
         sync(&one, remote.path()).unwrap();
         sync(&one, remote.path()).unwrap();
         assert_eq!(one.names(&key).unwrap(), vec!["db/token"]);
@@ -844,6 +799,40 @@ mod tests {
         assert!(!skip(Path::new("store/abc123.age")));
     }
 
+    /* A backup is somewhere others can write. A file planted there and a recipient swapped there both
+    reach this Mac on the next sync, and neither is taken as the store's own */
+    #[test]
+    fn what_a_backup_plants_is_refused_here() {
+        let a = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        let (one, key) = store(a.path());
+        one.put(&new_id(), &secret("wallet/main", "mine"), &key)
+            .unwrap();
+        sync(&one, remote.path()).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let theirs = x25519::Identity::generate().to_public();
+        let forged = serde_json::to_vec(&secret("wallet/main", "theirs")).unwrap();
+        let ct = crypto::encrypt(&forged, &[Box::new(one.recipient().unwrap())]).unwrap();
+        fs::write(
+            remote
+                .path()
+                .join("store")
+                .join(format!("{}.age", new_id())),
+            ct,
+        )
+        .unwrap();
+        fs::write(remote.path().join("wraps/recipient"), theirs.to_string()).unwrap();
+        sync(&one, remote.path()).unwrap();
+
+        assert!(one.recipient().is_err(), "a swapped recipient was taken");
+        assert_eq!(
+            one.find("wallet/main", &key).unwrap().unwrap().1.value,
+            "mine"
+        );
+        assert_eq!(one.names(&key).unwrap(), ["wallet/main"]);
+    }
+
     #[test]
     fn the_losing_side_of_a_clash_is_kept() {
         let a = tempfile::tempdir().unwrap();
@@ -852,8 +841,7 @@ mod tests {
 
         let (one, key) = store(a.path());
         let id = new_id();
-        one.put(&id, &secret("db/pass", "first"), &one.recipient().unwrap())
-            .unwrap();
+        one.put(&id, &secret("db/pass", "first"), &key).unwrap();
         sync(&one, remote.path()).unwrap();
 
         let two = Store {
@@ -863,8 +851,7 @@ mod tests {
 
         // Two writes the newer value, so one loses and keeps its own as a version
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        two.put(&id, &secret("db/pass", "second"), &two.recipient().unwrap())
-            .unwrap();
+        two.put(&id, &secret("db/pass", "second"), &key).unwrap();
         sync(&two, remote.path()).unwrap();
         sync(&one, remote.path()).unwrap();
 
@@ -881,9 +868,8 @@ mod tests {
         let a = tempfile::tempdir().unwrap();
         let remote = tempfile::tempdir().unwrap();
 
-        let (one, _key) = store(a.path());
-        one.put(&new_id(), &secret("a/b", "v"), &one.recipient().unwrap())
-            .unwrap();
+        let (one, key) = store(a.path());
+        one.put(&new_id(), &secret("a/b", "v"), &key).unwrap();
 
         sync(&one, remote.path()).unwrap();
         let second = sync(&one, remote.path()).unwrap();
@@ -926,12 +912,10 @@ mod tests {
         let a = tempfile::tempdir().unwrap();
         let remote = tempfile::tempdir().unwrap();
 
-        let (one, _key) = store(a.path());
+        let (one, key) = store(a.path());
         let id = new_id();
-        one.put(&id, &secret("a/b", "v1"), &one.recipient().unwrap())
-            .unwrap();
-        one.put(&id, &secret("a/b", "v2"), &one.recipient().unwrap())
-            .unwrap();
+        one.put(&id, &secret("a/b", "v1"), &key).unwrap();
+        one.put(&id, &secret("a/b", "v2"), &key).unwrap();
         fs::write(one.socket_path(), b"").unwrap();
 
         sync(&one, remote.path()).unwrap();
@@ -945,8 +929,7 @@ mod tests {
         let remote = tempfile::tempdir().unwrap();
         let (one, key) = store(a.path());
         for name in ["a/b", "c/d"] {
-            one.put(&new_id(), &secret(name, "v"), &one.recipient().unwrap())
-                .unwrap();
+            one.put(&new_id(), &secret(name, "v"), &key).unwrap();
         }
         // Both sort before `store/`, and the second is a name no skip rule knows
         let _agent = std::os::unix::net::UnixListener::bind(one.ssh_agent_path()).unwrap();
@@ -969,10 +952,8 @@ mod tests {
         let remote = tempfile::tempdir().unwrap();
         let (one, key) = store(a.path());
         let (blocked, other) = (new_id(), new_id());
-        one.put(&blocked, &secret("a/b", "v"), &one.recipient().unwrap())
-            .unwrap();
-        one.put(&other, &secret("c/d", "v"), &one.recipient().unwrap())
-            .unwrap();
+        one.put(&blocked, &secret("a/b", "v"), &key).unwrap();
+        one.put(&other, &secret("c/d", "v"), &key).unwrap();
         // A directory where the copy writes its partial file makes that one copy fail
         fs::create_dir_all(remote.path().join(format!("store/{blocked}.age.partial"))).unwrap();
 
@@ -992,9 +973,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let a = tempfile::tempdir().unwrap();
         let remote = tempfile::tempdir().unwrap();
-        let (one, _key) = store(a.path());
-        one.put(&new_id(), &secret("a/b", "v"), &one.recipient().unwrap())
-            .unwrap();
+        let (one, key) = store(a.path());
+        one.put(&new_id(), &secret("a/b", "v"), &key).unwrap();
         fs::set_permissions(remote.path(), fs::Permissions::from_mode(0o500)).unwrap();
 
         let result = sync(&one, remote.path());
@@ -1015,7 +995,7 @@ mod tests {
             dir: PathBuf::from("/tmp/store"),
         };
         let args = rclone_args(&one, "b2:passbox");
-        for pattern in NEVER_SYNCED {
+        for pattern in MACHINE_LOCAL {
             assert!(
                 args.windows(2)
                     .any(|w| w[0] == "--exclude" && w[1] == *pattern),
@@ -1060,6 +1040,8 @@ mod tests {
             project::path(&one),
             plugin::approval_path(&one),
             one.ssh_approval_path(),
+            one.dir.join("recipient.pin"),
+            one.dir.join("signed"),
         ] {
             let relative = path.strip_prefix(&one.dir).unwrap();
             assert!(skip(relative), "{} would sync", relative.display());

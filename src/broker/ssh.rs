@@ -27,8 +27,8 @@ const MAX_MESSAGE: usize = 256 * 1024;
 /// Every SSH key in the store, with the name it is stored under
 pub(crate) fn keys(store: &Store, key: &x25519::Identity) -> Result<Vec<(String, PrivateKey)>> {
     let mut out = Vec::new();
-    for id in store.ids()? {
-        let secret = store.load(&id, key)?;
+    // A file that is not signed is skipped, so a key planted in a synced copy is never offered
+    for (_, secret) in store.secrets(key)? {
         if let Some(private) = parse(&secret.value) {
             out.push((secret.name.clone(), private));
         }

@@ -1277,6 +1277,7 @@ dependencies = [
  "clap",
  "hex",
  "hkdf",
+ "hmac",
  "libc",
  "rand 0.10.3",
  "rpassword",
