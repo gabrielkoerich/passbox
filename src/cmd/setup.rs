@@ -16,6 +16,8 @@ const MIN_PASSPHRASE: usize = 12;
 
 #[cfg(feature = "host")]
 pub(crate) fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
+    // A machine joining takes its whole store from the copy, so it adopts nothing unsealed in it
+    let joining = !store.is_initialised();
     // An empty directory is a machine joining, and the wrap it needs arrives with the pull
     if store.is_initialised() && !store.has_portable_wrap() {
         bail!(
@@ -29,17 +31,25 @@ pub(crate) fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
         Some(given) => sync::Destination::guess(given),
         None => sync::default_destination(store)?,
     };
-    let remote = target;
+    let copied = copy(store, &kind, &target);
+    // Joining even when the copy was cut off, so the next unlock adopts nothing unsealed it brought
+    if joining && store.is_initialised() {
+        store.join()?;
+    }
+    copied
+}
 
+#[cfg(feature = "host")]
+fn copy(store: &Store, kind: &sync::Kind, remote: &str) -> Result<()> {
     match kind {
         // git carries its own history, so there is no directory to copy into
         sync::Kind::Git => git_push(store),
         sync::Kind::Rclone => {
-            sync::sync_via_rclone(store, &remote)?;
+            sync::sync_via_rclone(store, remote)?;
             git_push(store);
         }
         sync::Kind::Directory => {
-            let report = sync::sync(store, std::path::Path::new(&remote))?;
+            let report = sync::sync(store, std::path::Path::new(remote))?;
             eprintln!(
                 "{} sent, {} received, {remote}",
                 report.pushed, report.pulled
@@ -53,6 +63,8 @@ pub(crate) fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
 pub(crate) fn init(store: &Store) -> Result<()> {
     let key = store.init()?;
     eprintln!("store ready at {}", store.dir.display());
+    // A Mac joining later compares this, and a replacement Mac has nothing else to compare it with
+    eprintln!("its key is {}, keep a note of it", key.to_public());
 
     // Without an Enclave there is nothing holding the key, so a passphrase is the only option
     #[cfg(not(feature = "host"))]
@@ -388,7 +400,9 @@ pub(crate) fn machine_add(store: &Store) -> Result<()> {
     their own. Only a person comparing the key with a Mac already using the store can tell, so it is
     shown and confirmed before it is pinned, and nothing unsealed in the copy is adopted */
     eprintln!("This store's key is {}", store.fingerprint()?);
-    eprintln!("On a Mac already using it, `cat ~/.passbox/recipient.pin` must show the same.");
+    eprintln!(
+        "It must match `cat ~/.passbox/recipient.pin` on a Mac already using it, or the key `init` showed."
+    );
     if !matches!(
         ask("Same key? [y/N] ")?.trim().to_lowercase().as_str(),
         "y" | "yes"
@@ -403,6 +417,52 @@ pub(crate) fn machine_add(store: &Store) -> Result<()> {
         eprintln!("Binding this Mac needs the recovery passphrase once.");
         store.unlock_with_passphrase(SecretString::from(ask("recovery passphrase: ")?))?
     };
+    /* A copy last written by passbox 2.4.1 or older has no seal, and one whose sync was cut off has
+    some. So has one someone planted files in or took seals out of, which only the person can tell
+    by the names, so they are shown before anything is adopted */
+    let (unsealed, any_sealed) = store.by_seal(&key)?;
+    if !unsealed.is_empty() {
+        if any_sealed {
+            eprintln!(
+                "{} secrets in this copy are not sealed. A backup whose sync was cut off looks like \
+                 this, and so does one someone planted files in:",
+                unsealed.len()
+            );
+        } else {
+            eprintln!(
+                "None of the {} secrets in this copy is sealed. A copy last written by passbox 2.4.1 \
+                 or older looks like this, and so does one whose seals someone took out:",
+                unsealed.len()
+            );
+        }
+        // A planted copy of a real name is the one to doubt, and escaping stops a name rewriting the prompt
+        let sealed: Vec<String> = store
+            .secrets(&key)?
+            .into_iter()
+            .map(|(_, s)| s.name.clone())
+            .collect();
+        for (_, secret) in &unsealed {
+            let twin = if sealed.contains(&secret.name) {
+                "  (a sealed secret already has this name)"
+            } else {
+                ""
+            };
+            eprintln!("  {:?}{twin}", secret.name);
+        }
+        if !matches!(
+            ask(&format!(
+                "Are all {} of these yours? Adopt them? [y/N] ",
+                unsealed.len()
+            ))?
+            .trim()
+            .to_lowercase()
+            .as_str(),
+            "y" | "yes"
+        ) {
+            bail!("not bound and nothing adopted, run `passbox machine add` again to choose again");
+        }
+        store.seal_files(&unsealed, &key, |_| true)?;
+    }
     store.create_se_wrap(&key)?;
     eprintln!("bound, reads on this Mac will ask for your fingerprint");
     Ok(())

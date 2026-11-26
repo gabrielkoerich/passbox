@@ -58,6 +58,10 @@ pub(crate) const MACHINE_LOCAL: &[&str] = &[
     "/store/.versions/**",
     // A file that did not open when this Mac sealed its store, kept aside rather than lost
     "/store/.quarantine/**",
+    // A write's temporary file, left only by a crash
+    "*.tmp",
+    // What git tracked that belongs to one machine, set aside and never used
+    "/.from-git/**",
     // A copy cut off before its rename, never a real file
     "*.partial",
     // A grant that travelled would let a machine you have not touched inherit an approval
@@ -68,7 +72,45 @@ pub(crate) const MACHINE_LOCAL: &[&str] = &[
     // What this Mac knows of the store key and its signing, which a copy must never change
     "/recipient.pin",
     "/signed",
+    // This Mac began its first seal, so one cut off resumes rather than refusing what it missed
+    "/sealing",
 ];
+
+/// Whether a path relative to the store is one of `MACHINE_LOCAL`, ignoring case as macOS does
+pub(crate) fn machine_local(relative: &str) -> bool {
+    MACHINE_LOCAL.iter().any(|p| path_matches(p, relative)) || set_aside_by_2_4_2(relative)
+}
+
+/// 2.4.2 renamed a git-tracked file in place, as `config.toml.from-git-<time>-<n>`
+fn set_aside_by_2_4_2(relative: &str) -> bool {
+    relative
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.to_lowercase().contains(".from-git-"))
+}
+
+pub(crate) fn path_matches(pattern: &str, relative: &str) -> bool {
+    let (pattern, relative) = (pattern.to_lowercase(), relative.to_lowercase());
+    let (pattern, text) = match pattern.strip_prefix('/') {
+        Some(rooted) => (rooted, relative.as_str()),
+        None => (
+            pattern.as_str(),
+            relative.rsplit('/').next().unwrap_or(&relative),
+        ),
+    };
+    if let Some(dir) = pattern.strip_suffix("/**") {
+        return text == dir || text.starts_with(&format!("{dir}/"));
+    }
+    match pattern.split_once('*') {
+        Some((head, tail)) => {
+            text.len() >= head.len() + tail.len()
+                && text.starts_with(head)
+                && text.ends_with(tail)
+                && !text[head.len()..text.len() - tail.len()].contains('/')
+        }
+        None => text == pattern,
+    }
+}
 
 pub(crate) fn now() -> u64 {
     SystemTime::now()
@@ -129,6 +171,10 @@ impl Store {
     /// when, so a version kept before then is known to be this Mac's own
     fn signed_path(&self) -> PathBuf {
         self.dir.join("signed")
+    }
+
+    fn sealing_path(&self) -> PathBuf {
+        self.dir.join("sealing")
     }
 
     fn sealed(&self) -> bool {
@@ -416,15 +462,45 @@ impl Store {
     files are trusted and sealed only on the store's first upgrade, when none is sealed. A sealed
     file means another Mac upgraded, so nothing unsealed is trusted. A file that does not open is
     moved to store/.quarantine, which never syncs, so it neither holds the upgrade back nor locks
-    the store. The client build reads what a Mac sealed, and never adopts */
+    the store. The client build reads what a Mac sealed, and never adopts. Before it writes, the
+    first seal lists every file it will seal with a hash of its bytes, so one cut off resumes on
+    exactly those, and a file a sync brought in between is not adopted */
     fn seal_all(&self, key: &x25519::Identity) -> Result<()> {
+        let (files, any_sealed) = self.by_seal(key)?;
+        let listed = fs::read_to_string(self.sealing_path()).ok();
+        if cfg!(feature = "host") && (!any_sealed || listed.is_some()) {
+            let listed = if let Some(text) = listed {
+                text
+            } else {
+                let text: String = files
+                    .iter()
+                    .map(|(id, _)| self.secret_path(id))
+                    .chain(self.tombed()?.iter().map(|id| self.tomb_path(id)))
+                    .filter_map(|path| file_line(&path))
+                    .collect();
+                write_private(&self.sealing_path(), text.as_bytes())?;
+                text
+            };
+            let keep = |path: &Path| {
+                file_line(path).is_some_and(|line| listed.lines().any(|l| l == line.trim_end()))
+            };
+            self.seal_files(&files, key, keep)?;
+        }
+        self.mark_sealed()?;
+        let _ = fs::remove_file(self.sealing_path());
+        Ok(())
+    }
+
+    /// The unsealed secrets, and whether any file carries this store's seal. A file that does not
+    /// open is moved to the quarantine, not lost
+    pub(crate) fn by_seal(&self, key: &x25519::Identity) -> Result<(Vec<(String, Secret)>, bool)> {
         let mut files = Vec::new();
-        let mut first = cfg!(feature = "host");
+        let mut any_sealed = false;
         for id in self.ids_with_files()? {
             let path = self.secret_path(&id);
             match open(&path, &id, key) {
                 Ok((secret, false)) => files.push((id, secret)),
-                Ok((_, true)) => first = false,
+                Ok((_, true)) => any_sealed = true,
                 Err(e) => {
                     let aside = self.secrets_dir().join(".quarantine");
                     private_dir(&aside)?;
@@ -433,21 +509,32 @@ impl Store {
                 }
             }
         }
-        if first {
-            for (id, secret) in &files {
-                write_sealed(&self.secret_path(id), id, secret, key)?;
-            }
-            for id in self.tombed()? {
-                if self.sealed_tomb(&id, key).is_none() {
-                    let stamp = fs::read_to_string(self.tomb_path(&id))
-                        .ok()
-                        .and_then(|s| s.split_whitespace().next()?.parse().ok())
-                        .unwrap_or_else(now);
-                    self.write_tomb(&id, stamp, key)?;
-                }
+        Ok((files, any_sealed))
+    }
+
+    /// Adopts the unsealed secrets and tombstones `keep` passes as this store's own
+    pub(crate) fn seal_files(
+        &self,
+        files: &[(String, Secret)],
+        key: &x25519::Identity,
+        keep: impl Fn(&Path) -> bool,
+    ) -> Result<()> {
+        for (id, secret) in files {
+            let path = self.secret_path(id);
+            if keep(&path) {
+                write_sealed(&path, id, secret, key)?;
             }
         }
-        self.mark_sealed()
+        for id in self.tombed()? {
+            if self.sealed_tomb(&id, key).is_none() && keep(&self.tomb_path(&id)) {
+                let stamp = fs::read_to_string(self.tomb_path(&id))
+                    .ok()
+                    .and_then(|s| s.split_whitespace().next()?.parse().ok())
+                    .unwrap_or_else(now);
+                self.write_tomb(&id, stamp, key)?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn unlock_with_passphrase(
@@ -781,6 +868,10 @@ impl Store {
             let Some(stamp) = self.sealed_tomb(id, key) else {
                 continue;
             };
+            // The name was added back, so an old tombstone a copy put back prunes nothing
+            if self.secret_path(id).exists() {
+                continue;
+            }
             if now().saturating_sub(stamp) < TOMB_TTL_SECS {
                 continue;
             }
@@ -886,6 +977,13 @@ fn write_sealed(path: &Path, id: &str, secret: &Secret, key: &x25519::Identity) 
 /* age lets anyone who knows the public recipient write a file the store key opens, and the
 recipient sits in every synced copy. The seal is an HMAC keyed from the store key, over the file's
 id and the secret, so a planted file has none and a signed one moved to another id fails */
+/// A file's name and the hash of its bytes, one line of the `sealing` list
+fn file_line(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let name = path.file_name()?.to_string_lossy();
+    Some(format!("{name} {}\n", hex::encode(Sha256::digest(&bytes))))
+}
+
 fn mac(key: &x25519::Identity, id: &str, secret: &Secret) -> Result<Hmac<Sha256>> {
     let mut seed = Sha256::new();
     seed.update(b"passbox secret seal\n");
@@ -1230,6 +1328,63 @@ mod tests {
         );
     }
 
+    /* A first seal cut off by a crash or a full disk left some files sealed. This Mac began it, so the
+    next unlock seals the rest rather than refusing them as another Mac's leftovers */
+    #[test]
+    fn a_first_seal_cut_off_midway_resumes() {
+        let (_tmp, store, key) = store();
+        fs::remove_file(store.signed_path()).unwrap();
+        let old: Vec<String> = (0..4)
+            .map(|n| planted(&store, &secret(&format!("old/{n}"), "v"), None))
+            .collect();
+        store
+            .put(&new_id(), &secret("done/one", "v"), &key)
+            .unwrap();
+        let list: String = old
+            .iter()
+            .filter_map(|id| file_line(&store.secret_path(id)))
+            .collect();
+        write_private(&store.sealing_path(), list.as_bytes()).unwrap();
+        // A sync brought this in after the cut-off, so it is not on the list
+        let theirs = planted(&store, &secret("old/9", "theirs"), None);
+
+        store
+            .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
+            .unwrap();
+        for id in &old {
+            assert!(
+                store.load(id, &key).is_ok(),
+                "a file the cut-off seal missed was refused"
+            );
+        }
+        assert!(
+            store.load(&theirs, &key).is_err(),
+            "the resume adopted a file it never listed"
+        );
+        assert!(!store.sealing_path().exists());
+    }
+
+    /* A backup last written by passbox 2.4.1 holds no sealed file. A Mac restoring it adopts nothing
+    on its own, and `machine add` seals the lot once the person says the copy is theirs */
+    #[test]
+    fn a_copy_with_no_seal_is_adopted_only_when_asked() {
+        let (_tmp, store, key) = store();
+        fs::remove_file(store.pin_path()).unwrap();
+        fs::remove_file(store.signed_path()).unwrap();
+        let old = planted(&store, &secret("github/token", "mine"), None);
+
+        store.join().unwrap();
+        store
+            .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
+            .unwrap();
+        assert!(store.load(&old, &key).is_err());
+
+        let (files, any_sealed) = store.by_seal(&key).unwrap();
+        assert!(!any_sealed);
+        store.seal_files(&files, &key, |_| true).unwrap();
+        assert_eq!(store.load(&old, &key).unwrap().value, "mine");
+    }
+
     /* A version kept before this Mac sealed its files is its own and comes back sealed. An unsealed one
     kept after was a refused file a write moved aside, and restoring it is refused */
     #[test]
@@ -1404,6 +1559,21 @@ mod tests {
 
         assert_eq!(store.ids().unwrap().len(), 1);
         assert_eq!(store.load(&id, &key).unwrap().value, "back");
+    }
+
+    /// A name added back reuses its id, so a copy that puts the old sealed tombstone back must not
+    /// prune the history of the secret that lives there now
+    #[test]
+    fn an_old_tombstone_beside_a_live_secret_prunes_nothing() {
+        let (_tmp, store, key) = store();
+        let id = new_id();
+        store.put(&id, &secret("db", "v1"), &key).unwrap();
+        store.delete(&id, &key).unwrap();
+        store.put(&id, &secret("db", "v2"), &key).unwrap();
+        store.write_tomb(&id, 1, &key).unwrap();
+
+        assert_eq!(store.prune_tombs(&key).unwrap(), 0);
+        assert!(store.versions_dir().join(&id).exists());
     }
 
     #[test]

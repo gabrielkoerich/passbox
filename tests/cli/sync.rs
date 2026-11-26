@@ -136,23 +136,14 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     cli.run(&["add", "a/b"], Some("v")).unwrap();
     cli.run(&["git", "init"], None).unwrap();
 
-    let ignore = std::fs::read_to_string(cli.path().join(".gitignore")).unwrap();
-    assert!(ignore.contains("wraps/se-*.json"), "{ignore}");
-    assert!(ignore.contains("wraps/phone-*.json"), "{ignore}");
-
-    /* A .gitignore from an older passbox gets every line it lacks on the next git command, and a
-    plugin it let git track leaves the index, so a pull can no longer write plugin code here */
-    std::fs::write(cli.path().join(".gitignore"), "wraps/se-*.json").unwrap();
-    std::fs::create_dir_all(cli.path().join("plugins/demo")).unwrap();
-    std::fs::write(cli.path().join("plugins/demo/run.sh"), "echo hi").unwrap();
-    cli.run(&["git", "add", "-f", "plugins"], None).unwrap();
-    cli.run(&["git", "status"], None).unwrap();
-    let ignore = std::fs::read_to_string(cli.path().join(".gitignore")).unwrap();
-    assert!(ignore.starts_with("wraps/se-*.json\n"), "{ignore}");
+    // In .git/info/exclude, which no pull can change, unlike a tracked .gitignore
+    let exclude = cli.path().join(".git/info/exclude");
+    let ignore = std::fs::read_to_string(&exclude).unwrap();
     for line in [
+        "/wraps/se-*.json",
+        "/wraps/phone-*.json",
         "/plugins/**",
         "/config.toml",
-        "/wraps/phone-*.json",
         "/recipient.pin",
     ] {
         assert!(
@@ -160,22 +151,93 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
             "{line} missing: {ignore}"
         );
     }
+
+    /* A pulled .gitignore that unignores plugins changes nothing. A plugin git tracks is set aside
+    outside plugins/ and leaves the index, so a pull cannot hand the broker code */
+    std::fs::write(cli.path().join(".gitignore"), "!/plugins/**\n").unwrap();
+    std::fs::create_dir_all(cli.path().join("plugins/demo")).unwrap();
+    std::fs::write(cli.path().join("plugins/demo/run.sh"), "echo hi").unwrap();
+    cli.run(&["git", "add", "-f", "plugins"], None).unwrap();
+    cli.run(&["git", "status"], None).unwrap();
+
     let tracked = cli.run(&["git", "ls-files", "plugins"], None).unwrap();
     assert_eq!(tracked, "", "a plugin is still tracked");
-    // What git brought is moved aside, never run, and never deleted
     assert!(!cli.path().join("plugins/demo").exists());
-    let aside: Vec<String> = std::fs::read_dir(cli.path().join("plugins"))
+    let aside: Vec<String> = std::fs::read_dir(cli.path().join(".git/passbox/from-git/plugins"))
         .unwrap()
         .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().to_string()))
-        .filter(|name| name.starts_with("demo.from-git-"))
+        .filter(|name| name.starts_with("demo-"))
         .collect();
     assert_eq!(aside.len(), 1, "{aside:?}");
+    let kept = cli
+        .path()
+        .join(".git/passbox/from-git/plugins")
+        .join(&aside[0])
+        .join("run.sh");
+    assert!(kept.exists(), "the set-aside plugin was lost");
+}
+
+/// An Enclave wrap an old .gitignore let git track leaves the index but stays, so Touch ID still works
+#[test]
+fn a_tracked_enclave_wrap_stays_in_place() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    cli.run(&["git", "init"], None).unwrap();
+    let wraps = cli.path().join("wraps");
+    std::fs::write(wraps.join("se-test.json"), "{}").unwrap();
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(cli.path())
+        .args(["add", "-f", "wraps/se-test.json"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+
+    cli.run(&["ls"], None).unwrap();
     assert!(
-        cli.path()
-            .join("plugins")
-            .join(&aside[0])
-            .join("run.sh")
-            .exists()
+        wraps.join("se-test.json").exists(),
+        "the Enclave wrap was moved"
+    );
+    let tracked = cli
+        .run(&["git", "ls-files", "wraps/se-test.json"], None)
+        .unwrap();
+    assert_eq!(tracked, "");
+}
+
+/// A git that will not run has pulled nothing since it last did, so passbox still reads the store
+#[test]
+fn a_broken_git_does_not_stop_passbox() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    std::fs::write(cli.path().join(".git"), "gitdir: /nonexistent\n").unwrap();
+
+    assert_eq!(cli.run(&["ls"], None).unwrap(), "a/b\n");
+}
+
+/// A machine local file git brought that cannot be set aside stops every command, so it is never read
+#[test]
+fn a_git_file_that_cannot_be_set_aside_stops_passbox() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    cli.run(&["git", "init"], None).unwrap();
+    // A file where the set-aside folder goes, so the move fails
+    std::fs::write(cli.path().join(".git/passbox"), "").unwrap();
+    std::fs::write(cli.path().join("config.toml"), "").unwrap();
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(cli.path())
+        .args(["add", "-f", "config.toml"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+
+    let err = cli.run(&["ls"], None).unwrap_err();
+    assert!(err.contains("will not read the store"), "{err}");
+    assert!(
+        cli.path().join("config.toml").exists(),
+        "nothing is deleted"
     );
 }
 
@@ -210,7 +272,7 @@ fn git_runs_inside_the_store_and_ignores_the_socket() {
     cli.run(&["add", "a/b"], Some("v")).unwrap();
     cli.run(&["git", "init"], None).unwrap();
 
-    let ignore = std::fs::read_to_string(cli.path().join(".gitignore")).unwrap();
+    let ignore = std::fs::read_to_string(cli.path().join(".git/info/exclude")).unwrap();
     assert!(ignore.contains("broker.sock"), "{ignore}");
     assert!(ignore.contains("store/.versions/"), "{ignore}");
 

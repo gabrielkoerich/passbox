@@ -1,6 +1,6 @@
 //! Copies the store to and from a directory. No shared mutable file, so there is nothing to merge.
 
-use crate::store::{MACHINE_LOCAL, Store, write_private};
+use crate::store::{MACHINE_LOCAL, Store, machine_local, write_private};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::fs;
@@ -242,32 +242,8 @@ pub(crate) fn default_destination(store: &Store) -> Result<Destination> {
     Engine::Icloud { directory: None }.resolve()
 }
 
-fn matches(pattern: &str, relative: &str) -> bool {
-    let (pattern, relative) = (pattern.to_lowercase(), relative.to_lowercase());
-    let (pattern, text) = match pattern.strip_prefix('/') {
-        Some(rooted) => (rooted, relative.as_str()),
-        None => (
-            pattern.as_str(),
-            relative.rsplit('/').next().unwrap_or(&relative),
-        ),
-    };
-    if let Some(dir) = pattern.strip_suffix("/**") {
-        return text == dir || text.starts_with(&format!("{dir}/"));
-    }
-    match pattern.split_once('*') {
-        Some((head, tail)) => {
-            text.len() >= head.len() + tail.len()
-                && text.starts_with(head)
-                && text.ends_with(tail)
-                && !text[head.len()..text.len() - tail.len()].contains('/')
-        }
-        None => text == pattern,
-    }
-}
-
 fn skip(relative: &Path) -> bool {
-    let text = relative.to_string_lossy();
-    MACHINE_LOCAL.iter().any(|p| matches(p, &text))
+    machine_local(&relative.to_string_lossy())
 }
 
 fn walk(root: &Path, base: &Path, out: &mut BTreeMap<PathBuf, SystemTime>) -> Result<()> {
@@ -365,11 +341,12 @@ pub(crate) fn sync(store: &Store, remote: &Path) -> Result<Report> {
     let mut report = Report::default();
     let (mut failed, mut first) = (0, None);
     let names: Vec<PathBuf> = here.keys().chain(there.keys()).cloned().collect();
+    // In any case, since a copy on a disk that keeps case can name it differently and macOS will not
     let own_log = store
         .audit_path()
         .strip_prefix(&store.dir)
         .ok()
-        .map(Path::to_path_buf);
+        .map(|p| p.to_string_lossy().to_lowercase());
 
     for name in names {
         let ours = here.get(&name);
@@ -383,7 +360,7 @@ pub(crate) fn sync(store: &Store, remote: &Path) -> Result<Report> {
         };
 
         // This Mac's own audit log is only ever pushed, so a copy cannot rewrite its history
-        let own_log = Some(name.as_path()) == own_log.as_deref();
+        let own_log = own_log.as_deref() == Some(name.to_string_lossy().to_lowercase().as_str());
         // A tombstone loses to its secret written after it, so rm then add of one name sticks
         let done = match (ours, theirs) {
             _ if own_log => match ours {

@@ -1,9 +1,9 @@
 //! The store as a git repository: a commit on every write, the mirror, and the push.
 
-use crate::store::{MACHINE_LOCAL, Store, now};
+use crate::store::{MACHINE_LOCAL, Store, machine_local, now, path_matches};
 #[cfg(feature = "host")]
 use crate::sync;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 /* git carries the encrypted secrets and nothing that opens them. The Enclave wraps are useless
 off the Mac that made them, so they stay out. The recovery wrap only exists once sync is on, and
@@ -15,16 +15,28 @@ fn ignored() -> impl Iterator<Item = &'static str> {
         .iter()
         .copied()
         .filter(|line| !line.starts_with("/.git"))
-        .chain(["/wraps/se-*.json"])
+        .chain(["/wraps/se-*.json", "*.from-git-*"])
 }
 
-/* A .gitignore from an older passbox misses later lines, so they are added. A machine local file
-git tracks came in through a pull or an older passbox, and a pull writes whatever a commit
-tracks, so it leaves the index and is renamed aside with `.from-git`, a plugin by its whole
-folder. Nothing is deleted, and nothing git brought is used */
+/* git checks out whatever a commit tracks, and a pulled .gitignore can unignore anything, so the
+ignore lines go in .git/info/exclude, which no pull changes, and every tracked path is checked
+with passbox's own list rather than git's ignore rules. A machine local file git tracks was
+pulled, or committed by an older passbox. It moves into .git/passbox, where no checkout writes,
+and only then leaves the index. One that cannot move stops passbox, so nothing is deleted and
+nothing git brought is read */
 pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
-    let path = store.dir.join(".gitignore");
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    if !in_git(store) {
+        return Ok(());
+    }
+    // A git that will not run cannot have pulled anything since it last did, so passbox goes on
+    let Some(git_dir) = checked(store, &["rev-parse", "--absolute-git-dir"]) else {
+        return Ok(());
+    };
+    let git_dir = std::path::PathBuf::from(String::from_utf8_lossy(&git_dir).trim());
+    let info = git_dir.join("info");
+    std::fs::create_dir_all(&info)?;
+    let exclude = info.join("exclude");
+    let text = std::fs::read_to_string(&exclude).unwrap_or_default();
     let missing: Vec<&str> = ignored()
         .filter(|line| !text.lines().any(|l| l == *line))
         .collect();
@@ -34,70 +46,134 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
         } else {
             "\n"
         };
-        std::fs::write(&path, format!("{text}{gap}{}\n", missing.join("\n")))?;
+        std::fs::write(&exclude, format!("{text}{gap}{}\n", missing.join("\n")))?;
     }
 
-    if in_git(store) {
-        let tracked = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&store.dir)
-            .args([
-                "ls-files",
-                "-z",
-                "--cached",
-                "--ignored",
-                "--exclude-standard",
-            ])
-            .output()
-            .context("git is not on PATH")?;
-        // A plugin moves as a folder, so no file of it is left to run
-        let mut aside = std::collections::BTreeSet::new();
-        for file in tracked.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
-            let file = String::from_utf8_lossy(file).to_string();
-            let top = match file.split_once('/') {
-                Some((dir, rest)) if dir.eq_ignore_ascii_case("plugins") => {
-                    format!("{dir}/{}", rest.split('/').next().unwrap_or(rest))
-                }
-                _ => file,
-            };
-            aside.insert(top);
+    let Some(tracked) = checked(store, &["ls-files", "-z", "--cached"]) else {
+        return Ok(());
+    };
+    // A plugin moves as a folder, so no file of it is left to run
+    let mut aside = std::collections::BTreeSet::new();
+    for file in tracked.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+        let file = String::from_utf8_lossy(file).to_string();
+        if !kept_out(&file) {
+            continue;
         }
-        // Moved first and only then untracked, so a pulled file is never left in place untracked
-        for (n, path) in aside.into_iter().enumerate() {
-            let from = store.dir.join(&path);
-            let to = store.dir.join(format!("{path}.from-git-{}-{n}", now()));
-            if from.exists() && std::fs::rename(&from, &to).is_err() {
-                let gone = if from.is_dir() {
-                    std::fs::remove_dir_all(&from)
-                } else {
-                    std::fs::remove_file(&from)
-                };
-                if let Err(e) = gone {
-                    eprintln!("could not set {path} aside or remove it: {e}");
-                    continue;
-                }
-                eprintln!("{path} came from git and could not be moved, so passbox removed it");
-            } else if to.exists() {
-                eprintln!(
-                    "{path} came from git, so passbox moved it to {}",
-                    to.display()
-                );
+        let top = match file.split_once('/') {
+            Some((dir, rest)) if dir.eq_ignore_ascii_case("plugins") => {
+                format!("{dir}/{}", rest.split('/').next().unwrap_or(rest))
             }
+            _ => file,
+        };
+        aside.insert(top);
+    }
+    let mut stuck = Vec::new();
+    for (n, path) in aside.into_iter().enumerate() {
+        let from = store.dir.join(&path);
+        let to = git_dir
+            .join("passbox/from-git")
+            .join(format!("{path}-{}-{n}", now()));
+        // An Enclave wrap opens nothing off the Mac whose Enclave made it, and this Mac's own is needed
+        let in_place = path_matches("/wraps/se-*.json", &path);
+        // A link is moved as a link, never followed
+        if !in_place && std::fs::symlink_metadata(&from).is_ok() {
+            let moved = to
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::rename(&from, &to));
+            if let Err(e) = moved {
+                stuck.push(format!("{path}: {e}"));
+                continue;
+            }
+            eprintln!(
+                "{path} was tracked by git, pulled or committed by an older passbox, so it moved to {}",
+                to.display()
+            );
+        }
+        git_quietly(
+            store,
+            &[
+                "--literal-pathspecs",
+                "rm",
+                "-r",
+                "--cached",
+                "--quiet",
+                "--ignore-unmatch",
+                "--",
+                &path,
+            ],
+        );
+    }
+    if !stuck.is_empty() {
+        bail!(
+            "git tracks files that belong to this Mac alone, and passbox could not set them aside, \
+             so it will not read the store until they are out of git and gone:\n{}",
+            stuck.join("\n")
+        );
+    }
+    Ok(())
+}
+
+/// What git prints for `args` in the store, or a warning when it will not run
+fn checked(store: &Store, args: &[&str]) -> Option<Vec<u8>> {
+    match std::process::Command::new("git")
+        .arg("-C")
+        .arg(&store.dir)
+        .args(args)
+        .output()
+    {
+        Ok(out) if out.status.success() => Some(out.stdout),
+        Ok(out) => {
+            eprintln!(
+                "git failed in {}, so the files it tracks were not checked: {}",
+                store.dir.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            None
+        }
+        Err(e) => {
+            eprintln!("git did not run, so the files it tracks were not checked: {e}");
+            None
+        }
+    }
+}
+
+/// A pulled .gitignore can unignore a machine local file, which `add -A` then stages. It leaves
+/// the index and stays where it is, since it is this Mac's own
+fn unstage(store: &Store) {
+    let Ok(staged) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&store.dir)
+        .args(["ls-files", "-z", "--cached"])
+        .output()
+    else {
+        return;
+    };
+    for file in staged.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+        let file = String::from_utf8_lossy(file);
+        if kept_out(&file) {
             git_quietly(
                 store,
                 &[
+                    "--literal-pathspecs",
                     "rm",
-                    "-r",
                     "--cached",
                     "--quiet",
-                    "--ignore-unmatch",
                     "--",
-                    &path,
+                    &file,
                 ],
             );
         }
     }
-    Ok(())
+}
+
+/// What git must not carry: every machine local path, the .gitignore itself aside, and the
+/// Enclave wraps, which sync carries since each names its Mac. Every path passbox writes is ASCII,
+/// and macOS folds case and accents in ways a text match misses, so any other path is kept out
+fn kept_out(relative: &str) -> bool {
+    !relative.is_ascii()
+        || !relative.eq_ignore_ascii_case(".gitignore")
+            && (machine_local(relative) || path_matches("/wraps/se-*.json", relative))
 }
 
 /// Saves cd-ing into the store. Values stay encrypted, so git only ever sees opaque files.
@@ -149,6 +225,7 @@ fn commit(store: &Store, what: &str) {
     }
     let _ = ensure_store_gitignore(store);
     git_quietly(store, &["add", "-A"]);
+    unstage(store);
     git_quietly(store, &["commit", "-m", what]);
 }
 
@@ -224,5 +301,25 @@ fn push(store: &Store) {
             String::from_utf8_lossy(&o.stderr).trim()
         ),
         Err(e) => eprintln!("not pushed to {remote}: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kept_out;
+
+    #[test]
+    fn a_path_macos_would_fold_onto_a_machine_local_file_is_kept_out() {
+        assert!(kept_out("config.toml"));
+        assert!(kept_out("CONFIG.toml"));
+        // A ligature and a decomposed accent, which a text match does not fold
+        assert!(kept_out("con\u{fb01}g.toml"));
+        assert!(kept_out("store/cafe\u{301}.age"));
+        assert!(!kept_out("store/abc.age"));
+        assert!(!kept_out(".gitignore"));
+        // Where 2.4.2 set a pulled file aside, which must not sync or be committed
+        assert!(kept_out("config.toml.from-git-1764171726-0"));
+        assert!(kept_out("plugins/demo.from-git-1764171726-1/run.sh"));
+        assert!(kept_out(".from-git/config.toml-1764171726-0"));
     }
 }
