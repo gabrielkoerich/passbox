@@ -32,20 +32,15 @@ fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
             while let Ok(Some(request)) = ssh::read_message(&mut stream) {
                 IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
                 let offered = ssh::offered(&shared.store);
-                let reply = ssh::answer(
-                    &request,
-                    &offered,
-                    &mut connection,
-                    |key, data, flags, host| {
-                        let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
-                        let agent = ssh_requester(&caller);
-                        shared
-                            .broker
-                            .lock()
-                            .expect("broker")
-                            .sign(key, data, flags, host, &agent, &caller)
-                    },
-                );
+                let reply = ssh::answer(&request, &offered, &mut connection, |key, data, host| {
+                    let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
+                    let agent = ssh_requester(&caller);
+                    shared
+                        .broker
+                        .lock()
+                        .expect("broker")
+                        .sign(key, data, host, &agent, &caller)
+                });
                 LAST_SEEN.store(store::now(), Ordering::Relaxed);
                 IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
                 if ssh::write_message(&mut stream, &reply).is_err() {

@@ -92,7 +92,7 @@ export SSH_AUTH_SOCK=~/.passbox/ssh-agent.sock   # in ~/.zshrc
 ssh-add -L                                        # lists it, no prompt
 ```
 
-The agent signs with Ed25519, ECDSA (P-256, P-384, P-521) and RSA keys. RSA signs with the SHA-256 or SHA-512 the server asks for, never SHA-1. A key with a passphrase asks for it once at `add` and is stored decrypted, as 1Password does, because the store encrypts it and every signature prompts. Delete the file once the key is in the store. A key only signs: `get`, `copy`, `exec`, a grant token and a plugin all refuse it. `passbox get --encrypt ssh/github > id_ed25519` asks for a new passphrase and prints the key encrypted with it, for one Touch ID prompt. The prompt says what is signed, where to and with which key, such as "sign an SSH login as git to github.com with SSH key you@mac for ssh". A key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
+The agent signs with Ed25519 and ECDSA (P-256, P-384, P-521) keys. An RSA key is stored and protected like any other, but the agent does not sign with it. A key with a passphrase asks for it once at `add` and is stored decrypted, as 1Password does, because the store encrypts it and every signature prompts. Delete the file once the key is in the store. A key only signs: `get`, `copy`, `exec`, a grant token and a plugin all refuse it. `passbox get --encrypt ssh/github > id_ed25519` asks for a new passphrase and prints the key encrypted with it, for one Touch ID prompt. The prompt says what is signed, where to and with which key, such as "sign an SSH login as git to github.com with SSH key you@mac for ssh". A key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
 
 ### Signing windows
 
@@ -139,7 +139,7 @@ It reads through the `op` CLI, so sign in with `op signin` first and passbox nev
 | Login, password, and any item with a concealed field | the password on the first line, the username, URLs and other fields as `key: value` lines, then the notes. A password with more than one line makes the item a blob |
 | Secure note | its text, as a blob |
 | Document | its text as a blob, or skipped when it is binary |
-| SSH key | the OpenSSH key as a blob, of every type. The agent offers Ed25519, ECDSA and RSA keys, and the report names any other |
+| SSH key | the OpenSSH key as a blob, of every type. The agent offers Ed25519 and ECDSA keys, and the report names any other, such as RSA |
 | One-time password | the `otpauth://` seed as a field, passbox does not make codes from it |
 | A field with more than one line | after the notes, as its name and then its text, where `get --field` cannot read it |
 

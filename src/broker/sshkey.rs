@@ -7,12 +7,18 @@ use ssh_key::{Algorithm, EcdsaCurve, PrivateKey};
 
 pub(crate) const HEADER: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
 
+/// A key anywhere in the value, such as a 1Password field folded into a login, which a read
+/// would hand out bare
+pub(crate) fn holds_key(value: &str) -> bool {
+    value.contains(HEADER)
+}
+
 /// Any OpenSSH private key, of a type the agent signs with or not, encrypted or not
 pub(crate) fn is_key(value: &str) -> bool {
     value.trim_start().starts_with(HEADER) && PrivateKey::from_openssh(value).is_ok()
 }
 
-/// A key the agent signs with: unencrypted, and Ed25519, ECDSA or RSA
+/// A key the agent signs with: unencrypted, and Ed25519 or ECDSA
 #[cfg(feature = "host")]
 pub(crate) fn parse(value: &str) -> Option<PrivateKey> {
     if !value.trim_start().starts_with(HEADER) {
@@ -29,7 +35,6 @@ fn usable(key: &PrivateKey) -> bool {
             | Algorithm::Ecdsa {
                 curve: EcdsaCurve::NistP256 | EcdsaCurve::NistP384 | EcdsaCurve::NistP521
             }
-            | Algorithm::Rsa { .. }
     )
 }
 
@@ -38,6 +43,11 @@ fn usable(key: &PrivateKey) -> bool {
 pub(crate) fn unoffered(name: &str, value: &str) -> Option<String> {
     if parse(value).is_some() {
         return None;
+    }
+    if holds_key(value) && !is_key(value) {
+        return Some(
+            "it holds an SSH private key among other text, so no read releases it until the key moves into a secret of its own with `passbox add`".into(),
+        );
     }
 
     let key = value
@@ -79,12 +89,18 @@ pub(crate) fn decrypt(value: &str, ask: impl FnOnce() -> Result<String>) -> Resu
 
 /// What a read hands out. Any SSH key, of every type, leaves only encrypted with `passphrase`
 pub(crate) fn release(name: &str, value: &str, passphrase: &str) -> Result<String> {
-    if !is_key(value) {
+    if !holds_key(value) {
         if !passphrase.is_empty() {
             bail!("{name} is not an SSH key, drop --encrypt to read it");
         }
 
         return Ok(value.to_string());
+    }
+    if !is_key(value) {
+        bail!(
+            "{name} holds an SSH private key among other text, which never leaves the store bare\n\
+             move the key into a secret of its own with `passbox add`"
+        );
     }
     if passphrase.is_empty() {
         bail!(
