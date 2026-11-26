@@ -25,7 +25,7 @@ pub(crate) use audit::append_audit;
 pub(crate) use caller::own_ancestry;
 #[cfg(feature = "host")]
 pub(crate) use client::plugin_approve;
-pub(crate) use client::{export, grant, list, plugin_run_remote, request, request_token};
+pub(crate) use client::{export, fields, grant, list, plugin_run_remote, request, request_token};
 #[cfg(feature = "host")]
 pub(crate) use client::{phone_open, phone_test};
 #[cfg(feature = "host")]
@@ -105,6 +105,8 @@ pub(crate) enum Op {
     #[default]
     Get,
     List,
+    /// The labels of one entry's fields, named by `name`, and none of their values
+    Fields,
     /// Approve a set of secrets once and hand back a token that opens only those
     Grant,
     /// Approve one plugin action, named by `name` and `action`
@@ -285,6 +287,7 @@ impl Broker {
         match request.op {
             Op::Get => self.handle_get(request, caller, cwd),
             Op::List => self.handle_list(request, caller),
+            Op::Fields => self.handle_fields(request, caller),
             Op::Grant => self.handle_grant(request, caller),
             Op::Plugin => {
                 // A tailnet caller is the host whois named, every caller on this Mac is one scope
@@ -312,6 +315,22 @@ impl Broker {
             eprintln!("{} could not refresh the SSH keys: {e:#}", clock());
         }
         Ok(names.join("\n"))
+    }
+
+    /// For a picker that copies one field at a time, so a value never reaches the picker
+    fn handle_fields(&mut self, request: &Request, caller: &str) -> Result<String> {
+        self.ask(&format!(
+            "list the fields of {} for {}",
+            request.name, request.agent
+        ))
+        .map_err(|e| self.refused(&request.agent, &[&request.name], e, caller))?;
+        let key = self.key.clone().expect("just unlocked");
+        let Some((_, secret)) = self.store.find(&request.name, &key)? else {
+            self.audit(&key, &request.agent, &request.name, "unknown", caller)?;
+            bail!("no secret named {}", request.name);
+        };
+        self.audit(&key, &request.agent, &request.name, "fields listed", caller)?;
+        Ok(store::labels(&secret.value).join("\n"))
     }
 
     /* One approval covers a name or a whole namespace, and yields a token that opens exactly

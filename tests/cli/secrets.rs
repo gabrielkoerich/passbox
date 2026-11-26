@@ -77,6 +77,20 @@ fn an_entry_with_no_password_says_so() {
     assert!(err.contains("bank/main has no password"), "{err}");
 }
 
+/// What Alfred lists to copy one field: the labels, in order, and never a value
+#[test]
+fn fields_lists_the_labels_and_no_value() {
+    let cli = Cli::new();
+    cli.run(
+        &["add", "bank/main"],
+        Some("hunter2\nusername: gb\npix: me@x"),
+    )
+    .unwrap();
+    let out = cli.run(&["fields", "bank/main"], None).unwrap();
+    assert_eq!(out, "password\nusername\npix\n");
+    assert!(!out.contains("hunter2") && !out.contains("me@x"), "{out}");
+}
+
 /// One behaviour, no modes: a read works, and the old mode flag and subcommand are gone
 #[test]
 fn there_are_no_modes() {

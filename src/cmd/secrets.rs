@@ -128,23 +128,9 @@ pub(crate) fn add(store: &Store, name: &str, input: Input<'_>, existing: Existin
     Ok(())
 }
 
-/* The `pass` layout, which import keeps: the first line is the secret and later `key: value`
-lines are fields. Reading one field hands a caller the password without the note beside it. */
+/// A key written twice reads as its last value
 fn fields(value: &str) -> std::collections::HashMap<String, String> {
-    let mut out = std::collections::HashMap::new();
-    let mut lines = value.lines();
-    if let Some(first) = lines.next() {
-        out.insert("password".to_string(), first.to_string());
-    }
-    for line in lines {
-        if let Some((key, v)) = line.split_once(':') {
-            let (key, v) = (key.trim().to_lowercase(), v.trim());
-            if !key.is_empty() && !v.is_empty() {
-                out.insert(key, v.to_string());
-            }
-        }
-    }
-    out
+    store::fields(value).into_iter().collect()
 }
 
 fn read_field(store: &Store, name: &str, field: Option<&str>) -> Result<String> {
@@ -258,6 +244,24 @@ pub(crate) fn ls(store: &Store) -> Result<()> {
         for name in names {
             writeln!(out, "{name}")?;
         }
+    }
+    Ok(())
+}
+
+/// One label a line, and no value, so Alfred can offer each field to `copy --field`
+pub(crate) fn list_fields(store: &Store, name: &str) -> Result<()> {
+    let labels = if brokered(store) {
+        broker::fields(store, name, &agent())?
+    } else {
+        let key = unlock(store, &format!("list the fields of {name}"))?;
+        let (_, secret) = store
+            .find(name, &key)?
+            .with_context(|| format!("no secret named {name}"))?;
+        store::labels(&secret.value)
+    };
+    let mut out = std::io::stdout();
+    for label in labels {
+        writeln!(out, "{label}")?;
     }
     Ok(())
 }

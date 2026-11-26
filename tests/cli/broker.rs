@@ -98,6 +98,24 @@ const SHOW_AB: &str = "printf %s,%s \"$A\" \"$B\"";
     not(feature = "mock-enclave"),
     ignore = "needs --features mock-enclave"
 )]
+fn fields_through_the_broker_prompts_once_and_is_audited_without_a_value() {
+    let bound = Bound::new();
+    let out = bound.run(&["fields", "demo/one"], None).unwrap();
+    assert_eq!(out, "password\n");
+    assert_eq!(
+        bound.prompts(),
+        ["list the fields of demo/one for test-agent"]
+    );
+    let log = bound.audit();
+    assert!(decided(&log, "demo/one", "fields listed"), "{log}");
+    assert!(!log.contains("value-one"), "{log}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
 fn every_read_prompts() {
     let bound = Bound::new();
     for _ in 0..2 {

@@ -66,19 +66,58 @@
 				<key>destinationuid</key>
 				<string>5A1F0002-0000-4000-8000-000000000002</string>
 				<key>modifiers</key>
+				<integer>1048576</integer>
+				<key>modifiersubtext</key>
+				<string>Copy the username</string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>5A1F0009-0000-4000-8000-000000000009</string>
+				<key>modifiers</key>
 				<integer>0</integer>
 				<key>modifiersubtext</key>
 				<string></string>
 				<key>vitoclose</key>
 				<false/>
 			</dict>
+		</array>
+		<key>5A1F0009-0000-4000-8000-000000000009</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>5A1F000A-0000-4000-8000-00000000000A</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>5A1F000B-0000-4000-8000-00000000000B</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>5A1F000C-0000-4000-8000-00000000000C</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>5A1F000C-0000-4000-8000-00000000000C</key>
+		<array>
 			<dict>
 				<key>destinationuid</key>
 				<string>5A1F0002-0000-4000-8000-000000000002</string>
 				<key>modifiers</key>
-				<integer>1048576</integer>
+				<integer>0</integer>
 				<key>modifiersubtext</key>
-				<string>Copy the username</string>
+				<string></string>
 				<key>vitoclose</key>
 				<false/>
 			</dict>
@@ -255,6 +294,104 @@
 			<key>version</key>
 			<integer>1</integer>
 		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<false/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>./fields.sh "$1"</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>5A1F0009-0000-4000-8000-000000000009</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>externaltriggerid</key>
+				<string>fields</string>
+				<key>passinputasargument</key>
+				<false/>
+				<key>passvariables</key>
+				<true/>
+				<key>workflowbundleid</key>
+				<string>self</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.callexternaltrigger</string>
+			<key>uid</key>
+			<string>5A1F000A-0000-4000-8000-00000000000A</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>availableviaurlhandler</key>
+				<false/>
+				<key>triggerid</key>
+				<string>fields</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.external</string>
+			<key>uid</key>
+			<string>5A1F000B-0000-4000-8000-00000000000B</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>alfredfiltersresults</key>
+				<true/>
+				<key>alfredfiltersresultsmatchmode</key>
+				<integer>0</integer>
+				<key>argumenttrimmode</key>
+				<integer>0</integer>
+				<key>argumenttype</key>
+				<integer>1</integer>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>queuedelaycustom</key>
+				<integer>3</integer>
+				<key>queuedelayimmediatelyinitially</key>
+				<true/>
+				<key>queuedelaymode</key>
+				<integer>0</integer>
+				<key>queuemode</key>
+				<integer>1</integer>
+				<key>script</key>
+				<string>./pick.sh</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>subtext</key>
+				<string>Pick a field to copy</string>
+				<key>title</key>
+				<string>passbox</string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.scriptfilter</string>
+			<key>uid</key>
+			<string>5A1F000C-0000-4000-8000-00000000000C</string>
+			<key>version</key>
+			<integer>3</integer>
+		</dict>
 	</array>
 	<key>readme</key>
 	<string>Type pbx and touch the sensor. Alfred closes for the prompt and reopens with your secret names. Pick one and press return to copy the password, or cmd-return for the username. The clipboard clears itself after 20 seconds.</string>
@@ -308,6 +445,34 @@
 			<integer>260</integer>
 			<key>ypos</key>
 			<integer>200</integer>
+		</dict>
+		<key>5A1F0009-0000-4000-8000-000000000009</key>
+		<dict>
+			<key>xpos</key>
+			<integer>480</integer>
+			<key>ypos</key>
+			<integer>360</integer>
+		</dict>
+		<key>5A1F000A-0000-4000-8000-00000000000A</key>
+		<dict>
+			<key>xpos</key>
+			<integer>700</integer>
+			<key>ypos</key>
+			<integer>360</integer>
+		</dict>
+		<key>5A1F000B-0000-4000-8000-00000000000B</key>
+		<dict>
+			<key>xpos</key>
+			<integer>40</integer>
+			<key>ypos</key>
+			<integer>520</integer>
+		</dict>
+		<key>5A1F000C-0000-4000-8000-00000000000C</key>
+		<dict>
+			<key>xpos</key>
+			<integer>260</integer>
+			<key>ypos</key>
+			<integer>520</integer>
 		</dict>
 	</dict>
 	<key>webaddress</key>

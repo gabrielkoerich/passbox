@@ -36,7 +36,9 @@ use cmd::phone::{phone_add, phone_ls, phone_rm};
 use cmd::plugins::plugin_cmd;
 #[cfg(feature = "host")]
 use cmd::secrets::audit;
-use cmd::secrets::{Existing, Input, Notes, add, copy, get, get_encrypted, grant, ls, restore, rm};
+use cmd::secrets::{
+    Existing, Input, Notes, add, copy, get, get_encrypted, grant, list_fields, ls, restore, rm,
+};
 use cmd::setup::init;
 #[cfg(feature = "host")]
 use cmd::setup::{enable_sync, machine_add, run_sync, yubikey_add};
@@ -123,6 +125,8 @@ enum Command {
     },
     /// List secret names
     Ls,
+    /// List the field names of one secret, never a value, for a picker that copies one field
+    Fields { name: String },
     /// Delete a secret, leaving a tombstone so the delete survives a sync
     Rm { name: String },
     /// List or restore earlier versions of a secret
@@ -360,6 +364,7 @@ fn run() -> Result<()> {
             grant(&store, &names, r#for)
         }
         Command::Ls => ls(&store),
+        Command::Fields { name } => list_fields(&store, &name),
         Command::Rm { name } => rm(&store, &name).inspect(|()| written(&store, "remove a secret")),
         Command::Restore { name, index } => restore(&store, &name, index)
             .inspect(|()| written(&store, "restore an earlier version")),

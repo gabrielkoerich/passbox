@@ -70,6 +70,26 @@ pub(crate) fn list(store: &Store, agent: &str) -> Result<Vec<String>> {
     Ok(names.lines().map(str::to_string).collect())
 }
 
+/// One entry's field labels, one per line, so the caller can copy a field without seeing any value
+pub(crate) fn fields(store: &Store, name: &str, agent: &str) -> Result<Vec<String>> {
+    let labels = ask_broker(
+        store,
+        &Request {
+            name: name.to_string(),
+            agent: agent.to_string(),
+            op: Op::Fields,
+            token: String::new(),
+            ttl: 0,
+            names: Vec::new(),
+            action: String::new(),
+            params: Vec::new(),
+            run: false,
+            passphrase: String::new(),
+        },
+    )?;
+    Ok(labels.lines().map(str::to_string).collect())
+}
+
 /// Approve once and get a token back, with the names it covers listed after it
 pub(crate) fn grant(store: &Store, names: &[String], agent: &str, ttl: u64) -> Result<String> {
     ask_broker(

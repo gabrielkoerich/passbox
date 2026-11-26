@@ -578,9 +578,48 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/* The `pass` layout, which import keeps: the first line is the secret and later `key: value`
+lines are fields. Reading one field hands a caller the password without the note beside it. */
+pub(crate) fn fields(value: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut lines = value.lines();
+    if let Some(first) = lines.next() {
+        out.push(("password".to_string(), first.to_string()));
+    }
+    for line in lines {
+        if let Some((key, v)) = line.split_once(':') {
+            let (key, v) = (key.trim().to_lowercase(), v.trim());
+            if !key.is_empty() && !v.is_empty() {
+                out.push((key, v.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// The fields `get --field` reads, each once and in the order they are written, and no value
+pub(crate) fn labels(value: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (key, v) in fields(value) {
+        if !v.is_empty() && !out.contains(&key) {
+            out.push(key);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_follow_the_order_written_and_skip_an_empty_password() {
+        let login = "pw\nusername: gb\nurl: x\na note line\npassword 2: b\nurl: y";
+        assert_eq!(labels(login), ["password", "username", "url", "password 2"]);
+        let note = "\nbank: itau\npix: me@x";
+        assert_eq!(labels(note), ["bank", "pix"]);
+        assert_eq!(labels(""), Vec::<String>::new());
+    }
 
     #[test]
     fn removing_an_old_name_index_is_idempotent() {
