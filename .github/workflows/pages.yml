@@ -42,7 +42,7 @@ jobs:
 
       # The site is generated from README.md and AGENTS.md, so it cannot drift from them
       - id: deployment
-        uses: gabrielkoerich/zola-docs-action@e1ec41316383ce777846abbdb0c9ba9ab6109b0a # v1
+        uses: gabrielkoerich/zola-docs-action@f8195f3d45d2d919b0dcf5d0c515d1eb7856eaec # v1
         with:
           path: docs
           zola-version: "0.22.1"
