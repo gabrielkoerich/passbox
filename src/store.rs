@@ -123,13 +123,25 @@ impl Store {
     fn pin_path(&self) -> PathBuf {
         self.dir.join("recipient.pin")
     }
-    /// Present once this Mac has sealed its files, after which an unsealed one is refused
+    /// Present once this Mac has sealed its files, after which an unsealed one is refused. It holds
+    /// when, so a version kept before then is known to be this Mac's own
     fn signed_path(&self) -> PathBuf {
         self.dir.join("signed")
     }
 
     fn sealed(&self) -> bool {
         self.signed_path().exists()
+    }
+
+    fn sealed_at(&self) -> u64 {
+        fs::read_to_string(self.signed_path())
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    fn mark_sealed(&self) -> Result<()> {
+        write_private(&self.signed_path(), now().to_string().as_bytes())
     }
 
     /// A Mac joining a store adopts nothing unsealed from the copy it was given, which may have had
@@ -139,7 +151,7 @@ impl Store {
         if self.sealed() {
             return Ok(());
         }
-        write_private(&self.signed_path(), b"")
+        self.mark_sealed()
     }
 
     /// The store's public key as this copy names it, for a person to compare across Macs
@@ -150,14 +162,26 @@ impl Store {
         Ok(raw.trim().to_string())
     }
 
-    /// An earlier version written back as the current one, sealed, since a version can predate sealing
+    /* An earlier version written back as the current one, sealed. One kept before this Mac sealed its
+    files is its own. An unsealed one kept after was a file this Mac refused, moved aside by a write,
+    so restoring it would seal what a copy planted */
     pub(crate) fn restore_version(
         &self,
         id: &str,
         version: &Path,
         key: &x25519::Identity,
     ) -> Result<()> {
-        let secret = load_path(version, key)?;
+        let (secret, sealed) = open(version, id, key)?;
+        let kept: u64 = version
+            .file_stem()
+            .and_then(|s| s.to_str()?.parse().ok())
+            .unwrap_or(u64::MAX);
+        if !sealed && self.sealed() && kept >= self.sealed_at() {
+            bail!(
+                "this version was unsealed when it was kept, after this Mac sealed its files, so \
+                 passbox did not write it here"
+            );
+        }
         self.put(id, &secret, key)
     }
     fn recovery_path(&self) -> PathBuf {
@@ -231,7 +255,7 @@ impl Store {
         let public = key.to_public().to_string();
         write_private(&self.recipient_path(), public.as_bytes())?;
         write_private(&self.pin_path(), public.as_bytes())?;
-        write_private(&self.signed_path(), b"")?;
+        self.mark_sealed()?;
         Ok(key)
     }
 
@@ -373,25 +397,35 @@ impl Store {
 
     /* Once per Mac, as it upgrades, in place so a tombstone and the versions stay as they are. The
     files are trusted and sealed only on the store's first upgrade, when none is sealed. A sealed
-    file means another Mac upgraded, so nothing unsealed is trusted. A file that does not open says
-    nothing either way and is left as it is, so one broken file cannot lock the store. The client
-    build only reads what a Mac sealed, and never adopts */
+    file means another Mac upgraded, so nothing unsealed is trusted. A file that does not open may
+    be a sealed one a copy broke to make the store look new, so then nothing is sealed and the
+    store reads as before until the file is gone. The client build reads what a Mac sealed, and
+    never adopts */
     fn seal_all(&self, key: &x25519::Identity) -> Result<()> {
         let mut files = Vec::new();
+        let mut broken = Vec::new();
         let mut first = cfg!(feature = "host");
         for id in self.ids_with_files()? {
             match open(&self.secret_path(&id), &id, key) {
                 Ok((secret, false)) => files.push((id, secret)),
                 Ok((_, true)) => first = false,
-                Err(_) => {}
+                Err(_) => broken.push(self.secret_path(&id).display().to_string()),
             }
+        }
+        if first && !broken.is_empty() {
+            eprintln!(
+                "passbox did not seal this store, these files do not open: {}\n\
+                 remove them and unlock again, until then it reads unsealed files as before",
+                broken.join(", ")
+            );
+            return Ok(());
         }
         if first {
             for (id, secret) in &files {
                 write_sealed(&self.secret_path(id), id, secret, key)?;
             }
         }
-        write_private(&self.signed_path(), b"")
+        self.mark_sealed()
     }
 
     pub(crate) fn unlock_with_passphrase(
@@ -1052,10 +1086,10 @@ mod tests {
         assert_eq!(store.names(&key).unwrap(), ["wallet/main"]);
     }
 
-    /// A file that will not open, broken or planted, is left alone, so it cannot keep the store's
-    /// own files from being sealed on the upgrade and then refused
+    /* A file that will not open may be a sealed one a copy broke so the store looks never sealed. The
+    upgrade then seals nothing and sets no marker, so the store reads as before rather than locking */
     #[test]
-    fn one_broken_file_does_not_lock_the_store_on_upgrade() {
+    fn one_broken_file_holds_the_upgrade_without_locking_the_store() {
         let (_tmp, store, key) = store();
         fs::remove_file(store.pin_path()).unwrap();
         fs::remove_file(store.signed_path()).unwrap();
@@ -1065,8 +1099,8 @@ mod tests {
         store
             .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
             .unwrap();
+        assert!(!store.sealed(), "it sealed beside a broken file");
         assert_eq!(store.load(&mine, &key).unwrap().value, "mine");
-        assert_eq!(store.names(&key).unwrap(), ["wallet/main"]);
     }
 
     /* A Mac joining takes the store from a copy that may have had its sealed files taken out and its
@@ -1088,15 +1122,24 @@ mod tests {
         );
     }
 
-    /// A version from before sealing is written back sealed, so restoring it does not hide it
+    /* A version kept before this Mac sealed its files is its own and comes back sealed. An unsealed one
+    kept after was a refused file a write moved aside, and restoring it is refused */
     #[test]
-    fn an_unsealed_old_version_is_restored_sealed() {
+    fn only_a_version_kept_before_sealing_is_restored_unsealed() {
         let (_tmp, store, key) = store();
         let id = planted(&store, &secret("db/pass", "old"), None);
         store.keep_version(&id).unwrap();
         store.put(&id, &secret("db/pass", "new"), &key).unwrap();
         let (_, old) = store.versions(&id).unwrap().into_iter().next().unwrap();
 
+        write_private(&store.signed_path(), b"1").unwrap();
+        let Err(err) = store.restore_version(&id, &old, &key) else {
+            panic!("an unsealed version kept after sealing came back");
+        };
+        assert!(err.to_string().contains("did not write it here"), "{err}");
+
+        let later = (now() + 60).to_string();
+        write_private(&store.signed_path(), later.as_bytes()).unwrap();
         store.restore_version(&id, &old, &key).unwrap();
         assert_eq!(store.load(&id, &key).unwrap().value, "old");
     }
