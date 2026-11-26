@@ -32,6 +32,13 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
+      # RustSec, which Dependabot lags or misses for Rust crates. deny.toml lists each ignore and why
+      - name: Advisories
+        uses: EmbarkStudios/cargo-deny-action@81891abc19297b21343b15ef67dc61e4aea74fda # v2.1.4
+        with:
+          command: check advisories
+          arguments: --all-features
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:
