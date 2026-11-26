@@ -601,11 +601,27 @@ pub(crate) fn fields(value: &str) -> Vec<(String, String)> {
 pub(crate) fn labels(value: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (key, v) in fields(value) {
-        if !v.is_empty() && !out.contains(&key) {
+        if !v.is_empty() && looks_like_a_label(&key) && !out.contains(&key) {
             out.push(key);
         }
     }
     out
+}
+
+/* A note's free text can hold `my pin is 4821: bank` or a token before a colon, which the parse
+reads as a key. Listing only short, plain names keeps such a line out of a picker and its logs,
+and `--field` still reads it by its exact name */
+fn looks_like_a_label(key: &str) -> bool {
+    let plain = key
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '.' | '-'));
+    let digits = key
+        .split(|c: char| !c.is_ascii_digit())
+        .all(|run| run.len() < 4);
+    plain
+        && digits
+        && key.chars().count() <= 32
+        && key.split_whitespace().all(|w| w.chars().count() <= 20)
 }
 
 #[cfg(test)]
@@ -618,6 +634,9 @@ mod tests {
         assert_eq!(labels(login), ["password", "username", "url", "password 2"]);
         let note = "\nbank: itau\npix: me@x";
         assert_eq!(labels(note), ["bank", "pix"]);
+        // A note line that only happens to hold a colon names no field a picker should show
+        let text = "pw\nuser: gb\nmy pin is 4821: bank\nsk_live_9f3a8c2b7d6e5f4a3b2c1d: old";
+        assert_eq!(labels(text), ["password", "user"]);
         assert_eq!(labels(""), Vec::<String>::new());
     }
 
