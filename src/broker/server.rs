@@ -95,27 +95,36 @@ fn reply<S: std::io::Read + Write>(
             let answer = match (by_token, child) {
                 // Before the lock: the phone answers the very prompt that is holding it
                 _ if request.op == Op::Phone => phone::handle(shared, &request, caller, origin),
-                (Some((secret, grant)), _) => shared
-                    .store
-                    .recipient()
-                    .and_then(|to| {
-                        append_audit_to(
-                            &shared.store,
-                            &to,
-                            &Entry {
-                                agent: &request.agent,
-                                secret: &request.name,
-                                decision: "by token",
-                                caller,
-                                grant: &grant,
-                                ..Entry::default()
-                            },
-                        )
-                    })
-                    .and_then(|()| match request.field.as_str() {
+                (Some((secret, grant)), _) => {
+                    let answer = match request.field.as_str() {
                         "" => Ok(secret.value.clone()),
                         want => secret.field(want),
-                    }),
+                    };
+                    // A refused field released nothing, so the log says so
+                    let decision = if answer.is_ok() {
+                        "by token"
+                    } else {
+                        "withheld"
+                    };
+                    shared
+                        .store
+                        .recipient()
+                        .and_then(|to| {
+                            append_audit_to(
+                                &shared.store,
+                                &to,
+                                &Entry {
+                                    agent: &request.agent,
+                                    secret: &request.name,
+                                    decision,
+                                    caller,
+                                    grant: &grant,
+                                    ..Entry::default()
+                                },
+                            )
+                        })
+                        .and(answer)
+                }
                 (None, Some(answer)) => answer,
                 (None, None) => shared
                     .broker

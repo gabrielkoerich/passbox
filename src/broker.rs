@@ -335,8 +335,14 @@ impl Broker {
             self.audit(&key, &request.agent, &request.name, "unknown", caller)?;
             bail!("no secret named {}", request.name);
         };
-        self.audit(&key, &request.agent, &request.name, "fields listed", caller)?;
-        Ok(secret.field_names()?.join("\n"))
+        let names = secret.field_names();
+        let decision = if names.is_ok() {
+            "fields listed"
+        } else {
+            "withheld"
+        };
+        self.audit(&key, &request.agent, &request.name, decision, caller)?;
+        Ok(names?.join("\n"))
     }
 
     /* One approval covers a name or a whole namespace, and yields a token that opens exactly
@@ -442,6 +448,12 @@ impl Broker {
         if !request.token.is_empty()
             && let Some((secret, grant)) = self.value_for_token(&request.token, &request.name)
         {
+            let answer = sshkey::release(&request.name, &secret.value, "").and_then(|value| {
+                match request.field.as_str() {
+                    "" => Ok(value),
+                    want => secret.field(want),
+                }
+            });
             let to = self.store.recipient()?;
             append_audit_to(
                 &self.store,
@@ -449,17 +461,17 @@ impl Broker {
                 &Entry {
                     agent: &request.agent,
                     secret: &request.name,
-                    decision: "by token",
+                    decision: if answer.is_ok() {
+                        "by token"
+                    } else {
+                        "withheld"
+                    },
                     caller,
                     grant: &grant,
                     ..Entry::default()
                 },
             )?;
-            let value = sshkey::release(&request.name, &secret.value, "")?;
-            return match request.field.as_str() {
-                "" => Ok(value),
-                want => secret.field(want),
-            };
+            return answer;
         }
 
         // A read prompts every time. The only way past the prompt is a token or, for the

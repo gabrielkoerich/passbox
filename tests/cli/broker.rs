@@ -148,6 +148,11 @@ fn a_field_read_sends_only_that_field_by_prompt_and_by_token() {
         r#","field":"username","passphrase":"twelve chars plus""#,
     );
     assert!(export.contains("an export takes the whole key"), "{export}");
+
+    // The note under a token released nothing, so the log does not say it did
+    let log = bound.audit();
+    assert!(decided(&log, "notes/wifi", "withheld"), "{log}");
+    assert!(!decided(&log, "notes/wifi", "by token"), "{log}");
 }
 
 /// The broker cuts the field out, so asking a note for one is refused there and audited
