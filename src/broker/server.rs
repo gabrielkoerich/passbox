@@ -7,8 +7,8 @@ use super::ssh;
 use super::tailnet;
 use super::tokens::{Tokens, mint_child, token_value};
 use super::{
-    Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Origin, Request, Response, Shared, TAILNET_PORT,
-    UNNAMED, clock,
+    Answer, Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Origin, Request, Response, Shared,
+    TAILNET_PORT, UNNAMED, clock,
 };
 use crate::store::{self, Store};
 use anyhow::Result;
@@ -94,11 +94,13 @@ fn reply<S: std::io::Read + Write>(
             }
             let answer = match (by_token, child) {
                 // Before the lock: the phone answers the very prompt that is holding it
-                _ if request.op == Op::Phone => phone::handle(shared, &request, caller, origin),
+                _ if request.op == Op::Phone => {
+                    phone::handle(shared, &request, caller, origin).map(Answer::whole)
+                }
                 (Some((secret, grant)), _) => {
                     let answer = match request.field.as_str() {
-                        "" => Ok(secret.value.clone()),
-                        want => secret.field(want),
+                        "" => Ok(Answer::whole(secret.value.clone())),
+                        want => secret.field(want).map(|field| Answer::cut(field, want)),
                     };
                     // A refused field released nothing, so the log says so
                     let decision = if answer.is_ok() {
@@ -125,7 +127,7 @@ fn reply<S: std::io::Read + Write>(
                         })
                         .and(answer)
                 }
-                (None, Some(answer)) => answer,
+                (None, Some(answer)) => answer.map(Answer::whole),
                 (None, None) => shared
                     .broker
                     .lock()
@@ -136,11 +138,11 @@ fn reply<S: std::io::Read + Write>(
                 IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
             }
             match answer {
-                Ok(value) => Response {
+                Ok(answer) => Response {
                     ok: true,
-                    value: Some(value),
+                    value: Some(answer.value),
                     error: None,
-                    field: (!request.field.is_empty()).then(|| request.field.clone()),
+                    field: answer.field,
                 },
                 Err(e) => Response {
                     ok: false,

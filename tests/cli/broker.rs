@@ -132,6 +132,10 @@ fn a_field_read_sends_only_that_field_by_prompt_and_by_token() {
     };
 
     only_the_username(&ask("", "web/login", r#","field":"username""#));
+    // A read of the whole entry cut nothing, so its reply carries no field
+    let whole = ask("", "web/login", "");
+    assert!(whole.contains("hunter2"), "{whole}");
+    assert!(!whole.contains(r#""field""#), "{whole}");
 
     let token = bound
         .run(&["grant", "web/login", "notes/wifi", "--for", "60"], None)
