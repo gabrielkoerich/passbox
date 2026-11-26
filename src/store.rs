@@ -631,17 +631,21 @@ impl Store {
         self.dir.join("host")
     }
 
-    /// Whether git tracks a path in the store. A machine local file it tracks came from a pull
+    /// Whether git tracks a path in the store, in any case, since the Mac's disk ignores case. A
+    /// machine local file it tracks came from a pull, and a git that will not run counts as tracking
     pub(crate) fn git_tracks(&self, relative: &str) -> bool {
-        self.dir.join(".git").exists()
-            && std::process::Command::new("git")
-                .arg("-C")
-                .arg(&self.dir)
-                .args(["ls-files", "--error-unmatch", "--", relative])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
+        if !self.dir.join(".git").exists() {
+            return false;
+        }
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.dir)
+            .args(["ls-files", "--error-unmatch", "--"])
+            .arg(format!(":(icase){relative}"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_or(true, |s| s.success())
     }
 
     pub(crate) fn host(&self) -> Option<String> {

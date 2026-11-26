@@ -1,6 +1,6 @@
 //! The store as a git repository: a commit on every write, the mirror, and the push.
 
-use crate::store::{MACHINE_LOCAL, Store};
+use crate::store::{MACHINE_LOCAL, Store, now};
 #[cfg(feature = "host")]
 use crate::sync;
 use anyhow::{Context, Result};
@@ -50,23 +50,51 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
             ])
             .output()
             .context("git is not on PATH")?;
+        // A plugin moves as a folder, so no file of it is left to run
         let mut aside = std::collections::BTreeSet::new();
         for file in tracked.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
             let file = String::from_utf8_lossy(file).to_string();
-            git_quietly(store, &["rm", "--cached", "--quiet", "--", &file]);
-            // A plugin moves as a folder, so no file of it is left to run
-            let top = match file.strip_prefix("plugins/") {
-                Some(rest) => format!("plugins/{}", rest.split('/').next().unwrap_or(rest)),
-                None => file,
+            let top = match file.split_once('/') {
+                Some((dir, rest)) if dir.eq_ignore_ascii_case("plugins") => {
+                    format!("{dir}/{}", rest.split('/').next().unwrap_or(rest))
+                }
+                _ => file,
             };
             aside.insert(top);
         }
-        for path in aside {
+        // Moved first and only then untracked, so a pulled file is never left in place untracked
+        for (n, path) in aside.into_iter().enumerate() {
             let from = store.dir.join(&path);
-            if from.exists() {
-                std::fs::rename(&from, store.dir.join(format!("{path}.from-git")))?;
-                eprintln!("{path} came from git, so passbox moved it to {path}.from-git");
+            let to = store.dir.join(format!("{path}.from-git-{}-{n}", now()));
+            if from.exists() && std::fs::rename(&from, &to).is_err() {
+                let gone = if from.is_dir() {
+                    std::fs::remove_dir_all(&from)
+                } else {
+                    std::fs::remove_file(&from)
+                };
+                if let Err(e) = gone {
+                    eprintln!("could not set {path} aside or remove it: {e}");
+                    continue;
+                }
+                eprintln!("{path} came from git and could not be moved, so passbox removed it");
+            } else if to.exists() {
+                eprintln!(
+                    "{path} came from git, so passbox moved it to {}",
+                    to.display()
+                );
             }
+            git_quietly(
+                store,
+                &[
+                    "rm",
+                    "-r",
+                    "--cached",
+                    "--quiet",
+                    "--ignore-unmatch",
+                    "--",
+                    &path,
+                ],
+            );
         }
     }
     Ok(())

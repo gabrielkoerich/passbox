@@ -164,7 +164,44 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     assert_eq!(tracked, "", "a plugin is still tracked");
     // What git brought is moved aside, never run, and never deleted
     assert!(!cli.path().join("plugins/demo").exists());
-    assert!(cli.path().join("plugins/demo.from-git/run.sh").exists());
+    let aside: Vec<String> = std::fs::read_dir(cli.path().join("plugins"))
+        .unwrap()
+        .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().to_string()))
+        .filter(|name| name.starts_with("demo.from-git-"))
+        .collect();
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert!(
+        cli.path()
+            .join("plugins")
+            .join(&aside[0])
+            .join("run.sh")
+            .exists()
+    );
+}
+
+/* A pull writes whatever a commit tracks, in any case, and the Mac's disk ignores case. A `Host`
+file git brought names a broker someone else runs, so it is ignored and the store answers here */
+#[test]
+fn a_host_file_git_brought_in_another_case_is_ignored() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    cli.run(&["git", "init"], None).unwrap();
+    std::fs::write(cli.path().join("Host"), "127.0.0.1:9").unwrap();
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(cli.path())
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    git(&["add", "-f", "Host"]);
+    git(&["commit", "-q", "-m", "pulled"]);
+
+    assert_eq!(cli.run(&["ls"], None).unwrap(), "a/b\n");
 }
 
 #[test]
