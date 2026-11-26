@@ -19,8 +19,8 @@ fn ignored() -> impl Iterator<Item = &'static str> {
 }
 
 /* A .gitignore from an older passbox misses later lines, and a file it let in stays tracked after
-its line is added. A pull would then write it back, which for plugins/ is code the broker runs,
-so missing lines are added and anything ignored is taken out of the index */
+its line is added, so missing lines are added and anything ignored is taken out of the index. A
+pull still writes a path an incoming commit adds, which this does not stop */
 pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
     let path = store.dir.join(".gitignore");
     let text = std::fs::read_to_string(&path).unwrap_or_default();

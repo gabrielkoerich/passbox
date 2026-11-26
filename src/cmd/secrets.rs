@@ -324,13 +324,7 @@ fn restore_version(
     let (_, path) = versions
         .get(index)
         .with_context(|| format!("no version {index}"))?;
-    let bytes = std::fs::read(path)?;
-    store.keep_version(&id)?;
-    store::write_private(&store.secret_path(&id), &bytes)?;
-    let tomb = store.tomb_path(&id);
-    if tomb.exists() {
-        std::fs::remove_file(tomb)?;
-    }
+    store.restore_version(&id, path, key)?;
     eprintln!("restored {name}");
     Ok(())
 }

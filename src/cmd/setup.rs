@@ -357,6 +357,18 @@ pub(crate) fn machine_add(store: &Store) -> Result<()> {
             store.se_wrap_path().display()
         );
     }
+    /* This Mac takes the store from a copy, which may hold a wrap anyone could have made for a key of
+    their own. Only a person comparing the key with a Mac already using the store can tell, so it is
+    shown and confirmed before it is pinned, and nothing unsealed in the copy is adopted */
+    eprintln!("This store's key is {}", store.fingerprint()?);
+    eprintln!("On a Mac already using it, `cat ~/.passbox/recipient.pin` must show the same.");
+    if !matches!(
+        ask("Same key? [y/N] ")?.trim().to_lowercase().as_str(),
+        "y" | "yes"
+    ) {
+        bail!("not bound, the store key did not match");
+    }
+    store.join()?;
     let key = if store.has_yubikey_wrap() && yubikey::installed() {
         eprintln!("Touch the YubiKey to bind this Mac.");
         store.unlock_with_yubikey()?

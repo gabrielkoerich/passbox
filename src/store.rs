@@ -131,6 +131,35 @@ impl Store {
     fn sealed(&self) -> bool {
         self.signed_path().exists()
     }
+
+    /// A Mac joining a store adopts nothing unsealed from the copy it was given, which may have had
+    /// its sealed files taken out and its own planted
+    #[cfg(feature = "host")]
+    pub(crate) fn join(&self) -> Result<()> {
+        if self.sealed() {
+            return Ok(());
+        }
+        write_private(&self.signed_path(), b"")
+    }
+
+    /// The store's public key as this copy names it, for a person to compare across Macs
+    #[cfg(feature = "host")]
+    pub(crate) fn fingerprint(&self) -> Result<String> {
+        let raw = fs::read_to_string(self.recipient_path())
+            .with_context(|| format!("no store at {}", self.dir.display()))?;
+        Ok(raw.trim().to_string())
+    }
+
+    /// An earlier version written back as the current one, sealed, since a version can predate sealing
+    pub(crate) fn restore_version(
+        &self,
+        id: &str,
+        version: &Path,
+        key: &x25519::Identity,
+    ) -> Result<()> {
+        let secret = load_path(version, key)?;
+        self.put(id, &secret, key)
+    }
     fn recovery_path(&self) -> PathBuf {
         self.wraps_dir().join("recovery.age")
     }
@@ -298,15 +327,14 @@ impl Store {
     pub(crate) fn recipient(&self) -> Result<x25519::Recipient> {
         let raw = fs::read_to_string(self.recipient_path())
             .with_context(|| format!("no store at {}, run `passbox init`", self.dir.display()))?;
-        if let Ok(pin) = fs::read_to_string(self.pin_path())
-            && pin.trim() != raw.trim()
-        {
-            bail!(
-                "wraps/recipient is not the key this store opens with, a synced copy may have \
-                 replaced it, so nothing was written. Unlocking the store puts the right one back"
-            );
-        }
-        x25519::Recipient::from_str(raw.trim()).map_err(|e| anyhow!("bad recipient file: {e}"))
+        // Once this Mac has pinned the store's key, a swapped wraps/recipient changes nothing here
+        let pinned = fs::read_to_string(self.pin_path()).unwrap_or_default();
+        let text = if pinned.trim().is_empty() {
+            raw.trim()
+        } else {
+            pinned.trim()
+        };
+        x25519::Recipient::from_str(text).map_err(|e| anyhow!("bad recipient file: {e}"))
     }
 
     /* wraps/recipient and the wraps sync, so a copy could swap either. The pin, which never syncs,
@@ -344,16 +372,18 @@ impl Store {
     }
 
     /* Once per Mac, as it upgrades, in place so a tombstone and the versions stay as they are. The
-    files are trusted and sealed only on the store's first upgrade: every file opens and none is
-    sealed. A sealed file means another Mac upgraded, and a file that does not open may be a sealed
-    one a copy wrecked to make the store look new, so either way nothing unsealed is trusted */
+    files are trusted and sealed only on the store's first upgrade, when none is sealed. A sealed
+    file means another Mac upgraded, so nothing unsealed is trusted. A file that does not open says
+    nothing either way and is left as it is, so one broken file cannot lock the store. The client
+    build only reads what a Mac sealed, and never adopts */
     fn seal_all(&self, key: &x25519::Identity) -> Result<()> {
         let mut files = Vec::new();
-        let mut first = true;
+        let mut first = cfg!(feature = "host");
         for id in self.ids_with_files()? {
             match open(&self.secret_path(&id), &id, key) {
                 Ok((secret, false)) => files.push((id, secret)),
-                Ok((_, true)) | Err(_) => first = false,
+                Ok((_, true)) => first = false,
+                Err(_) => {}
             }
         }
         if first {
@@ -547,8 +577,8 @@ impl Store {
         }
     }
 
-    /* serde skips a field the struct does not name without building it, so the value is never
-    copied out of the decrypted buffer, which wipes itself when dropped. */
+    /// Each name from an entry that opens and is sealed, so checking the seal decrypts every value,
+    /// which the wiping allocator clears when it is freed
     pub(crate) fn names(&self, key: &x25519::Identity) -> Result<Vec<String>> {
         let mut out: Vec<String> = self
             .secrets(key)?
@@ -764,7 +794,13 @@ fn matches(key: &x25519::Identity, id: &str, secret: &Secret, given: &str) -> bo
 
 /// Write through a temporary file so a crash cannot leave a half written secret.
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
+    // Its own temporary file, so two writers of one path, such as a prompt and a phone, never share it
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().to_string());
+    let tmp = path.with_file_name(format!(".{name}.{}-{n}.tmp", std::process::id()));
     fs::write(&tmp, bytes)?;
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
     fs::rename(&tmp, path)?;
@@ -1016,40 +1052,66 @@ mod tests {
         assert_eq!(store.names(&key).unwrap(), ["wallet/main"]);
     }
 
-    /* A copy that wrecks the sealed files, so they no longer open, and plants an unsealed one must not
-    make a Mac with no marker take the store for one never sealed and seal the planted file */
+    /// A file that will not open, broken or planted, is left alone, so it cannot keep the store's
+    /// own files from being sealed on the upgrade and then refused
     #[test]
-    fn wrecked_sealed_files_do_not_make_a_store_look_unsealed() {
+    fn one_broken_file_does_not_lock_the_store_on_upgrade() {
         let (_tmp, store, key) = store();
-        let id = new_id();
-        store
-            .put(&id, &secret("wallet/main", "mine"), &key)
-            .unwrap();
-        write_private(&store.secret_path(&id), b"not age").unwrap();
-        let theirs = planted(&store, &secret("wallet/main", "theirs"), None);
+        fs::remove_file(store.pin_path()).unwrap();
         fs::remove_file(store.signed_path()).unwrap();
+        let mine = planted(&store, &secret("wallet/main", "mine"), None);
+        write_private(&store.secret_path(&new_id()), b"not age").unwrap();
 
+        store
+            .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
+            .unwrap();
+        assert_eq!(store.load(&mine, &key).unwrap().value, "mine");
+        assert_eq!(store.names(&key).unwrap(), ["wallet/main"]);
+    }
+
+    /* A Mac joining takes the store from a copy that may have had its sealed files taken out and its
+    own planted, so it adopts nothing unsealed */
+    #[test]
+    fn a_joining_mac_adopts_nothing_unsealed() {
+        let (_tmp, store, key) = store();
+        fs::remove_file(store.pin_path()).unwrap();
+        fs::remove_file(store.signed_path()).unwrap();
+        let theirs = planted(&store, &secret("github/token", "theirs"), None);
+
+        store.join().unwrap();
         store
             .unlock_with_passphrase(SecretString::from("hunter2".to_string()))
             .unwrap();
         assert!(
             store.load(&theirs, &key).is_err(),
-            "the planted file was sealed"
+            "a joining Mac adopted a planted file"
         );
     }
 
-    /* A synced copy that swapped wraps/recipient for its own key would get every later write. Writes
-    refuse it, and opening the store puts the store's own back */
+    /// A version from before sealing is written back sealed, so restoring it does not hide it
     #[test]
-    fn a_swapped_recipient_is_refused_and_put_back_on_unlock() {
+    fn an_unsealed_old_version_is_restored_sealed() {
+        let (_tmp, store, key) = store();
+        let id = planted(&store, &secret("db/pass", "old"), None);
+        store.keep_version(&id).unwrap();
+        store.put(&id, &secret("db/pass", "new"), &key).unwrap();
+        let (_, old) = store.versions(&id).unwrap().into_iter().next().unwrap();
+
+        store.restore_version(&id, &old, &key).unwrap();
+        assert_eq!(store.load(&id, &key).unwrap().value, "old");
+    }
+
+    /* A synced copy that swapped wraps/recipient for its own key would get every later write. The pin
+    still names the store's key, and opening the store puts the store's own file back */
+    #[test]
+    fn a_swapped_recipient_changes_nothing_and_is_put_back_on_unlock() {
         let (_tmp, store, key) = store();
         let theirs = x25519::Identity::generate().to_public().to_string();
         write_private(&store.recipient_path(), theirs.as_bytes()).unwrap();
-        let err = store.recipient().unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("not the key this store opens with"),
-            "{err}"
+        // The pin names the recipient, so a write or an audit line still goes to the store's key
+        assert_eq!(
+            store.recipient().unwrap().to_string(),
+            key.to_public().to_string()
         );
 
         store

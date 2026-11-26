@@ -825,7 +825,11 @@ mod tests {
         fs::write(remote.path().join("wraps/recipient"), theirs.to_string()).unwrap();
         sync(&one, remote.path()).unwrap();
 
-        assert!(one.recipient().is_err(), "a swapped recipient was taken");
+        assert_eq!(
+            one.recipient().unwrap().to_string(),
+            key.to_public().to_string(),
+            "a swapped recipient was taken"
+        );
         assert_eq!(
             one.find("wallet/main", &key).unwrap().unwrap().1.value,
             "mine"
