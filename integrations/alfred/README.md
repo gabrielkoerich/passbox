@@ -25,7 +25,7 @@ Or download it from the [latest release](https://github.com/gabrielkoerich/passb
 
 So one use is two fingerprints. The Touch ID prompt takes focus, and Alfred hides when it loses focus, so `pbx` lists the names while Alfred is closed and then reopens it with them. You type the name into the box that reopens, not after `pbx`. The names reach the reopened box as a workflow variable, so they never touch disk.
 
-Picking a field is three fingerprints: the names, the fields and the copy. `passbox fields` returns field names and never a value, so the reopened box, Alfred's debugger log and the Script Filter's output hold names only. The value goes from the broker to the clipboard as a concealed, transient item, as a copy of the password does.
+Picking a field is three fingerprints: the names, the fields and the copy. `passbox fields` returns the names of an entry's `key: value` lines and none of their values, so the reopened box, Alfred's debugger log and the Script Filter's output hold names only. It lists only short, plain names, which keeps most free text that happens to hold a colon out of the list. That filter is a heuristic: a short note line before a colon can still show as a name. The value goes from the broker to the clipboard as a concealed, transient item, as a copy of the password does.
 
 Rejected: listing inside the Script Filter. The prompt closes Alfred before the names arrive, and typing `pbx` again asks again.
 

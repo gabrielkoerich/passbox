@@ -579,13 +579,18 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 impl Secret {
-    /// A blob is one text, such as a note, so it lists no fields and a picker copies it whole
-    pub(crate) fn labels(&self) -> Vec<String> {
+    /// A note is one text, so it lists no fields and a picker copies it whole. Any other entry
+    /// with no name to list fails, so a picker never mistakes it for a note
+    pub(crate) fn field_names(&self) -> Result<Vec<String>> {
         if self.blob {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
-        labels(&self.value)
+        let names = labels(&self.value);
+        if names.is_empty() {
+            bail!("{} has no field to copy", self.name);
+        }
+        Ok(names)
     }
 
     /// One field, and none from a note, which is one text

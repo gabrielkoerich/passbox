@@ -3,9 +3,9 @@
 use super::Request;
 use super::Shared;
 use super::audit::{Entry, append_audit_to};
-use crate::store::{self, Store};
+use crate::store::{self, Secret, Store};
 use anyhow::{Result, anyhow, bail};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // A child mints with no prompt, so a holder could otherwise fill the broker's memory with them
 const MAX_CHILDREN: usize = 64;
@@ -49,6 +49,8 @@ fn token_lookup(
 /// What one token opens: the values it was granted, when it stops working, and the approval behind it
 pub(super) struct TokenGrant {
     pub(super) values: HashMap<String, String>,
+    // The names that are notes, which refuse a field read under the token as under a prompt
+    pub(super) notes: HashSet<String>,
     // The secret file each value came from, so a read after an update or delete is not served stale
     pub(super) stamps: HashMap<String, (String, u64)>,
     pub(super) expires: u64,
@@ -95,8 +97,14 @@ fn delegate(
         )));
     }
 
+    let notes = names
+        .iter()
+        .filter(|n| parent.notes.contains(*n))
+        .cloned()
+        .collect();
     Some(Ok(TokenGrant {
         values,
+        notes,
         stamps,
         expires,
         grant: parent.grant.clone(),
@@ -162,7 +170,7 @@ pub(super) fn token_value(
     store: &Store,
     token: &str,
     name: &str,
-) -> Option<(String, String)> {
+) -> Option<(Secret, String)> {
     let now = store::now();
     let mut tokens = tokens.lock().expect("tokens");
     tokens.retain(|_, g| now < g.expires);
@@ -176,7 +184,15 @@ pub(super) fn token_value(
         }
     }
     let value = token_lookup(&tokens, token, name, now)?;
-    Some((value, tokens[token].grant.clone()))
+    let grant = &tokens[token];
+    let secret = Secret {
+        name: name.to_string(),
+        value,
+        created: 0,
+        updated: 0,
+        blob: grant.notes.contains(name),
+    };
+    Some((secret, grant.grant.clone()))
 }
 
 #[cfg(test)]
@@ -189,6 +205,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            notes: HashSet::new(),
             stamps: HashMap::new(),
             expires,
             grant: "root".into(),

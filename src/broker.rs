@@ -25,9 +25,7 @@ pub(crate) use audit::append_audit;
 pub(crate) use caller::own_ancestry;
 #[cfg(feature = "host")]
 pub(crate) use client::plugin_approve;
-pub(crate) use client::{
-    export, fields, grant, list, plugin_run_remote, request, request_field, request_token,
-};
+pub(crate) use client::{export, fields, grant, list, plugin_run_remote, request, request_token};
 #[cfg(feature = "host")]
 pub(crate) use client::{phone_open, phone_test};
 #[cfg(feature = "host")]
@@ -38,7 +36,7 @@ pub(crate) use server::serve;
 #[cfg(feature = "host")]
 use crate::project::{self, Grant, MAX_GRANT_SECS};
 #[cfg(feature = "host")]
-use crate::store::{self, Store};
+use crate::store::{self, Secret, Store};
 #[cfg(feature = "host")]
 use age::x25519;
 #[cfg(feature = "host")]
@@ -155,6 +153,9 @@ pub(crate) struct Response {
     pub ok: bool,
     pub value: Option<String>,
     pub error: Option<String>,
+    /// The field the value was cut to, absent from a broker that cuts none
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
 }
 
 #[cfg(feature = "host")]
@@ -335,7 +336,7 @@ impl Broker {
             bail!("no secret named {}", request.name);
         };
         self.audit(&key, &request.agent, &request.name, "fields listed", caller)?;
-        Ok(secret.labels().join("\n"))
+        Ok(secret.field_names()?.join("\n"))
     }
 
     /* One approval covers a name or a whole namespace, and yields a token that opens exactly
@@ -370,6 +371,7 @@ impl Broker {
 
         let mut values = HashMap::new();
         let mut stamps = HashMap::new();
+        let mut notes = std::collections::HashSet::new();
         for name in &wanted {
             let Some((id, secret)) = self.store.find(name, &key)? else {
                 continue;
@@ -382,6 +384,9 @@ impl Broker {
 
             stamps.insert(name.clone(), (id.clone(), self.store.stamp(&id)?));
             values.insert(name.clone(), secret.value.clone());
+            if secret.blob {
+                notes.insert(name.clone());
+            }
         }
         if values.is_empty() {
             bail!("{} matched no secrets", request.names.join(", "));
@@ -394,6 +399,7 @@ impl Broker {
             token.clone(),
             TokenGrant {
                 values,
+                notes,
                 stamps,
                 expires: store::now() + ttl,
                 grant: grant.clone(),
@@ -417,7 +423,7 @@ impl Broker {
         Ok(format!("{token}\n{}", granted.join("\n")))
     }
 
-    fn value_for_token(&self, token: &str, name: &str) -> Option<(String, String)> {
+    fn value_for_token(&self, token: &str, name: &str) -> Option<(Secret, String)> {
         token_value(&self.tokens, &self.store, token, name)
     }
 
@@ -427,9 +433,14 @@ impl Broker {
         caller: &str,
         cwd: Option<&std::path::Path>,
     ) -> Result<String> {
+        // The export encrypts the whole key, so a field of it is not a thing it can hand out
+        if !request.field.is_empty() && !request.passphrase.is_empty() {
+            bail!("an export takes the whole key, not one field of it");
+        }
+
         // A token is the narrowest thing that can answer, so it is tried first
         if !request.token.is_empty()
-            && let Some((value, grant)) = self.value_for_token(&request.token, &request.name)
+            && let Some((secret, grant)) = self.value_for_token(&request.token, &request.name)
         {
             let to = self.store.recipient()?;
             append_audit_to(
@@ -444,10 +455,10 @@ impl Broker {
                     ..Entry::default()
                 },
             )?;
-            let value = sshkey::release(&request.name, &value, "")?;
+            let value = sshkey::release(&request.name, &secret.value, "")?;
             return match request.field.as_str() {
                 "" => Ok(value),
-                want => store::pick(&request.name, &value, want),
+                want => secret.field(want),
             };
         }
 

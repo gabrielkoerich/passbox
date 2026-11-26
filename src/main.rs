@@ -454,17 +454,13 @@ fn brokered(store: &Store) -> bool {
 /// The broker owns windows and the audit log, so every read goes through it when it can.
 /// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
 fn read_secret_as(store: &Store, name: &str, field: Option<&str>, agent: &str) -> Result<String> {
-    match (brokered(store), field) {
-        (true, None) => return broker::request(store, name, agent),
-        (true, Some(want)) => {
-            let value = broker::request_field(store, name, agent, want)?;
-            // A broker before 2.4 ignores the field and sends the whole entry, and a field is one line
-            if value.contains('\n') {
-                return store::pick(name, &value, want);
-            }
-            return Ok(value);
-        }
-        (false, _) => {}
+    if brokered(store) {
+        let (value, cut) = broker::request(store, name, agent, field.unwrap_or_default())?;
+        // A broker older than the field sends the whole entry, so the field is cut here
+        return match field {
+            Some(want) if !cut => store::pick(name, &value, want),
+            _ => Ok(value),
+        };
     }
     let key = unlock(store, &format!("release the password for {name}"))?;
     let (_, secret) = store

@@ -93,6 +93,63 @@ fn a_prompt_left_open_holds_up_no_token_read_and_raises_no_second_prompt() {
 
 const SHOW_AB: &str = "printf %s,%s \"$A\" \"$B\"";
 
+/* Only the field leaves the broker, after a prompt or under a token, and the reply says it was cut.
+A note under a token refuses a field as it does after a prompt */
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_field_read_sends_only_that_field_by_prompt_and_by_token() {
+    let bound = Bound::new();
+    bound
+        .run(
+            &["add", "web/login"],
+            Some("hunter2\nusername: gb\nsome note"),
+        )
+        .unwrap();
+    bound
+        .run(
+            &["add", "notes/wifi", "--blob"],
+            Some("home network\npass: abc\n"),
+        )
+        .unwrap();
+    // A read starts the broker, which a raw request needs listening
+    bound.read("demo/one").unwrap();
+    let ask = |token: &str, name: &str, extra: &str| {
+        ask_socket(
+            &bound,
+            &format!(r#"{{"name":"{name}","agent":"raw","op":"get","token":"{token}"{extra}}}"#),
+        )
+    };
+    let only_the_username = |reply: &str| {
+        assert!(reply.contains(r#""value":"gb""#), "{reply}");
+        assert!(reply.contains(r#""field":"username""#), "{reply}");
+        assert!(
+            !reply.contains("hunter2") && !reply.contains("some note"),
+            "{reply}"
+        );
+    };
+
+    only_the_username(&ask("", "web/login", r#","field":"username""#));
+
+    let token = bound
+        .run(&["grant", "web/login", "notes/wifi", "--for", "60"], None)
+        .unwrap();
+    let token = token.trim();
+    only_the_username(&ask(token, "web/login", r#","field":"username""#));
+    let note = ask(token, "notes/wifi", r#","field":"password""#);
+    assert!(note.contains("notes/wifi is a note"), "{note}");
+    assert!(!note.contains("home network"), "{note}");
+
+    let export = ask(
+        "",
+        "web/login",
+        r#","field":"username","passphrase":"twelve chars plus""#,
+    );
+    assert!(export.contains("an export takes the whole key"), "{export}");
+}
+
 /// The broker cuts the field out, so asking a note for one is refused there and audited
 #[test]
 #[cfg_attr(

@@ -8,13 +8,15 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
-pub(crate) fn request(store: &Store, name: &str, agent: &str) -> Result<String> {
-    request_token(store, name, agent, crate::held_token().unwrap_or_default())
-}
-
-/// One field, which the broker cuts out so the rest of the entry never reaches this process
-pub(crate) fn request_field(store: &Store, name: &str, agent: &str, field: &str) -> Result<String> {
-    ask_broker(
+/// A read, of the whole entry or of one `field`, which the broker cuts out so the rest of the entry
+/// never reaches this process. The flag says it did, since a broker older than the field cannot
+pub(crate) fn request(
+    store: &Store,
+    name: &str,
+    agent: &str,
+    field: &str,
+) -> Result<(String, bool)> {
+    let response = ask(
         store,
         &Request {
             name: name.to_string(),
@@ -29,7 +31,12 @@ pub(crate) fn request_field(store: &Store, name: &str, agent: &str, field: &str)
             passphrase: String::new(),
             field: field.to_string(),
         },
-    )
+    )?;
+    let cut = !field.is_empty() && response.field.as_deref() == Some(field);
+    let value = response
+        .value
+        .ok_or_else(|| anyhow!("broker sent no value"))?;
+    Ok((value, cut))
 }
 
 /// A read carrying a token the caller already holds, such as the one exec mints for its batch
@@ -225,6 +232,12 @@ pub(crate) fn phone_test(store: &Store) -> Result<String> {
 
 /// Ask a running broker, starting one if the socket is dead.
 fn ask_broker(store: &Store, request: &Request) -> Result<String> {
+    ask(store, request)?
+        .value
+        .ok_or_else(|| anyhow!("broker sent no value"))
+}
+
+fn ask(store: &Store, request: &Request) -> Result<Response> {
     /* A configured host means this machine has no store of its own worth unlocking, so the
     request goes over the tailnet to one that has. The reply is the value, and the finger that
     released it was somewhere else. */
@@ -239,7 +252,7 @@ fn ask_broker(store: &Store, request: &Request) -> Result<String> {
         writeln!(stream, "{}", serde_json::to_string(request)?)?;
         let mut line = String::new();
         BufReader::new(stream.try_clone()?).read_line(&mut line)?;
-        return unwrap_response(&line);
+        return checked(&line);
     }
 
     let socket = store.socket_path();
@@ -262,11 +275,11 @@ fn ask_broker(store: &Store, request: &Request) -> Result<String> {
 
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
-    unwrap_response(&line)
+    checked(&line)
 }
 
 /// The same reply shape whether it arrived over a socket or the tailnet
-fn unwrap_response(line: &str) -> Result<String> {
+fn checked(line: &str) -> Result<Response> {
     let response: Response = serde_json::from_str(line).context("broker sent nonsense")?;
     if !response.ok {
         bail!(
@@ -274,9 +287,7 @@ fn unwrap_response(line: &str) -> Result<String> {
             response.error.unwrap_or_else(|| "refused".to_string())
         );
     }
-    response
-        .value
-        .ok_or_else(|| anyhow!("broker sent no value"))
+    Ok(response)
 }
 
 #[cfg(feature = "host")]

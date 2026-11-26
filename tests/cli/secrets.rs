@@ -94,6 +94,12 @@ fn fields_lists_the_labels_and_no_value() {
     cli.run(&["add", "notes/wifi", "--blob"], Some("home\npass: abc\n"))
         .unwrap();
     assert_eq!(cli.run(&["fields", "notes/wifi"], None).unwrap(), "");
+
+    // An entry with nothing to list is not a note, so it fails rather than copying whole
+    cli.run(&["add", "misc/pin"], Some("\nmy pin is 4821: bank"))
+        .unwrap();
+    let err = cli.run(&["fields", "misc/pin"], None).unwrap_err();
+    assert!(err.contains("misc/pin has no field to copy"), "{err}");
 }
 
 /* Alfred's ⌘⏎ asks every entry for its password. A note has none, so asking it for a field fails

@@ -245,7 +245,9 @@ pub(crate) fn list_fields(store: &Store, name: &str) -> Result<()> {
         let (_, secret) = store
             .find(name, &key)?
             .with_context(|| format!("no secret named {name}"))?;
-        secret.labels()
+        let caller = broker::own_ancestry();
+        broker::append_audit(store, &agent(), name, "fields listed", &caller, "")?;
+        secret.field_names()?
     };
     let mut out = std::io::stdout();
     for label in labels {

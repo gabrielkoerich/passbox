@@ -68,7 +68,7 @@
 				<key>modifiers</key>
 				<integer>1048576</integer>
 				<key>modifiersubtext</key>
-				<string>Copy the username</string>
+				<string>Copy the password</string>
 				<key>vitoclose</key>
 				<false/>
 			</dict>
@@ -394,7 +394,7 @@
 		</dict>
 	</array>
 	<key>readme</key>
-	<string>Type pbx and touch the sensor. Alfred closes for the prompt and reopens with your secret names. Pick one and press return to copy the password, or cmd-return for the username. The clipboard clears itself after 20 seconds.</string>
+	<string>Type pbx and touch the sensor. Alfred closes for the prompt and reopens with your secret names. Press cmd-return on one to copy its password, or return to list its fields and copy one of them. A note copies whole. The clipboard clears itself after 20 seconds.</string>
 	<key>uidata</key>
 	<dict>
 		<key>5A1F0002-0000-4000-8000-000000000002</key>
