@@ -1,0 +1,7 @@
+# `cargo deny check advisories`, which CI runs. It checks the crates a build uses against RustSec,
+# which lists Rust advisories that Dependabot misses or dates wrong
+[advisories]
+ignore = [
+    # crypto-bigint 0.5 comes through elliptic-curve 0.13 from age 0.12 and ssh-key 0.6, and neither has a release on the fixed 0.7
+    { id = "RUSTSEC-2026-0387", reason = "no age or ssh-key release uses the fixed crypto-bigint yet, tracked in #107" },
+]

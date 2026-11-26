@@ -158,6 +158,28 @@ pub(crate) struct Response {
     pub field: Option<String>,
 }
 
+/// A value, and the field it was cut to. Only the code that cuts sets the field, and the reply
+/// carries it, so the client never trusts a mark the cut did not earn
+#[cfg(feature = "host")]
+struct Answer {
+    value: String,
+    field: Option<String>,
+}
+
+#[cfg(feature = "host")]
+impl Answer {
+    fn whole(value: String) -> Self {
+        Answer { value, field: None }
+    }
+
+    fn cut(value: String, field: &str) -> Self {
+        Answer {
+            value,
+            field: Some(field.to_string()),
+        }
+    }
+}
+
 #[cfg(feature = "host")]
 struct Broker {
     store: Store,
@@ -289,9 +311,9 @@ impl Broker {
         caller: &str,
         cwd: Option<&std::path::Path>,
         origin: Origin,
-    ) -> Result<String> {
-        match request.op {
-            Op::Get => self.handle_get(request, caller, cwd),
+    ) -> Result<Answer> {
+        let value = match request.op {
+            Op::Get => return self.handle_get(request, caller, cwd),
             Op::List => self.handle_list(request, caller),
             Op::Fields => self.handle_fields(request, caller),
             Op::Grant => self.handle_grant(request, caller),
@@ -305,7 +327,8 @@ impl Broker {
             }
             // Answered in `reply`, since a phone must get through while a prompt holds this lock
             Op::Phone => bail!("a phone step does not take the broker's lock"),
-        }
+        };
+        value.map(Answer::whole)
     }
 
     /// Names are inside the ciphertext, so listing needs the key and therefore a prompt.
@@ -438,7 +461,7 @@ impl Broker {
         request: &Request,
         caller: &str,
         cwd: Option<&std::path::Path>,
-    ) -> Result<String> {
+    ) -> Result<Answer> {
         // The export encrypts the whole key, so a field of it is not a thing it can hand out
         if !request.field.is_empty() && !request.passphrase.is_empty() {
             bail!("an export takes the whole key, not one field of it");
@@ -450,8 +473,8 @@ impl Broker {
         {
             let answer = sshkey::release(&request.name, &secret.value, "").and_then(|value| {
                 match request.field.as_str() {
-                    "" => Ok(value),
-                    want => secret.field(want),
+                    "" => Ok(Answer::whole(value)),
+                    want => secret.field(want).map(|field| Answer::cut(field, want)),
                 }
             });
             let to = self.store.recipient()?;
@@ -498,10 +521,10 @@ impl Broker {
                 return Err(e);
             }
         };
-        let value = match request.field.as_str() {
-            "" => value,
+        let answer = match request.field.as_str() {
+            "" => Answer::whole(value),
             want => match secret.field(want) {
-                Ok(field) => field,
+                Ok(field) => Answer::cut(field, want),
                 Err(e) => {
                     self.audit(&key, &request.agent, &request.name, "withheld", caller)?;
                     return Err(e);
@@ -514,7 +537,7 @@ impl Broker {
             "exported"
         };
         self.audit(&key, &request.agent, &request.name, outcome, caller)?;
-        Ok(value)
+        Ok(answer)
     }
 }
 
