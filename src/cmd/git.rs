@@ -28,7 +28,12 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
     if !in_git(store) {
         return Ok(());
     }
-    let info = store.dir.join(".git/info");
+    // A git that will not run cannot have pulled anything since it last did, so passbox goes on
+    let Some(git_dir) = checked(store, &["rev-parse", "--absolute-git-dir"]) else {
+        return Ok(());
+    };
+    let git_dir = std::path::PathBuf::from(String::from_utf8_lossy(&git_dir).trim());
+    let info = git_dir.join("info");
     std::fs::create_dir_all(&info)?;
     let exclude = info.join("exclude");
     let text = std::fs::read_to_string(&exclude).unwrap_or_default();
@@ -44,22 +49,12 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
         std::fs::write(&exclude, format!("{text}{gap}{}\n", missing.join("\n")))?;
     }
 
-    let tracked = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&store.dir)
-        .args(["ls-files", "-z", "--cached"])
-        .output()
-        .context("git is not on PATH")?;
-    if !tracked.status.success() {
-        bail!(
-            "git could not list what it tracks in {}: {}",
-            store.dir.display(),
-            String::from_utf8_lossy(&tracked.stderr).trim()
-        );
-    }
+    let Some(tracked) = checked(store, &["ls-files", "-z", "--cached"]) else {
+        return Ok(());
+    };
     // A plugin moves as a folder, so no file of it is left to run
     let mut aside = std::collections::BTreeSet::new();
-    for file in tracked.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+    for file in tracked.split(|b| *b == 0).filter(|f| !f.is_empty()) {
         let file = String::from_utf8_lossy(file).to_string();
         if !kept_out(&file) {
             continue;
@@ -75,12 +70,13 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
     let mut stuck = Vec::new();
     for (n, path) in aside.into_iter().enumerate() {
         let from = store.dir.join(&path);
-        let to = store
-            .dir
-            .join(".git/passbox/from-git")
+        let to = git_dir
+            .join("passbox/from-git")
             .join(format!("{path}-{}-{n}", now()));
+        // An Enclave wrap opens nothing off the Mac whose Enclave made it, and this Mac's own is needed
+        let in_place = path_matches("/wraps/se-*.json", &path);
         // A link is moved as a link, never followed
-        if std::fs::symlink_metadata(&from).is_ok() {
+        if !in_place && std::fs::symlink_metadata(&from).is_ok() {
             let moved = to
                 .parent()
                 .map_or(Ok(()), std::fs::create_dir_all)
@@ -116,6 +112,30 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// What git prints for `args` in the store, or a warning when it will not run
+fn checked(store: &Store, args: &[&str]) -> Option<Vec<u8>> {
+    match std::process::Command::new("git")
+        .arg("-C")
+        .arg(&store.dir)
+        .args(args)
+        .output()
+    {
+        Ok(out) if out.status.success() => Some(out.stdout),
+        Ok(out) => {
+            eprintln!(
+                "git failed in {}, so the files it tracks were not checked: {}",
+                store.dir.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            None
+        }
+        Err(e) => {
+            eprintln!("git did not run, so the files it tracks were not checked: {e}");
+            None
+        }
+    }
 }
 
 /// A pulled .gitignore can unignore a machine local file, which `add -A` then stages. It leaves

@@ -31,26 +31,31 @@ pub(crate) fn run_sync(store: &Store, remote: Option<&str>) -> Result<()> {
         Some(given) => sync::Destination::guess(given),
         None => sync::default_destination(store)?,
     };
-    let remote = target;
+    let copied = copy(store, &kind, &target);
+    // Joining even when the copy was cut off, so the next unlock adopts nothing unsealed it brought
+    if joining && store.is_initialised() {
+        store.join()?;
+    }
+    copied
+}
 
+#[cfg(feature = "host")]
+fn copy(store: &Store, kind: &sync::Kind, remote: &str) -> Result<()> {
     match kind {
         // git carries its own history, so there is no directory to copy into
         sync::Kind::Git => git_push(store),
         sync::Kind::Rclone => {
-            sync::sync_via_rclone(store, &remote)?;
+            sync::sync_via_rclone(store, remote)?;
             git_push(store);
         }
         sync::Kind::Directory => {
-            let report = sync::sync(store, std::path::Path::new(&remote))?;
+            let report = sync::sync(store, std::path::Path::new(remote))?;
             eprintln!(
                 "{} sent, {} received, {remote}",
                 report.pushed, report.pulled
             );
             git_push(store);
         }
-    }
-    if joining && store.is_initialised() {
-        store.join()?;
     }
     Ok(())
 }
@@ -412,16 +417,29 @@ pub(crate) fn machine_add(store: &Store) -> Result<()> {
         eprintln!("Binding this Mac needs the recovery passphrase once.");
         store.unlock_with_passphrase(SecretString::from(ask("recovery passphrase: ")?))?
     };
-    // A copy no 2.4.2 or later passbox wrote to has no seal, and neither has one whose seals were taken out
+    /* A copy last written by passbox 2.4.1 or older has no seal, and one whose sync was cut off has
+    some. So has one someone planted files in or took seals out of, which only the person can tell
+    by the names, so they are shown before anything is adopted */
     let (unsealed, any_sealed) = store.by_seal(&key)?;
-    if !any_sealed && !unsealed.is_empty() {
-        eprintln!(
-            "This copy holds {} secrets and none is sealed. A copy last written by passbox 2.4.1 or \
-             older looks like this, and so does one whose seals someone took out.",
-            unsealed.len()
-        );
+    if !unsealed.is_empty() {
+        if any_sealed {
+            eprintln!(
+                "{} secrets in this copy are not sealed. A backup whose sync was cut off looks like \
+                 this, and so does one someone planted files in:",
+                unsealed.len()
+            );
+        } else {
+            eprintln!(
+                "None of the {} secrets in this copy is sealed. A copy last written by passbox 2.4.1 \
+                 or older looks like this, and so does one whose seals someone took out:",
+                unsealed.len()
+            );
+        }
+        for (_, secret) in &unsealed {
+            eprintln!("  {}", secret.name);
+        }
         if !matches!(
-            ask("Is this copy yours? Adopt them all? [y/N] ")?
+            ask("Are all of these yours? Adopt them? [y/N] ")?
                 .trim()
                 .to_lowercase()
                 .as_str(),

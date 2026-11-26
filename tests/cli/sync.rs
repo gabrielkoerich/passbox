@@ -177,6 +177,44 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     assert!(kept.exists(), "the set-aside plugin was lost");
 }
 
+/// An Enclave wrap an old .gitignore let git track leaves the index but stays, so Touch ID still works
+#[test]
+fn a_tracked_enclave_wrap_stays_in_place() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    cli.run(&["git", "init"], None).unwrap();
+    let wraps = cli.path().join("wraps");
+    std::fs::write(wraps.join("se-test.json"), "{}").unwrap();
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(cli.path())
+        .args(["add", "-f", "wraps/se-test.json"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+
+    cli.run(&["ls"], None).unwrap();
+    assert!(
+        wraps.join("se-test.json").exists(),
+        "the Enclave wrap was moved"
+    );
+    let tracked = cli
+        .run(&["git", "ls-files", "wraps/se-test.json"], None)
+        .unwrap();
+    assert_eq!(tracked, "");
+}
+
+/// A git that will not run has pulled nothing since it last did, so passbox still reads the store
+#[test]
+fn a_broken_git_does_not_stop_passbox() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    std::fs::write(cli.path().join(".git"), "gitdir: /nonexistent\n").unwrap();
+
+    assert_eq!(cli.run(&["ls"], None).unwrap(), "a/b\n");
+}
+
 /// A machine local file git brought that cannot be set aside stops every command, so it is never read
 #[test]
 fn a_git_file_that_cannot_be_set_aside_stops_passbox() {
