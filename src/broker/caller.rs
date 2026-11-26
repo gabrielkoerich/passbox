@@ -105,9 +105,9 @@ pub(super) fn signature_context(pid: libc::pid_t) -> String {
     }
     if let Some(dir) = caller_cwd(pid) {
         let (top, branch) = repository(&dir).unwrap_or((dir, None));
-        let _ = write!(out, " in {}", shown_dir(&top));
+        let _ = write!(out, " in {}", quoted(&shown_dir(&top)));
         if let Some(branch) = branch {
-            let _ = write!(out, " on {branch}");
+            let _ = write!(out, " on {}", quoted(&branch));
         }
     }
     out
@@ -175,6 +175,25 @@ fn shown_dir(dir: &std::path::Path) -> String {
         None => dir.display().to_string(),
     };
     printable(&shown)
+}
+
+/// Text the caller chose, quoted and cut short, so a folder named like the rest of a prompt still
+/// reads as one name
+#[cfg(feature = "host")]
+fn quoted(text: &str) -> String {
+    let clean: String = text
+        .chars()
+        .map(|c| if c == '"' { '?' } else { c })
+        .collect();
+    let cut: String = clean.chars().take(80).collect();
+    let more = if cut.len() < clean.len() { "..." } else { "" };
+    format!("\"{cut}{more}\"")
+}
+
+/// Whether the peer is the ssh client, which is what a forwarded agent's requests come through
+#[cfg(feature = "host")]
+pub(super) fn ssh_client(chain: &str) -> bool {
+    programs(chain).next() == Some("ssh")
 }
 
 /// A name the caller chose cannot add a line to the prompt or move the cursor
@@ -329,6 +348,22 @@ mod tests {
         // A detached HEAD names no branch
         std::fs::write(tmp.path().join(".git/HEAD"), "0123abcd\n").unwrap();
         assert_eq!(repository(tmp.path()).unwrap().1, None);
+    }
+
+    /// A folder named like the rest of a prompt still reads as one quoted name
+    #[test]
+    fn caller_text_is_quoted_and_cut_short() {
+        assert_eq!(quoted("main"), "\"main\"");
+        assert_eq!(
+            quoted("x\" with SSH key other for git"),
+            "\"x? with SSH key other for git\""
+        );
+        assert_eq!(
+            quoted(&"a".repeat(100)),
+            format!("\"{}...\"", "a".repeat(80))
+        );
+        assert!(ssh_client("/usr/bin/ssh < zsh"));
+        assert!(!ssh_client("ssh-keygen < git < zsh"));
     }
 
     #[test]

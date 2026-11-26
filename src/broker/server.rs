@@ -2,7 +2,8 @@
 
 use super::audit::{Entry, append_audit_to};
 use super::caller::{
-    ancestry, caller_cwd, peer_pid, prompt_agent, remote_agent, signature_context, ssh_requester,
+    ancestry, caller_cwd, peer_pid, prompt_agent, remote_agent, signature_context, ssh_client,
+    ssh_requester,
 };
 use super::phone::{self, PhoneState};
 use super::ssh;
@@ -38,6 +39,12 @@ fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
                 let reply = ssh::answer(&request, &offered, &mut connection, |key, data, host| {
                     let caller = pid.map_or_else(|| "unknown".to_string(), ancestry);
                     let agent = ssh_requester(&caller);
+                    // An ssh older than 8.9 forwards without a bind, but always through the ssh client
+                    let peer = if ssh_client(&caller) {
+                        ssh::Peer::Hopped
+                    } else {
+                        peer
+                    };
                     // A signature names no host, so the folder it was made in, a git repository, says what it is for
                     let place = if data.starts_with(b"SSHSIG") {
                         pid.map(signature_context)
