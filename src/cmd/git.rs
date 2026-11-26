@@ -18,9 +18,10 @@ fn ignored() -> impl Iterator<Item = &'static str> {
         .chain(["/wraps/se-*.json"])
 }
 
-/* A .gitignore from an older passbox misses later lines, and a file it let in stays tracked after
-its line is added, so missing lines are added and anything ignored is taken out of the index. A
-pull still writes a path an incoming commit adds, which this does not stop */
+/* A .gitignore from an older passbox misses later lines, so they are added. A machine local file
+git tracks came in through a pull or an older passbox, and a pull writes whatever a commit
+tracks, so it leaves the index and is renamed aside with `.from-git`, a plugin by its whole
+folder. Nothing is deleted, and nothing git brought is used */
 pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
     let path = store.dir.join(".gitignore");
     let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -49,9 +50,23 @@ pub(crate) fn ensure_store_gitignore(store: &Store) -> Result<()> {
             ])
             .output()
             .context("git is not on PATH")?;
+        let mut aside = std::collections::BTreeSet::new();
         for file in tracked.stdout.split(|b| *b == 0).filter(|f| !f.is_empty()) {
-            let file = String::from_utf8_lossy(file);
+            let file = String::from_utf8_lossy(file).to_string();
             git_quietly(store, &["rm", "--cached", "--quiet", "--", &file]);
+            // A plugin moves as a folder, so no file of it is left to run
+            let top = match file.strip_prefix("plugins/") {
+                Some(rest) => format!("plugins/{}", rest.split('/').next().unwrap_or(rest)),
+                None => file,
+            };
+            aside.insert(top);
+        }
+        for path in aside {
+            let from = store.dir.join(&path);
+            if from.exists() {
+                std::fs::rename(&from, store.dir.join(format!("{path}.from-git")))?;
+                eprintln!("{path} came from git, so passbox moved it to {path}.from-git");
+            }
         }
     }
     Ok(())
@@ -66,6 +81,8 @@ pub(crate) fn git(store: &Store, args: &[String]) -> Result<()> {
         .args(args)
         .status()
         .context("git is not on PATH")?;
+    // A pull may have checked out a machine local file, which goes aside before anything reads it
+    ensure_store_gitignore(store)?;
     std::process::exit(status.code().unwrap_or(1));
 }
 

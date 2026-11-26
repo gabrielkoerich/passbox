@@ -263,8 +263,8 @@ pub(crate) fn rm(store: &Store, name: &str) -> Result<()> {
     let (id, _) = store
         .find(name, &key)?
         .with_context(|| format!("no secret named {name}"))?;
-    store.delete(&id)?;
-    store.prune_tombs()?;
+    store.delete(&id, &key)?;
+    store.prune_tombs(&key)?;
     eprintln!("deleted {name}, recoverable with `passbox restore {name}`");
     offer_ssh_keys(store, &key);
     Ok(())

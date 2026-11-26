@@ -365,6 +365,11 @@ pub(crate) fn sync(store: &Store, remote: &Path) -> Result<Report> {
     let mut report = Report::default();
     let (mut failed, mut first) = (0, None);
     let names: Vec<PathBuf> = here.keys().chain(there.keys()).cloned().collect();
+    let own_log = store
+        .audit_path()
+        .strip_prefix(&store.dir)
+        .ok()
+        .map(Path::to_path_buf);
 
     for name in names {
         let ours = here.get(&name);
@@ -377,8 +382,14 @@ pub(crate) fn sync(store: &Store, remote: &Path) -> Result<Report> {
             copy(&mirrored, &local)
         };
 
+        // This Mac's own audit log is only ever pushed, so a copy cannot rewrite its history
+        let own_log = Some(name.as_path()) == own_log.as_deref();
         // A tombstone loses to its secret written after it, so rm then add of one name sticks
         let done = match (ours, theirs) {
+            _ if own_log => match ours {
+                Some(_) => push().map(|()| report.pushed += 1),
+                None => Ok(()),
+            },
             (None, Some(theirs)) if outlived(&here, &name, *theirs) => {
                 fs::remove_file(&mirrored).map_err(Into::into)
             }
@@ -736,7 +747,7 @@ mod tests {
         sync(&two, remote.path()).unwrap();
         assert_eq!(two.names(&key).unwrap(), vec!["banking/login"]);
 
-        one.delete(&id).unwrap();
+        one.delete(&id, &key).unwrap();
         sync(&one, remote.path()).unwrap();
         sync(&two, remote.path()).unwrap();
         assert_eq!(two.names(&key).unwrap(), Vec::<String>::new());
@@ -763,7 +774,7 @@ mod tests {
         };
         sync(&two, remote.path()).unwrap();
 
-        one.delete(&id).unwrap();
+        one.delete(&id, &key).unwrap();
         sync(&one, remote.path()).unwrap();
         // add reuses the id of a deleted name, as `passbox add` does
         std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -835,6 +846,24 @@ mod tests {
             "mine"
         );
         assert_eq!(one.names(&key).unwrap(), ["wallet/main"]);
+    }
+
+    /// This Mac's own audit log is only pushed, so a newer copy in the backup cannot rewrite it
+    #[test]
+    fn a_backup_cannot_rewrite_this_macs_audit_log() {
+        let a = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        let (one, _key) = store(a.path());
+        fs::write(one.audit_path(), "mine").unwrap();
+        sync(&one, remote.path()).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let theirs = remote.path().join(one.audit_path().file_name().unwrap());
+        fs::write(&theirs, "forged").unwrap();
+        sync(&one, remote.path()).unwrap();
+
+        assert_eq!(fs::read_to_string(one.audit_path()).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(&theirs).unwrap(), "mine");
     }
 
     #[test]

@@ -162,6 +162,9 @@ fn the_store_gitignore_keeps_the_enclave_wraps_out_of_a_backup() {
     }
     let tracked = cli.run(&["git", "ls-files", "plugins"], None).unwrap();
     assert_eq!(tracked, "", "a plugin is still tracked");
+    // What git brought is moved aside, never run, and never deleted
+    assert!(!cli.path().join("plugins/demo").exists());
+    assert!(cli.path().join("plugins/demo.from-git/run.sh").exists());
 }
 
 #[test]

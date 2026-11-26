@@ -312,6 +312,7 @@ impl Store {
         })
     }
 
+    #[cfg(feature = "host")]
     fn yubikey_seal_path(&self) -> PathBuf {
         self.wraps_dir().join("yubikey.seal")
     }
@@ -436,6 +437,15 @@ impl Store {
             for (id, secret) in &files {
                 write_sealed(&self.secret_path(id), id, secret, key)?;
             }
+            for id in self.tombed()? {
+                if self.sealed_tomb(&id, key).is_none() {
+                    let stamp = fs::read_to_string(self.tomb_path(&id))
+                        .ok()
+                        .and_then(|s| s.split_whitespace().next()?.parse().ok())
+                        .unwrap_or_else(now);
+                    self.write_tomb(&id, stamp, key)?;
+                }
+            }
         }
         self.mark_sealed()
     }
@@ -526,6 +536,23 @@ impl Store {
         Ok(out)
     }
 
+    fn tombed(&self) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        let dir = self.secrets_dir();
+        if !dir.exists() {
+            return Ok(out);
+        }
+        for entry in fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("tomb")
+                && let Some(id) = path.file_stem().and_then(|s| s.to_str())
+            {
+                out.push(id.to_string());
+            }
+        }
+        Ok(out)
+    }
+
     pub(crate) fn untomb(&self, id: &str) -> Result<()> {
         let tomb = self.tomb_path(id);
         if tomb.exists() {
@@ -604,11 +631,29 @@ impl Store {
         self.dir.join("host")
     }
 
+    /// Whether git tracks a path in the store. A machine local file it tracks came from a pull
+    pub(crate) fn git_tracks(&self, relative: &str) -> bool {
+        self.dir.join(".git").exists()
+            && std::process::Command::new("git")
+                .arg("-C")
+                .arg(&self.dir)
+                .args(["ls-files", "--error-unmatch", "--", relative])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+    }
+
     pub(crate) fn host(&self) -> Option<String> {
         if let Ok(from_env) = std::env::var("PASSBOX_HOST")
             && !from_env.is_empty()
         {
             return Some(from_env);
+        }
+        // A host file git checked out names a broker someone else chose, which would answer every read
+        if self.git_tracks("host") {
+            eprintln!("ignored the host file, it came from git");
+            return None;
         }
         let text = fs::read_to_string(self.host_path()).ok()?;
         let line = text.lines().next()?.trim().to_string();
@@ -690,14 +735,32 @@ impl Store {
         Ok(out)
     }
 
-    /// Version the current file, then leave a tombstone so the delete survives a sync.
-    pub(crate) fn delete(&self, id: &str) -> Result<()> {
+    /// Version the current file, then leave a tombstone so the delete survives a sync. It holds when,
+    /// sealed with the id, so a tombstone a copy forged never prunes a secret's history
+    pub(crate) fn delete(&self, id: &str, key: &x25519::Identity) -> Result<()> {
         self.keep_version(id)?;
-        write_private(&self.tomb_path(id), now().to_string().as_bytes())
+        self.write_tomb(id, now(), key)
+    }
+
+    fn write_tomb(&self, id: &str, stamp: u64, key: &x25519::Identity) -> Result<()> {
+        let seal = hex::encode(tomb_mac(key, id, stamp)?.finalize().into_bytes());
+        write_private(&self.tomb_path(id), format!("{stamp} {seal}").as_bytes())
+    }
+
+    /// The time a tombstone holds, when its seal shows this store wrote it
+    fn sealed_tomb(&self, id: &str, key: &x25519::Identity) -> Option<u64> {
+        let text = fs::read_to_string(self.tomb_path(id)).ok()?;
+        let (stamp, seal) = text.trim().split_once(' ')?;
+        let stamp: u64 = stamp.parse().ok()?;
+        let seal = hex::decode(seal).ok()?;
+        tomb_mac(key, id, stamp).ok()?.verify_slice(&seal).ok()?;
+        Some(stamp)
     }
 
     /// Drop tombstones older than the TTL, along with the versions they guard.
-    pub(crate) fn prune_tombs(&self) -> Result<usize> {
+    /// Only a tombstone this store sealed prunes, so a forged one can hide a secret until `restore`
+    /// but never delete its history
+    pub(crate) fn prune_tombs(&self, key: &x25519::Identity) -> Result<usize> {
         let dir = self.secrets_dir();
         if !dir.exists() {
             return Ok(0);
@@ -708,18 +771,18 @@ impl Store {
             if path.extension().and_then(|e| e.to_str()) != Some("tomb") {
                 continue;
             }
-            let stamp = fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .unwrap_or(0);
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Some(stamp) = self.sealed_tomb(id, key) else {
+                continue;
+            };
             if now().saturating_sub(stamp) < TOMB_TTL_SECS {
                 continue;
             }
-            if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
-                let versions = self.versions_dir().join(id);
-                if versions.exists() {
-                    fs::remove_dir_all(versions)?;
-                }
+            let versions = self.versions_dir().join(id);
+            if versions.exists() {
+                fs::remove_dir_all(versions)?;
             }
             fs::remove_file(&path)?;
             pruned += 1;
@@ -828,6 +891,17 @@ fn mac(key: &x25519::Identity, id: &str, secret: &Secret) -> Result<Hmac<Sha256>
     mac.update(id.as_bytes());
     mac.update(b"\n");
     mac.update(&serde_json::to_vec(secret)?);
+    Ok(mac)
+}
+
+/// A tombstone's seal over its id and time, keyed apart from a secret's
+fn tomb_mac(key: &x25519::Identity, id: &str, stamp: u64) -> Result<Hmac<Sha256>> {
+    let mut seed = Sha256::new();
+    seed.update(b"passbox tombstone\n");
+    seed.update(secrecy::ExposeSecret::expose_secret(&key.to_string()).as_bytes());
+    let mut mac = Hmac::<Sha256>::new_from_slice(&seed.finalize())
+        .map_err(|_| anyhow!("could not key the seal"))?;
+    mac.update(format!("{id}\n{stamp}").as_bytes());
     Ok(mac)
 }
 
@@ -997,7 +1071,7 @@ mod tests {
         let stamp = store.stamp("id1").unwrap();
         assert!(store.is_current("id1", stamp));
 
-        store.delete("id1").unwrap();
+        store.delete("id1", &key).unwrap();
         assert!(!store.is_current("id1", stamp));
 
         store.put("id1", &secret("two"), &key).unwrap();
@@ -1309,7 +1383,7 @@ mod tests {
         let (_tmp, store, key) = store();
         let id = new_id();
         store.put(&id, &secret("db", "v"), &key).unwrap();
-        store.delete(&id).unwrap();
+        store.delete(&id, &key).unwrap();
 
         assert_eq!(store.ids().unwrap(), Vec::<String>::new());
         assert!(store.tomb_path(&id).exists());
@@ -1321,7 +1395,7 @@ mod tests {
         let (_tmp, store, key) = store();
         let id = new_id();
         store.put(&id, &secret("db", "v"), &key).unwrap();
-        store.delete(&id).unwrap();
+        store.delete(&id, &key).unwrap();
         store.put(&id, &secret("db", "back"), &key).unwrap();
 
         assert_eq!(store.ids().unwrap().len(), 1);
@@ -1333,11 +1407,16 @@ mod tests {
         let (_tmp, store, key) = store();
         let id = new_id();
         store.put(&id, &secret("db", "v"), &key).unwrap();
-        store.delete(&id).unwrap();
+        store.delete(&id, &key).unwrap();
 
-        assert_eq!(store.prune_tombs().unwrap(), 0);
+        assert_eq!(store.prune_tombs(&key).unwrap(), 0);
+        // A copy's tombstone, old and unsealed, would prune the history if it were trusted
         write_private(&store.tomb_path(&id), b"1").unwrap();
-        assert_eq!(store.prune_tombs().unwrap(), 1);
+        assert_eq!(store.prune_tombs(&key).unwrap(), 0);
+        assert!(store.versions_dir().join(&id).exists());
+
+        store.write_tomb(&id, 1, &key).unwrap();
+        assert_eq!(store.prune_tombs(&key).unwrap(), 1);
         assert!(!store.versions_dir().join(&id).exists());
     }
 

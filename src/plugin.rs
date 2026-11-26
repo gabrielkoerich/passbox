@@ -411,6 +411,12 @@ pub(crate) fn valid_name(name: &str) -> Result<()> {
 
 pub(crate) fn load(store: &Store, name: &str) -> Result<Manifest> {
     valid_name(name)?;
+    // A plugin git checked out is code someone else chose, which the broker would run
+    if store.git_tracks(&format!("plugins/{name}")) {
+        bail!(
+            "plugins/{name} came from git, so passbox will not run it. Remove it and run `passbox plugin add {name}`"
+        );
+    }
     let path = store.plugins_dir().join(name).join("plugin.toml");
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("no plugin named {name}, run `passbox plugin add {name}`"))?;
