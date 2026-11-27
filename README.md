@@ -105,7 +105,7 @@ A job that connects to the same hosts every half hour cannot answer a prompt whi
 "vpsbr" = "4h"
 ```
 
-The first login to a listed host prompts, such as "sign an SSH login as gb to legion with SSH key you@mac for ssh, and its logins to legion for 12h without asking". Later logins with that key to that host skip the prompt until the window ends, also while the screen is locked, and each is audited as `by window`. A host not listed prompts every time.
+The first login to a listed host prompts, such as "sign an SSH login as gb to legion with SSH key you@mac for ssh (ssh < zsh), and its logins to legion for 12h without asking". Later logins with that key to that host skip the prompt until the window ends, also while the screen is locked, and each is audited as `by window`. A host not listed prompts every time.
 
 - A host is named as `~/.ssh/known_hosts` lists it, or by its host key fingerprint, such as `"SHA256:..."`, which is the only way to name a host whose known_hosts entry is hashed. `*`, `a,b` and any other pattern are refused.
 - The window is bound to the host key, not the name. ssh 8.9 and later proves the host key to the agent (`session-bind@openssh.com`), and a login signs that session. Another server that claims the name gets a prompt of its own. A host with only an RSA host key, a forwarded agent, and commit signing with `gpg.format ssh` always prompt.
@@ -120,10 +120,10 @@ Git signs each commit with the same key, and a signature names no host, so `[ssh
 git = "8h"
 ```
 
-The first git signature prompts, such as "sign a git signature for git commit in "~/Projects/passbox" on "main" with SSH key you@mac for git, and its git signatures for 8h without asking". Later git signatures with that key skip the prompt until the window ends. A login, or a signature in any other namespace, still prompts.
+The first git signature prompts, such as "allow SSH windows git signatures 8h for git, then sign a git signature for git commit in "~/Projects/passbox" on "main" with SSH key you@mac for git (ssh-keygen < git < zsh), and its git signatures for 8h without asking". Later git signatures with that key skip the prompt until the window ends. A login, or a signature in any other namespace, still prompts.
 
-- Only a program on this Mac gets the window. A forwarded agent reaches the broker through the ssh client, which binds the connection first since OpenSSH 8.9, and a request from the ssh client never gets the window either, so a server you forward the agent to never signs under it.
-- Any program on this Mac can sign a commit as you while the window is open, since nothing that asks can prove which repository it is in. Every signature is audited with its repository and the programs that asked.
+- Only `ssh-keygen` on this Mac gets the window, the program git signs with, and only on a connection with no session bind. A forwarded agent reaches the broker through the ssh client, which binds since OpenSSH 8.9, or through a relay such as OrbStack's or Docker Desktop's, and neither is `ssh-keygen`, so a server or container you forward the agent to never signs under it.
+- Any program on this Mac can sign a commit as you while the window is open, since nothing that asks can prove which repository it is in. Every signature is audited with its repository, branch, git subcommand and the programs that asked.
 - The section shares the approval prompt and the 24 hour cap with `[ssh.windows]`.
 
 ### Coming from pass

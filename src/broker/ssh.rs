@@ -234,6 +234,10 @@ pub(crate) fn parse_windows(text: &str) -> Result<Windows> {
         if pattern {
             bail!("{host:?} must name one host as known_hosts lists it, or its SHA256 fingerprint");
         }
+        // `sig:` names a signing window from `[ssh.signing]`, so a host cannot take one
+        if host.starts_with("sig:") {
+            bail!("{host:?} is not a host, signing windows go in [ssh.signing]");
+        }
 
         let span = value
             .as_str()
@@ -918,6 +922,7 @@ mod tests {
         assert_eq!(both.shown(), "legion 12h, git signatures 8h");
         assert!(parse_windows("[ssh.signing]\n\"g it\" = \"8h\"\n").is_err());
         assert!(parse_windows("[ssh.signing]\n\"*\" = \"8h\"\n").is_err());
+        assert!(parse_windows("[ssh.windows]\n\"sig:git\" = \"8h\"\n").is_err());
     }
 
     /// A forwarded agent always binds, so a bind of any kind, even one refused, ends local trust

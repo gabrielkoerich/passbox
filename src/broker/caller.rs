@@ -87,7 +87,7 @@ pub(super) fn short_chain(chain: &str) -> String {
     let names: Vec<String> = programs(chain)
         .filter(|n| !n.is_empty() && *n != "unknown")
         .take(4)
-        .map(printable)
+        .map(|n| printable(&n.chars().take(32).collect::<String>()))
         .collect();
     names.join(" < ")
 }
@@ -153,12 +153,12 @@ fn repository(dir: &std::path::Path) -> Option<(std::path::PathBuf, Option<Strin
         let dot_git = top.join(".git");
         let git_dir = if dot_git.is_dir() {
             dot_git
-        } else if let Ok(text) = std::fs::read_to_string(&dot_git) {
+        } else if let Some(text) = read_small(&dot_git) {
             top.join(text.trim().strip_prefix("gitdir:")?.trim())
         } else {
             continue;
         };
-        let head = std::fs::read_to_string(git_dir.join("HEAD")).unwrap_or_default();
+        let head = read_small(&git_dir.join("HEAD")).unwrap_or_default();
         let branch = head.trim().strip_prefix("ref: refs/heads/").map(printable);
         return Some((top.to_path_buf(), branch));
     }
@@ -181,7 +181,7 @@ fn shown_dir(dir: &std::path::Path) -> String {
 /// reads as one name
 #[cfg(feature = "host")]
 fn quoted(text: &str) -> String {
-    let clean: String = text
+    let clean: String = printable(text)
         .chars()
         .map(|c| if c == '"' { '?' } else { c })
         .collect();
@@ -190,18 +190,36 @@ fn quoted(text: &str) -> String {
     format!("\"{cut}{more}\"")
 }
 
-/// Whether the peer is the ssh client, which is what a forwarded agent's requests come through
+/* Whether the peer is ssh-keygen, the program git signs with. A forwarded agent comes through the
+ssh client, or through a relay such as OrbStack's or Docker Desktop's under a name of its own, so
+the signing window asks for this one name rather than refusing the relays it knows */
 #[cfg(feature = "host")]
-pub(super) fn ssh_client(chain: &str) -> bool {
-    programs(chain).next() == Some("ssh")
+pub(super) fn local_signer(chain: &str) -> bool {
+    programs(chain).next() == Some("ssh-keygen")
 }
 
-/// A name the caller chose cannot add a line to the prompt or move the cursor
+/// A name the caller chose keeps printable ASCII only, so no control, direction override or line
+/// separator can move the rest of the prompt
 #[cfg(feature = "host")]
 fn printable(text: &str) -> String {
     text.chars()
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| {
+            if c == ' ' || c.is_ascii_graphic() {
+                c
+            } else {
+                '?'
+            }
+        })
         .collect()
+}
+
+/// A small regular file, so a `.git` that links to a device or a pipe cannot stall the broker
+#[cfg(feature = "host")]
+fn read_small(path: &std::path::Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    (meta.is_file() && meta.len() <= 4096)
+        .then(|| std::fs::read_to_string(path).ok())
+        .flatten()
 }
 
 /// The peer pid comes from the kernel, so the caller cannot fake its own path
@@ -350,6 +368,15 @@ mod tests {
         assert_eq!(repository(tmp.path()).unwrap().1, None);
     }
 
+    /// A HEAD that is not a small regular file is skipped, so a pipe or a device cannot stall the broker
+    #[test]
+    fn a_head_that_is_not_a_small_file_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", tmp.path().join(".git/HEAD")).unwrap();
+        assert_eq!(repository(tmp.path()).unwrap().1, None);
+    }
+
     /// A folder named like the rest of a prompt still reads as one quoted name
     #[test]
     fn caller_text_is_quoted_and_cut_short() {
@@ -362,8 +389,11 @@ mod tests {
             quoted(&"a".repeat(100)),
             format!("\"{}...\"", "a".repeat(80))
         );
-        assert!(ssh_client("/usr/bin/ssh < zsh"));
-        assert!(!ssh_client("ssh-keygen < git < zsh"));
+        assert!(local_signer("/usr/bin/ssh-keygen < git < zsh"));
+        assert!(!local_signer("/usr/bin/ssh < zsh"));
+        assert!(!local_signer("OrbStack Helper < launchd"));
+        assert_eq!(short_chain("a\u{202e}b < git"), "a?b < git");
+        assert_eq!(quoted("~/x\u{2028}y"), "\"~/x?y\"");
     }
 
     #[test]

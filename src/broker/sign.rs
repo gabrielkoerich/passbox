@@ -27,9 +27,14 @@ impl Broker {
         policy: &ssh::Windows,
         window_key: &SshWindowKey,
         data: &[u8],
-        agent: &str,
-        caller: &str,
+        asked: &Asked<'_>,
     ) -> Option<Result<ssh_key::Signature>> {
+        let Asked {
+            agent,
+            caller,
+            place,
+            ..
+        } = *asked;
         let window = ssh_window_open(
             &self.ssh_windows,
             policy,
@@ -37,11 +42,12 @@ impl Broker {
             window_key,
             store::now(),
         )?;
-        let to = if window.host == window_key.1 {
+        let mut to = if window.host == window_key.1 {
             format!("to {}", window.host)
         } else {
             format!("to {} {}", window.host, window_key.1)
         };
+        to.push_str(place.unwrap_or_default());
         let signed = signature::Signer::try_sign(&*window.private, data);
         Some(
             self.audit_by(agent, &window.name, "by window", caller, &to)
@@ -76,7 +82,7 @@ impl Broker {
         });
         let (window_key, listed, shown) = target(&policy, wanted, data, host, peer);
         if let Some(window_key) = &window_key
-            && let Some(signed) = self.signed_by_window(&policy, window_key, data, agent, caller)
+            && let Some(signed) = self.signed_by_window(&policy, window_key, data, asked)
         {
             return signed;
         }
@@ -144,6 +150,8 @@ impl Broker {
             (None, Some((_, h))) => format!("to {h}"),
             _ => String::new(),
         };
+        // A signature names no host, so the record keeps where it was made and what for
+        args.push_str(place);
         if let (true, Some((host_name, secs)), Some(window_key)) = (trusted, &listed, window_key) {
             let _ = write!(args, ", window {}", project::span(*secs));
             self.ssh_windows.insert(
