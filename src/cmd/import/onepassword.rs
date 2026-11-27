@@ -1,6 +1,7 @@
 //! Bring items across from 1Password through the `op` CLI, which the user has signed in
 
 use super::{Entry, Fetched, Source, under};
+use crate::store;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -245,22 +246,10 @@ fn record(item: &Item) -> Plan {
     let blob = password.contains('\n');
     let mut taken: HashSet<String> = HashSet::from(["password".to_string()]);
     let mut lines = Vec::new();
-    let mut blocks = Vec::new();
     let mut notes_left = Vec::new();
-    let mut add = |key: String,
-                   value: &str,
-                   section: Option<&str>,
-                   notes_left: &mut Vec<String>| {
+    let mut add = |key: String, value: &str, section: Option<&str>| {
         let key = unique(&mut taken, &key, section);
-        // A `key: value` line cannot hold it, so it goes after the notes, whole
-        if value.contains('\n') {
-            notes_left.push(format!(
-                    "field {key} has more than one line, kept after the notes where `get --field` cannot read it"
-                ));
-            blocks.push(format!("{key}:\n{}", value.trim_end_matches('\n')));
-            return;
-        }
-        lines.push(format!("{key}: {}", value.trim()));
+        lines.push(store::field_line(&key, value));
     };
 
     let username = fields
@@ -268,7 +257,7 @@ fn record(item: &Item) -> Plan {
         .position(|f| f.purpose == "USERNAME" && has_value(f));
     if let Some(i) = username {
         let value = fields[i].value.as_deref().unwrap_or_default();
-        add("username".into(), value, None, &mut notes_left);
+        add("username".into(), value, None);
     }
 
     let mut urls: Vec<&Url> = item
@@ -278,7 +267,7 @@ fn record(item: &Item) -> Plan {
         .collect();
     urls.sort_by_key(|u| !u.primary);
     for url in urls {
-        add("url".into(), &url.href, None, &mut notes_left);
+        add("url".into(), &url.href, None);
     }
 
     for (i, f) in fields.iter().enumerate() {
@@ -292,12 +281,7 @@ fn record(item: &Item) -> Plan {
             ));
         }
         let section = f.section.as_ref().map(|s| s.label.as_str());
-        add(
-            key,
-            f.value.as_deref().unwrap_or_default(),
-            section,
-            &mut notes_left,
-        );
+        add(key, f.value.as_deref().unwrap_or_default(), section);
     }
 
     let mut value = password.to_string();
@@ -305,13 +289,10 @@ fn record(item: &Item) -> Plan {
         value.push('\n');
         value.push_str(&line);
     }
+    // An indented or blank first line would read as more of a block field written just before it
     if let Some(text) = notes(item) {
         value.push('\n');
-        value.push_str(text);
-    }
-    for block in blocks {
-        value.push('\n');
-        value.push_str(&block);
+        value.push_str(text.trim_start());
     }
     if value.trim().is_empty() {
         return Plan::Skip("the item has no values".into());
@@ -574,20 +555,40 @@ mod tests {
     }
 
     #[test]
-    fn a_multi_line_field_is_kept_after_the_notes() {
+    fn a_multi_line_field_is_a_block_that_get_field_reads() {
         let item = parse(
             r#"{"category":"API_CREDENTIAL","fields":[
               {"id":"credential","type":"CONCEALED","label":"credential","value":"tok"},
               {"id":"k","type":"STRING","label":"cert","value":"a\nb"}]}"#,
         );
         let (value, notes) = value(plan(&item));
-        assert_eq!(value, "tok\ncert:\na\nb");
-        assert_eq!(
-            notes,
-            [
-                "field cert has more than one line, kept after the notes where `get --field` cannot read it"
-            ]
+        assert_eq!(value, "tok\ncert: |\n  a\n  b");
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(store::pick("x", &value, "cert").unwrap(), "a\nb");
+    }
+
+    /// A secure note is kept byte for byte, an indented first line included
+    #[test]
+    fn a_secure_note_keeps_its_leading_indent() {
+        let item = parse(
+            r#"{"category":"SECURE_NOTE","fields":[
+              {"id":"notesPlain","purpose":"NOTES","value":"  indented: yaml\n  more"}]}"#,
         );
+        let (note, _) = value(plan(&item));
+        assert_eq!(note, "  indented: yaml\n  more");
+    }
+
+    /// A note that starts indented or blank, after a block, stays out of the field
+    #[test]
+    fn a_block_field_never_takes_the_note_after_it() {
+        let item = parse(
+            r#"{"category":"API_CREDENTIAL","fields":[
+              {"id":"credential","type":"CONCEALED","label":"credential","value":"tok"},
+              {"id":"k","type":"STRING","label":"cert","value":"a\nb"},
+              {"id":"notesPlain","purpose":"NOTES","value":"\n  indented note\n  more"}]}"#,
+        );
+        let (value, _) = value(plan(&item));
+        assert_eq!(store::pick("x", &value, "cert").unwrap(), "a\nb");
     }
 
     #[test]
