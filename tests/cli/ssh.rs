@@ -76,10 +76,16 @@ fn agent_round_trip(kind: &str) {
     }
     let prompts = bound.prompts();
     assert_eq!(prompts.len(), 2, "{prompts:?}");
+    // A signature names no host, so the prompt names the folder it was made in and who asked
     assert!(
-        prompts[0].starts_with("sign a test signature with SSH key test@passbox.dev for "),
+        prompts[0].starts_with("sign a test signature in "),
         "{prompts:?}"
     );
+    assert!(
+        prompts[0].contains(" with SSH key test@passbox.dev for "),
+        "{prompts:?}"
+    );
+    assert!(prompts[0].contains("(ssh-keygen < "), "{prompts:?}");
 
     let checked = Command::new("ssh-keygen")
         .args(["-Y", "check-novalidate", "-n", "test", "-s"])
@@ -266,6 +272,88 @@ fn agent_login(
 
 /// One prompt covers later logins with the same key to the same host key. The window is pinned to
 /// the host key the connection proved, so a forwarded agent or another host still prompts
+/* A git signature names no host, so its window is keyed by the namespace. The first one prompts and
+opens it, later git signatures from this Mac go through, and any other namespace still prompts */
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_git_signing_window_covers_later_git_signatures_and_nothing_else() {
+    let bound = Bound::new();
+    let keys = tempfile::tempdir().unwrap();
+    let path = keys.path().join("id");
+    let made = Command::new("ssh-keygen")
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "test@passbox.dev",
+            "-f",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success(), "ssh-keygen could not make a key");
+    let private = std::fs::read_to_string(&path).unwrap();
+    bound.run(&["add", "ssh/test"], Some(&private)).unwrap();
+    std::fs::write(
+        bound.cli.path().join("config.toml"),
+        "[ssh.signing]\ngit = \"1h\"\n",
+    )
+    .unwrap();
+    bound.run(&["ls"], None).unwrap();
+    bound.forget_prompts();
+
+    let pubkey = path.with_extension("pub");
+    let sign = |namespace: &str, file: &str| {
+        let message = keys.path().join(file);
+        std::fs::write(&message, "signed through passbox").unwrap();
+        let out = with_agent(
+            &bound,
+            "ssh-keygen",
+            &[
+                "-Y",
+                "sign",
+                "-n",
+                namespace,
+                "-f",
+                pubkey.to_str().unwrap(),
+                message.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    sign("git", "one");
+    sign("git", "two");
+    sign("git", "three");
+    let prompts = bound.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].starts_with("allow SSH windows git signatures 1h for "),
+        "{prompts:?}"
+    );
+    assert!(
+        prompts[0].contains("and its git signatures for 1h without asking"),
+        "{prompts:?}"
+    );
+
+    sign("file", "four");
+    let prompts = bound.prompts();
+    assert_eq!(
+        prompts.len(),
+        2,
+        "another namespace went through the git window: {prompts:?}"
+    );
+}
+
 #[test]
 #[cfg_attr(
     not(feature = "mock-enclave"),

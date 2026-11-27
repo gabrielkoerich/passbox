@@ -92,7 +92,7 @@ export SSH_AUTH_SOCK=~/.passbox/ssh-agent.sock   # in ~/.zshrc
 ssh-add -L                                        # lists it, no prompt
 ```
 
-The agent signs with Ed25519 and ECDSA (P-256, P-384, P-521) keys. An RSA key is stored and protected like any other, but the agent does not sign with it. A key with a passphrase asks for it once at `add` and is stored decrypted, as 1Password does, because the store encrypts it and every signature prompts. Delete the file once the key is in the store. A key only signs: `get`, `copy`, `exec`, a grant token and a plugin all refuse it. `passbox get --encrypt ssh/github > id_ed25519` asks for a new passphrase and prints the key encrypted with it, for one Touch ID prompt. The prompt says what is signed, where to and with which key, such as "sign an SSH login as git to github.com with SSH key you@mac for ssh". A key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
+The agent signs with Ed25519 and ECDSA (P-256, P-384, P-521) keys. An RSA key is stored and protected like any other, but the agent does not sign with it. A key with a passphrase asks for it once at `add` and is stored decrypted, as 1Password does, because the store encrypts it and every signature prompts. Delete the file once the key is in the store. A key only signs: `get`, `copy`, `exec`, a grant token and a plugin all refuse it. `passbox get --encrypt ssh/github > id_ed25519` asks for a new passphrase and prints the key encrypted with it, for one Touch ID prompt. The prompt says what is signed, where to and with which key, such as "sign an SSH login as git to github.com with SSH key you@mac for ssh". A key synced from another Mac is offered once `passbox ls` has run on this one. Git commit signing with `gpg.format ssh` goes through the same agent, and its prompt names the repository and the programs that asked, such as "sign a git signature for git commit in "~/Projects/passbox" on "main" with SSH key you@mac for git (ssh-keygen < git < zsh)". A signature carries only a hash of the commit, so the prompt cannot show the message. The agent needs the broker running, which the [LaunchAgent](#on-the-mac) keeps up.
 
 ### Signing windows
 
@@ -105,13 +105,26 @@ A job that connects to the same hosts every half hour cannot answer a prompt whi
 "vpsbr" = "4h"
 ```
 
-The first login to a listed host prompts, such as "sign an SSH login as gb to legion with SSH key you@mac for ssh, and its logins to legion for 12h without asking". Later logins with that key to that host skip the prompt until the window ends, also while the screen is locked, and each is audited as `by window`. A host not listed prompts every time.
+The first login to a listed host prompts, such as "sign an SSH login as gb to legion with SSH key you@mac for ssh (ssh < zsh), and its logins to legion for 12h without asking". Later logins with that key to that host skip the prompt until the window ends, also while the screen is locked, and each is audited as `by window`. A host not listed prompts every time.
 
 - A host is named as `~/.ssh/known_hosts` lists it, or by its host key fingerprint, such as `"SHA256:..."`, which is the only way to name a host whose known_hosts entry is hashed. `*`, `a,b` and any other pattern are refused.
 - The window is bound to the host key, not the name. ssh 8.9 and later proves the host key to the agent (`session-bind@openssh.com`), and a login signs that session. Another server that claims the name gets a prompt of its own. A host with only an RSA host key, a forwarded agent, and commit signing with `gpg.format ssh` always prompt.
 - A window is capped at 24 hours, lives in the broker's memory and ends on a restart. It holds the private key, so a key removed from the store keeps signing for that host until its window ends.
 - Every program on the Mac shares one window, as with [plugin windows](#approval-windows). The audit log shows which program signed.
 - An edit to the section takes effect after one prompt that lists it, such as `allow SSH windows legion 12h, m1 12h for ssh, then ...`. Approving it ends the windows opened under the old section.
+
+Git signs each commit with the same key, and a signature names no host, so `[ssh.signing]` opens a window for a signature namespace instead:
+
+```toml
+[ssh.signing]
+git = "8h"
+```
+
+The first git signature prompts, such as "allow SSH windows git signatures 8h for git, then sign a git signature for git commit in "~/Projects/passbox" on "main" with SSH key you@mac for git (ssh-keygen < git < zsh), and its git signatures for 8h without asking". Later git signatures with that key skip the prompt until the window ends. A login, or a signature in any other namespace, still prompts.
+
+- Only `ssh-keygen` on this Mac gets the window, the program git signs with, and only on a connection with no session bind. A forwarded agent reaches the broker through the ssh client, which binds since OpenSSH 8.9, or through a relay such as OrbStack's or Docker Desktop's, and neither is `ssh-keygen`, so a server or container you forward the agent to never signs under it.
+- Any program on this Mac can sign a commit as you while the window is open, since nothing that asks can prove which repository it is in. Every signature is audited with its repository, branch, git subcommand and the programs that asked.
+- The section shares the approval prompt and the 24 hour cap with `[ssh.windows]`.
 
 ### Coming from pass
 

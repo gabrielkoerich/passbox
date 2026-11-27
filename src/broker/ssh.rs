@@ -99,6 +99,12 @@ pub(crate) fn label(key: &PublicKey) -> String {
  * for a commit, and a login carries the user after the session id. The caller writes both strings,
  * so anything that is not short printable text reads as unrecognised
  **/
+/// The namespace of an `SSHSIG` blob, such as git, or none for a login or anything else
+pub(crate) fn namespace(data: &[u8]) -> Option<String> {
+    let mut rest = data.strip_prefix(b"SSHSIG")?;
+    take(&mut rest).ok().and_then(printable)
+}
+
 pub(crate) fn purpose(data: &[u8]) -> String {
     if let Some(mut rest) = data.strip_prefix(b"SSHSIG") {
         return match take(&mut rest).ok().and_then(printable) {
@@ -132,6 +138,8 @@ fn printable(bytes: &[u8]) -> Option<String> {
 pub(crate) struct Windows {
     /// Seconds a key stays open for one host key after an approved login to it
     pub hosts: BTreeMap<String, u64>,
+    /// Seconds a key stays open for signatures in one namespace, such as git, after an approved one
+    pub namespaces: BTreeMap<String, u64>,
     /// Covers every host and length, so editing either one asks again
     pub hash: String,
 }
@@ -142,8 +150,21 @@ impl Windows {
         self.hosts
             .iter()
             .map(|(host, secs)| format!("{host} {}", span(*secs)))
+            .chain(
+                self.namespaces
+                    .iter()
+                    .map(|(ns, secs)| format!("{ns} signatures {}", span(*secs))),
+            )
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    /// How long a window opened under `name` lasts: a listed host, or `sig:` and a namespace
+    pub(crate) fn secs(&self, name: &str) -> Option<u64> {
+        match name.strip_prefix("sig:") {
+            Some(ns) => self.namespaces.get(ns).copied(),
+            None => self.hosts.get(name).copied(),
+        }
     }
 
     /// The listed name a host key goes by, read from `known_hosts` or given as its own fingerprint
@@ -168,16 +189,42 @@ pub(crate) fn parse_windows(text: &str) -> Result<Windows> {
         return Ok(Windows::default());
     };
     let ssh = ssh.as_table().context("ssh must be a table")?;
-    if let Some(other) = ssh.keys().find(|k| *k != "windows") {
-        bail!("unknown key ssh.{other}, the only one is ssh.windows");
+    if let Some(other) = ssh
+        .keys()
+        .find(|k| !matches!(k.as_str(), "windows" | "signing"))
+    {
+        bail!("unknown key ssh.{other}, the only ones are ssh.windows and ssh.signing");
     }
-    let Some(section) = ssh.get("windows") else {
-        return Ok(Windows::default());
+    let empty = toml::Table::new();
+    let section = match ssh.get("windows") {
+        Some(s) => s.as_table().context("ssh.windows must be a table")?,
+        None => &empty,
     };
-    let section = section.as_table().context("ssh.windows must be a table")?;
+    let signing = match ssh.get("signing") {
+        Some(s) => s.as_table().context("ssh.signing must be a table")?,
+        None => &empty,
+    };
 
     let mut out = Windows::default();
     let mut hashed = String::new();
+    for (ns, value) in signing {
+        let plain = !ns.is_empty()
+            && ns.len() <= 64
+            && ns
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '-'));
+        if !plain {
+            bail!("{ns:?} must name one signature namespace, such as git");
+        }
+        let span = value
+            .as_str()
+            .with_context(|| format!("{ns} must be a duration such as \"8h\""))?;
+        let secs = duration(span)
+            .with_context(|| ns.clone())?
+            .min(MAX_GRANT_SECS);
+        let _ = writeln!(hashed, "sig:{ns}={secs}");
+        out.namespaces.insert(ns.clone(), secs);
+    }
     for (host, value) in section {
         // A pattern is an "any host" window, refused for the reason a namespace grant is
         let pattern = host.is_empty()
@@ -186,6 +233,10 @@ pub(crate) fn parse_windows(text: &str) -> Result<Windows> {
                 .any(|c| matches!(c, '*' | '?' | '!' | ',') || c.is_whitespace() || c.is_control());
         if pattern {
             bail!("{host:?} must name one host as known_hosts lists it, or its SHA256 fingerprint");
+        }
+        // `sig:` names a signing window from `[ssh.signing]`, so a host cannot take one
+        if host.starts_with("sig:") {
+            bail!("{host:?} is not a host, signing windows go in [ssh.signing]");
         }
 
         let span = value
@@ -280,13 +331,33 @@ struct Binding {
     forwarding: bool,
 }
 
+/// Who is on the other end of an agent connection, as far as its binds tell
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Peer {
+    /// A program on this Mac, which never binds
+    Local,
+    /// ssh, which binds every connection it opens, also one it forwards
+    Hopped,
+}
+
 /// What one agent connection has proved so far. ssh binds it before it asks for a signature
 #[derive(Default)]
 pub(crate) struct Connection {
     binds: Vec<Binding>,
+    /// Set by any bind, even one refused, so a malformed one cannot pass as a local program
+    bound: bool,
 }
 
 impl Connection {
+    /// No session bind, so no ssh hop: a program on this Mac, such as the ssh-keygen git signs with
+    pub(crate) fn peer(&self) -> Peer {
+        if self.bound {
+            Peer::Hopped
+        } else {
+            Peer::Local
+        }
+    }
+
     /**
      * The host key a login signature goes to, when the connection proves it. ssh binds the
      * connection to the host key that signed the session id, and a login signs that same id, so the
@@ -308,6 +379,7 @@ impl Connection {
     }
 
     fn bind(&mut self, mut rest: &[u8]) -> Result<()> {
+        self.bound = true;
         let host = PublicKey::from_bytes(take(&mut rest)?)?;
         let session = take(&mut rest)?;
         let signature = Signature::try_from(take(&mut rest)?)?;
@@ -833,6 +905,36 @@ mod tests {
             |_, _, _| unreachable!(),
         );
         assert!(destination(&mut chained, &login(b"sid")).is_none());
+    }
+
+    #[test]
+    fn a_signing_window_names_one_namespace_and_changes_the_approval() {
+        let hosts = parse_windows("[ssh.windows]\nlegion = \"12h\"\n").unwrap();
+        let both = parse_windows("[ssh.windows]\nlegion = \"12h\"\n[ssh.signing]\ngit = \"8h\"\n")
+            .unwrap();
+        assert_eq!(both.namespaces["git"], 8 * 3600);
+        assert_eq!(both.secs("sig:git"), Some(8 * 3600));
+        assert_eq!(both.secs("legion"), Some(12 * 3600));
+        assert_ne!(
+            hosts.hash, both.hash,
+            "adding a signing window must ask again"
+        );
+        assert_eq!(both.shown(), "legion 12h, git signatures 8h");
+        assert!(parse_windows("[ssh.signing]\n\"g it\" = \"8h\"\n").is_err());
+        assert!(parse_windows("[ssh.signing]\n\"*\" = \"8h\"\n").is_err());
+        assert!(parse_windows("[ssh.windows]\n\"sig:git\" = \"8h\"\n").is_err());
+    }
+
+    /// A forwarded agent always binds, so a bind of any kind, even one refused, ends local trust
+    #[test]
+    fn any_bind_marks_a_connection_as_not_local() {
+        let mut connection = Connection::default();
+        assert!(connection.peer() == Peer::Local);
+        let mut bad = vec![EXTENSION];
+        put(&mut bad, SESSION_BIND).unwrap();
+        put(&mut bad, b"not a key").unwrap();
+        answer(&bad, &[], &mut connection, |_, _, _| unreachable!());
+        assert!(connection.peer() == Peer::Hopped);
     }
 
     #[test]

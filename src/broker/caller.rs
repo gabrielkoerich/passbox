@@ -65,17 +65,161 @@ pub(super) fn prompt_agent(chain: &str) -> String {
     "passbox".to_string()
 }
 
-/// The peer names the request, except that ssh gives way to a program that ran it, such as git
+/// The peer names the request, except that ssh, or the ssh-keygen git signs with, gives way to
+/// the program that ran it, such as git
 #[cfg(feature = "host")]
 pub(super) fn ssh_requester(chain: &str) -> String {
     let mut names = programs(chain);
     match (names.next(), names.next()) {
-        (Some("ssh"), Some(parent)) if !parent.is_empty() && !SHELLS.contains(&parent) => {
+        (Some("ssh" | "ssh-keygen"), Some(parent))
+            if !parent.is_empty() && !SHELLS.contains(&parent) =>
+        {
             parent.to_string()
         }
         (Some(peer), _) if !peer.is_empty() && peer != "unknown" => peer.to_string(),
         _ => "ssh".to_string(),
     }
+}
+
+/// The chain as a prompt shows it: program names only, never a path or an argument
+#[cfg(feature = "host")]
+pub(super) fn short_chain(chain: &str) -> String {
+    let names: Vec<String> = programs(chain)
+        .filter(|n| !n.is_empty() && *n != "unknown")
+        .take(4)
+        .map(|n| printable(&n.chars().take(32).collect::<String>()))
+        .collect();
+    names.join(" < ")
+}
+
+/* What a git signature is for, as far as the broker can tell: the git subcommand of the process
+that ran the signer, the repository it runs in and its branch. The signed data is only a hash of
+the commit, so the message is out of reach. The branch comes from reading HEAD, never from
+running git, since a repository's own config can make git run its code */
+#[cfg(feature = "host")]
+pub(super) fn signature_context(pid: libc::pid_t) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    if let Some(sub) = git_subcommand(pid) {
+        let _ = write!(out, " for git {sub}");
+    }
+    if let Some(dir) = caller_cwd(pid) {
+        let (top, branch) = repository(&dir).unwrap_or((dir, None));
+        let _ = write!(out, " in {}", quoted(&shown_dir(&top)));
+        if let Some(branch) = branch {
+            let _ = write!(out, " on {}", quoted(&branch));
+        }
+    }
+    out
+}
+
+/// The first word after git's own options, such as commit or tag, never an argument that could carry a message
+#[cfg(feature = "host")]
+fn git_subcommand(pid: libc::pid_t) -> Option<String> {
+    let ps = |field: &str, pid: libc::pid_t| {
+        std::process::Command::new("ps")
+            .args(["-o", field, "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let parent: libc::pid_t = ps("ppid=", pid)?.parse().ok()?;
+    let args = ps("args=", parent)?;
+    let mut words = args.split_whitespace();
+    if words.next()?.rsplit('/').next() != Some("git") {
+        return None;
+    }
+    while let Some(word) = words.next() {
+        if matches!(
+            word,
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+        ) {
+            words.next();
+            continue;
+        }
+        if word.starts_with('-') {
+            continue;
+        }
+        let plain = word.len() <= 32 && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        return plain.then(|| word.to_string());
+    }
+    None
+}
+
+/// The top of the repository a folder is in, and its branch when HEAD names one
+#[cfg(feature = "host")]
+fn repository(dir: &std::path::Path) -> Option<(std::path::PathBuf, Option<String>)> {
+    for top in dir.ancestors() {
+        let dot_git = top.join(".git");
+        let git_dir = if dot_git.is_dir() {
+            dot_git
+        } else if let Some(text) = read_small(&dot_git) {
+            top.join(text.trim().strip_prefix("gitdir:")?.trim())
+        } else {
+            continue;
+        };
+        let head = read_small(&git_dir.join("HEAD")).unwrap_or_default();
+        let branch = head.trim().strip_prefix("ref: refs/heads/").map(printable);
+        return Some((top.to_path_buf(), branch));
+    }
+    None
+}
+
+/// A folder as a prompt shows it, under `~` when it is in the home folder
+#[cfg(feature = "host")]
+fn shown_dir(dir: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let shown = match home.as_deref().and_then(|h| dir.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => dir.display().to_string(),
+    };
+    printable(&shown)
+}
+
+/// Text the caller chose, quoted and cut short, so a folder named like the rest of a prompt still
+/// reads as one name
+#[cfg(feature = "host")]
+fn quoted(text: &str) -> String {
+    let clean: String = printable(text)
+        .chars()
+        .map(|c| if c == '"' { '?' } else { c })
+        .collect();
+    let cut: String = clean.chars().take(80).collect();
+    let more = if cut.len() < clean.len() { "..." } else { "" };
+    format!("\"{cut}{more}\"")
+}
+
+/* Whether the peer is ssh-keygen, the program git signs with. A forwarded agent comes through the
+ssh client, or through a relay such as OrbStack's or Docker Desktop's under a name of its own, so
+the signing window asks for this one name rather than refusing the relays it knows */
+#[cfg(feature = "host")]
+pub(super) fn local_signer(chain: &str) -> bool {
+    programs(chain).next() == Some("ssh-keygen")
+}
+
+/// A name the caller chose keeps printable ASCII only, so no control, direction override or line
+/// separator can move the rest of the prompt
+#[cfg(feature = "host")]
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c == ' ' || c.is_ascii_graphic() {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
+/// A small regular file, so a `.git` that links to a device or a pipe cannot stall the broker
+#[cfg(feature = "host")]
+fn read_small(path: &std::path::Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    (meta.is_file() && meta.len() <= 4096)
+        .then(|| std::fs::read_to_string(path).ok())
+        .flatten()
 }
 
 /// The peer pid comes from the kernel, so the caller cannot fake its own path
@@ -191,6 +335,67 @@ mod tests {
         assert_eq!(long, format!("{} on {host}", "a".repeat(64)));
     }
 
+    /// A git signature shows the programs that asked and the repository, and neither can forge a line
+    #[test]
+    fn a_signature_prompt_shows_the_chain_and_the_folder() {
+        let chain = "/usr/bin/ssh-keygen < /opt/homebrew/bin/git < -zsh < tmux < login < launchd";
+        assert_eq!(short_chain(chain), "ssh-keygen < git < zsh < tmux");
+        assert_eq!(short_chain("ev\u{1b}il < git"), "ev?il < git");
+
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert_eq!(
+            shown_dir(&home.join("Projects/passbox")),
+            "~/Projects/passbox"
+        );
+        assert_eq!(
+            shown_dir(std::path::Path::new("/tmp/re\u{1b}[2Kpo")),
+            "/tmp/re?[2Kpo"
+        );
+    }
+
+    #[test]
+    fn a_repository_is_found_from_a_subfolder_with_its_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".git/HEAD"), "ref: refs/heads/fix/x\n").unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/a")).unwrap();
+        let (top, branch) = repository(&tmp.path().join("src/a")).unwrap();
+        assert_eq!(top, tmp.path());
+        assert_eq!(branch.as_deref(), Some("fix/x"));
+
+        // A detached HEAD names no branch
+        std::fs::write(tmp.path().join(".git/HEAD"), "0123abcd\n").unwrap();
+        assert_eq!(repository(tmp.path()).unwrap().1, None);
+    }
+
+    /// A HEAD that is not a small regular file is skipped, so a pipe or a device cannot stall the broker
+    #[test]
+    fn a_head_that_is_not_a_small_file_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", tmp.path().join(".git/HEAD")).unwrap();
+        assert_eq!(repository(tmp.path()).unwrap().1, None);
+    }
+
+    /// A folder named like the rest of a prompt still reads as one quoted name
+    #[test]
+    fn caller_text_is_quoted_and_cut_short() {
+        assert_eq!(quoted("main"), "\"main\"");
+        assert_eq!(
+            quoted("x\" with SSH key other for git"),
+            "\"x? with SSH key other for git\""
+        );
+        assert_eq!(
+            quoted(&"a".repeat(100)),
+            format!("\"{}...\"", "a".repeat(80))
+        );
+        assert!(local_signer("/usr/bin/ssh-keygen < git < zsh"));
+        assert!(!local_signer("/usr/bin/ssh < zsh"));
+        assert!(!local_signer("OrbStack Helper < launchd"));
+        assert_eq!(short_chain("a\u{202e}b < git"), "a?b < git");
+        assert_eq!(quoted("~/x\u{2028}y"), "\"~/x?y\"");
+    }
+
     #[test]
     fn the_prompt_name_comes_from_the_first_real_ancestor() {
         assert_eq!(prompt_agent("passbox < zsh < claude < login"), "claude");
@@ -213,6 +418,7 @@ mod tests {
         assert_eq!(ssh_requester("ssh < git < zsh < login"), "git");
         assert_eq!(ssh_requester("/usr/bin/ssh < -zsh < login"), "ssh");
         assert_eq!(ssh_requester("ssh"), "ssh");
+        assert_eq!(ssh_requester("ssh-keygen < git < zsh"), "git");
         assert_eq!(ssh_requester("unknown"), "ssh");
         // A peer that speaks the protocol itself is named, never hidden behind its parent
         assert_eq!(ssh_requester("evil < node < zsh"), "evil");
