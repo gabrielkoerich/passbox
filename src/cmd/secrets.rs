@@ -219,8 +219,8 @@ fn hidden(store: &Store, name: &str, field: Option<&str>) -> Result<Shown> {
     let names = match field {
         Some(want) if labels.iter().any(|l| l == want) => vec![want.to_string()],
         Some(want) => bail!(
-            "{name} lists no field {want}, `passbox get {name} --reveal --field {want}` reads a \
-             field by its exact name"
+            "{name} lists no field {want:?}, `passbox get {name} --reveal --field {want:?}` reads \
+             one by its exact name if it exists"
         ),
         None => labels,
     };
@@ -254,7 +254,8 @@ fn revealed(store: &Store, name: &str, field: Option<&str>) -> Result<Shown> {
             note: true,
             fields: Vec::new(),
             notes: Some(value.clone()),
-            raw: Some(value),
+            // As get always printed, one leading empty line dropped
+            raw: Some(value.strip_prefix('\n').unwrap_or(&value).to_string()),
         });
     }
     let (fields, notes) = store::parts(&value);
@@ -336,7 +337,12 @@ fn yaml_quoted(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
-            c if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{feff}') => {
+            c if c.is_control()
+                || matches!(
+                    c,
+                    '\u{2028}' | '\u{2029}' | '\u{feff}' | '\u{fffe}' | '\u{ffff}'
+                ) =>
+            {
                 let _ = write!(out, "\\u{:04X}", u32::from(c));
             }
             c => out.push(c),
@@ -676,6 +682,7 @@ mod tests {
         assert_eq!(super::yaml_quoted("a\u{85}b"), "\"a\\u0085b\"");
         assert_eq!(super::yaml_quoted("q\"\\\n"), "\"q\\\"\\\\\\n\"");
         assert_eq!(super::yaml_quoted("ação"), "\"ação\"");
+        assert_eq!(super::yaml_quoted("\u{ffff}"), "\"\\uFFFF\"");
     }
     use super::{extra_lines, named_fields};
     use crate::store;

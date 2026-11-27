@@ -44,7 +44,7 @@ fn get_hides_every_value_by_default() {
     let err = cli
         .run(&["get", "a/b", "--field", "pin"], None)
         .unwrap_err();
-    assert!(err.contains("lists no field pin"), "{err}");
+    assert!(err.contains("lists no field \"pin\""), "{err}");
 }
 
 #[test]
