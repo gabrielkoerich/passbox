@@ -212,8 +212,6 @@ fn notes(item: &Item) -> Option<&str> {
         .and_then(|f| f.value.as_deref())
         .map(|v| v.trim_end_matches('\n'))
         .filter(|v| !v.trim().is_empty())
-        // An indented or blank first line would read as more of a block field written just before it
-        .map(str::trim_start)
 }
 
 fn ssh_key(item: &Item) -> Plan {
@@ -291,9 +289,10 @@ fn record(item: &Item) -> Plan {
         value.push('\n');
         value.push_str(&line);
     }
+    // An indented or blank first line would read as more of a block field written just before it
     if let Some(text) = notes(item) {
         value.push('\n');
-        value.push_str(text);
+        value.push_str(text.trim_start());
     }
     if value.trim().is_empty() {
         return Plan::Skip("the item has no values".into());
@@ -566,6 +565,17 @@ mod tests {
         assert_eq!(value, "tok\ncert: |\n  a\n  b");
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(store::pick("x", &value, "cert").unwrap(), "a\nb");
+    }
+
+    /// A secure note is kept byte for byte, an indented first line included
+    #[test]
+    fn a_secure_note_keeps_its_leading_indent() {
+        let item = parse(
+            r#"{"category":"SECURE_NOTE","fields":[
+              {"id":"notesPlain","purpose":"NOTES","value":"  indented: yaml\n  more"}]}"#,
+        );
+        let (note, _) = value(plan(&item));
+        assert_eq!(note, "  indented: yaml\n  more");
     }
 
     /// A note that starts indented or blank, after a block, stays out of the field
