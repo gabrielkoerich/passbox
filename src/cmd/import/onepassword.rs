@@ -212,6 +212,8 @@ fn notes(item: &Item) -> Option<&str> {
         .and_then(|f| f.value.as_deref())
         .map(|v| v.trim_end_matches('\n'))
         .filter(|v| !v.trim().is_empty())
+        // An indented or blank first line would read as more of a block field written just before it
+        .map(str::trim_start)
 }
 
 fn ssh_key(item: &Item) -> Plan {
@@ -563,6 +565,19 @@ mod tests {
         let (value, notes) = value(plan(&item));
         assert_eq!(value, "tok\ncert: |\n  a\n  b");
         assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(store::pick("x", &value, "cert").unwrap(), "a\nb");
+    }
+
+    /// A note that starts indented or blank, after a block, stays out of the field
+    #[test]
+    fn a_block_field_never_takes_the_note_after_it() {
+        let item = parse(
+            r#"{"category":"API_CREDENTIAL","fields":[
+              {"id":"credential","type":"CONCEALED","label":"credential","value":"tok"},
+              {"id":"k","type":"STRING","label":"cert","value":"a\nb"},
+              {"id":"notesPlain","purpose":"NOTES","value":"\n  indented note\n  more"}]}"#,
+        );
+        let (value, _) = value(plan(&item));
         assert_eq!(store::pick("x", &value, "cert").unwrap(), "a\nb");
     }
 

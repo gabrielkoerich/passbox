@@ -306,9 +306,9 @@ Cost: listing takes a fingerprint, the same as a read. A grant is the only way t
 
 An entry holds a first line and then `key: value` lines, which is what `pass` uses and what `import pass` preserves. `--field` parses that on read.
 
-A value of more than one line is a YAML block, `key: |` and then its lines indented by two spaces, the form gopass writes. The parse reads only that form and leaves every other line of the entry alone. Rejected: a YAML parser, which the free notes after the fields would break, which reads `yes` and `0123` as other types, and whose Rust crates are unmaintained (`serde_yaml`) or carry a RustSec advisory (`serde_yml`). Cost: a note line `x: |` followed by indented lines reads as a field.
+A value of more than one line is a YAML block, `key: |` and then its lines indented by two spaces, the form gopass writes. The parse reads only that form. A block takes every indented or blank line after it, so the 1Password import starts the notes on a line of their own that is not indented. Rejected: a YAML parser, which the free notes after the fields would break, which reads `yes` and `0123` as other types, and whose Rust crates are unmaintained (`serde_yaml`) or carry a RustSec advisory (`serde_yml`). Cost: a note line `x: |` followed by indented lines reads as a field, and an entry written before this with a bare `x: |` line no longer reads `|` as its value.
 
-Rejected: a structured payload with typed fields. It would change the file format, need a migration for every entry already imported, and buy nothing the convention does not already carry. The parse is fifteen lines and works on stores written before it existed.
+Rejected: a structured payload with typed fields. It would change the file format, need a migration for every entry already imported, and buy nothing the convention does not already carry. The parse is about thirty lines and works on stores written before it existed.
 
 ## 1Password import goes through `op`
 

@@ -1111,7 +1111,8 @@ pub(crate) fn fields(value: &str) -> Vec<(String, String)> {
 #[cfg(any(feature = "host", test))]
 pub(crate) fn field_line(key: &str, value: &str) -> String {
     let value = value.trim_end_matches('\n');
-    if !value.contains('\n') {
+    // A lone `|` on the line would read back as an empty block
+    if !value.contains('\n') && value.trim() != "|" {
         return format!("{key}: {}", value.trim());
     }
     let body: Vec<String> = value
@@ -1538,7 +1539,7 @@ mod tests {
 
     #[test]
     fn a_field_line_round_trips_through_the_parse() {
-        for v in ["one", "two\nlines", "with\n\nblank", "trailing\n"] {
+        for v in ["one", "two\nlines", "with\n\nblank", "trailing\n", "|"] {
             let value = format!("pw\n{}", field_line("k", v));
             assert_eq!(
                 pick("x", &value, "k").unwrap(),
