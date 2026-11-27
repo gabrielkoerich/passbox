@@ -97,8 +97,14 @@ enum Command {
         /// One field of a multi-line entry, such as `username`. `password` is the first line
         #[arg(long)]
         field: Option<String>,
+        /// Print the values, at a terminal only. Without it every value is hidden
+        #[arg(long)]
+        reveal: bool,
+        /// The entry as text, JSON or YAML, with each value null unless `--reveal`
+        #[arg(long, value_enum, default_value_t = cmd::secrets::Format::Text)]
+        format: cmd::secrets::Format,
         /// Export an SSH key encrypted with a new passphrase, the only way a key leaves the store
-        #[arg(long, conflicts_with = "field")]
+        #[arg(long, conflicts_with_all = ["field", "reveal", "format"])]
         encrypt: bool,
     },
     /// Copy a secret to the clipboard, which clears after a few seconds and skips clipboard history
@@ -354,12 +360,14 @@ fn run() -> Result<()> {
         Command::Get {
             name,
             field,
+            reveal,
+            format,
             encrypt,
         } => {
             if encrypt {
                 get_encrypted(&store, &name)
             } else {
-                get(&store, &name, field.as_deref())
+                get(&store, &name, field.as_deref(), reveal.into(), format)
             }
         }
         Command::Copy { name, field, clear } => copy(&store, &name, field.as_deref(), clear),
@@ -464,12 +472,26 @@ fn brokered(store: &Store) -> bool {
 /// The broker owns windows and the audit log, so every read goes through it when it can.
 /// Without an Enclave there is nothing to prompt with, and the passphrase becomes the gate.
 fn read_secret_as(store: &Store, name: &str, field: Option<&str>, agent: &str) -> Result<String> {
+    released(store, name, field, agent).map(|(value, _)| value)
+}
+
+/// A whole secret, and whether it is a note when the store or the broker says so
+fn read_entry(store: &Store, name: &str) -> Result<(String, Option<bool>)> {
+    released(store, name, None, &agent())
+}
+
+fn released(
+    store: &Store,
+    name: &str,
+    field: Option<&str>,
+    agent: &str,
+) -> Result<(String, Option<bool>)> {
     if brokered(store) {
-        let (value, cut) = broker::request(store, name, agent, field.unwrap_or_default())?;
+        let (value, cut, blob) = broker::request(store, name, agent, field.unwrap_or_default())?;
         // A broker older than the field sends the whole entry, so the field is cut here
         return match field {
-            Some(want) if !cut => store::pick(name, &value, want),
-            _ => Ok(value),
+            Some(want) if !cut => store::pick(name, &value, want).map(|v| (v, None)),
+            _ => Ok((value, blob)),
         };
     }
     let key = unlock(store, &format!("release the password for {name}"))?;
@@ -487,7 +509,7 @@ fn read_secret_as(store: &Store, name: &str, field: Option<&str>, agent: &str) -
         "withheld"
     };
     broker::append_audit(store, agent, name, decision, &caller, "")?;
-    value
+    value.map(|v| (v, Some(secret.blob && field.is_none())))
 }
 
 /// `PASSBOX_PASSPHRASE` says nobody is at the keyboard, and a fingerprint needs somebody

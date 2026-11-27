@@ -16,25 +16,65 @@ fn add_get_and_list() {
     );
 }
 
+/* get hides every value unless `--reveal`, so its output is safe anywhere, a pipe included, the
+same shape as an agent capturing it */
 #[test]
-fn get_refuses_a_capture() {
+fn get_hides_every_value_by_default() {
     let cli = Cli::new();
-    cli.run(&["add", "a/b"], Some("v")).unwrap();
-    // stdout is a pipe in the harness, the same shape as an agent capturing the value
-    let err = cli.run(&["get", "a/b"], None).unwrap_err();
-    assert!(err.contains("not a terminal"), "{err}");
-    assert!(err.contains("passbox copy"), "{err}");
-    assert!(!err.contains("--reveal"), "{err}");
-    // The override is gone, so it is an unknown argument
-    let err = cli.run(&["get", "--reveal", "a/b"], None).unwrap_err();
-    assert!(err.contains("unexpected argument '--reveal'"), "{err}");
+    cli.run(&["add", "a/b"], Some("sekret-pw\nuser: sekret-user"))
+        .unwrap();
+    let out = cli.run(&["get", "a/b"], None).unwrap();
+    assert!(out.contains("password"), "{out}");
+    assert!(out.contains("user"), "{out}");
+    assert!(out.contains("••••"), "{out}");
+    assert!(!out.contains("sekret"), "a value leaked: {out}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&cli.run(&["get", "a/b", "--format", "json"], None).unwrap()).unwrap();
+    assert_eq!(json["kind"], "fields");
+    assert_eq!(json["fields"][1]["name"], "user");
+    assert!(json["fields"][1]["value"].is_null(), "{json}");
+
+    let yaml = cli.run(&["get", "a/b", "--format", "yaml"], None).unwrap();
+    assert!(yaml.contains("value: null"), "{yaml}");
+    assert!(!yaml.contains("sekret"), "{yaml}");
+
+    let one = cli.run(&["get", "a/b", "--field", "user"], None).unwrap();
+    assert!(one.contains("user") && !one.contains("sekret"), "{one}");
+    let err = cli
+        .run(&["get", "a/b", "--field", "pin"], None)
+        .unwrap_err();
+    assert!(err.contains("lists no field pin"), "{err}");
 }
 
-/// The terminal path, reached through the pseudo-terminal `script` opens
 #[test]
-fn get_prints_at_a_terminal() {
+fn get_shows_a_note_as_one_hidden_value() {
     let cli = Cli::new();
-    cli.run(&["add", "a/b"], Some("at-a-terminal")).unwrap();
+    cli.run(
+        &["add", "tls/key", "--blob"],
+        Some("-----BEGIN KEY-----\nabc\n"),
+    )
+    .unwrap();
+    let json: serde_json::Value = serde_json::from_str(
+        &cli.run(&["get", "tls/key", "--format", "json"], None)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(json["kind"], "note");
+    assert!(json["notes"].is_null(), "{json}");
+}
+
+#[test]
+fn get_reveal_refuses_a_capture() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    let err = cli.run(&["get", "--reveal", "a/b"], None).unwrap_err();
+    assert!(err.contains("not a terminal"), "{err}");
+    assert!(err.contains("passbox copy"), "{err}");
+}
+
+/// `get` run at a terminal, reached through the pseudo-terminal `script` opens
+fn at_a_terminal(cli: &Cli, args: &[&str]) -> String {
     let bin = env!("CARGO_BIN_EXE_passbox");
     let mut script = Command::new("script");
     script.envs(
@@ -44,14 +84,44 @@ fn get_prints_at_a_terminal() {
     );
     // BSD script takes the command as arguments, util-linux takes one string
     if cfg!(target_os = "macos") {
-        script.args(["-q", "/dev/null", bin, "get", "a/b"]);
+        script.args(["-q", "/dev/null", bin]).args(args);
     } else {
-        script.args(["-qec", &format!("'{bin}' get a/b"), "/dev/null"]);
+        let line = std::iter::once(format!("'{bin}'"))
+            .chain(args.iter().map(|a| format!("'{a}'")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        script.args(["-qec", &line, "/dev/null"]);
     }
-
     let out = script.stdin(Stdio::null()).output().unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("at-a-terminal"), "{stdout}");
+    // macOS script echoes the end of its empty stdin as `^D` and two backspaces
+    String::from_utf8_lossy(&out.stdout)
+        .replace("\r\n", "\n")
+        .replace("^D\u{8}\u{8}", "")
+}
+
+#[test]
+fn get_reveals_at_a_terminal_and_only_when_asked() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("at-a-terminal\nuser: gb\nfree note"))
+        .unwrap();
+
+    let hidden = at_a_terminal(&cli, &["get", "a/b"]);
+    assert!(!hidden.contains("at-a-terminal"), "{hidden}");
+
+    let whole = at_a_terminal(&cli, &["get", "a/b", "--reveal"]);
+    assert!(
+        whole.contains("at-a-terminal") && whole.contains("free note"),
+        "{whole}"
+    );
+
+    let one = at_a_terminal(&cli, &["get", "a/b", "--reveal", "--field", "user"]);
+    assert_eq!(one.trim(), "gb");
+
+    let json = at_a_terminal(&cli, &["get", "a/b", "--reveal", "--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
+    assert_eq!(json["fields"][0]["value"], "at-a-terminal");
+    assert_eq!(json["fields"][1]["value"], "gb");
+    assert_eq!(json["notes"], "free note");
 }
 
 #[test]

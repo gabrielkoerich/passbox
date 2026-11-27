@@ -9,10 +9,11 @@ use crate::crypto;
 #[cfg(feature = "host")]
 use crate::se;
 use crate::store::{self, Secret, Store};
-use crate::{agent, broker, brokered, read_secret, read_secret_field, unlock};
+use crate::{agent, broker, brokered, read_entry, read_secret, read_secret_field, unlock};
 use crate::{agent_list_names, held_token};
 use age::x25519;
 use anyhow::{Context, Result, bail};
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Read, Write};
 
 #[cfg(feature = "host")]
@@ -132,22 +133,207 @@ fn read_field(store: &Store, name: &str, field: Option<&str>) -> Result<String> 
     }
 }
 
-// get writes the value to stdout, which lands in an agent's context, so it refuses unless
-// stdout is a terminal, with no flag to override it. copy and exec stay clean
-pub(crate) fn get(store: &Store, name: &str, field: Option<&str>) -> Result<()> {
-    let mut out = std::io::stdout();
-    if !out.is_terminal() {
-        bail!(
-            "passbox get writes a secret to stdout and this is not a terminal\n\
-             use `passbox copy {name}`, `passbox exec --stdin {name} -- CMD`, or the \
-             run_with_secret MCP tool"
-        );
+/// How `get` prints an entry
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum Format {
+    Text,
+    Json,
+    Yaml,
+}
+
+/// Whether `get` prints the values or only the field names
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Show {
+    Hidden,
+    Revealed,
+}
+
+impl From<bool> for Show {
+    /// `--reveal`
+    fn from(reveal: bool) -> Self {
+        if reveal { Show::Revealed } else { Show::Hidden }
     }
-    let value = read_field(store, name, field)?;
-    // An entry with fields and no password starts with its empty password line
-    out.write_all(value.strip_prefix('\n').unwrap_or(&value).as_bytes())?;
-    out.write_all(b"\n")?;
+}
+
+/// What `get` shows: each field by name, with its value only when revealed
+struct Shown {
+    show: Show,
+    name: String,
+    note: bool,
+    fields: Vec<(String, Option<String>)>,
+    notes: Option<String>,
+}
+
+/* Without `--reveal`, get shows the field names and hides every value, so a terminal's
+scrollback, a shared screen or an agent driving a terminal sees no secret. The names come from
+the same list `passbox fields` reads, so no value leaves the broker. A revealed value lands in
+whatever reads the terminal, so `--reveal` refuses unless stdout is one, with no flag to
+override it. copy and exec stay clean */
+pub(crate) fn get(
+    store: &Store,
+    name: &str,
+    field: Option<&str>,
+    show: Show,
+    format: Format,
+) -> Result<()> {
+    let shown = if show == Show::Revealed {
+        if !std::io::stdout().is_terminal() {
+            bail!(
+                "passbox get --reveal writes a secret to stdout and this is not a terminal\n\
+                 use `passbox copy {name}`, `passbox exec --stdin {name} -- CMD`, or the \
+                 run_with_secret MCP tool"
+            );
+        }
+        revealed(store, name, field)?
+    } else {
+        hidden(store, name, field)?
+    };
+    let text = match format {
+        Format::Text => text_of(&shown),
+        Format::Json => {
+            let mut json = serde_json::to_string_pretty(&json_of(&shown))?;
+            json.push('\n');
+            json
+        }
+        Format::Yaml => yaml_of(&shown),
+    };
+    std::io::stdout().write_all(text.as_bytes())?;
+    if show == Show::Hidden && std::io::stderr().is_terminal() {
+        eprintln!("values hidden, `--reveal` prints them and `passbox copy {name}` copies one");
+    }
     Ok(())
+}
+
+fn hidden(store: &Store, name: &str, field: Option<&str>) -> Result<Shown> {
+    let labels = field_labels(store, name)?;
+    let note = labels.is_empty();
+    let names = match field {
+        Some(want) if labels.iter().any(|l| l == want) => vec![want.to_string()],
+        Some(want) => bail!("{name} lists no field {want}, `passbox fields {name}` lists them"),
+        None => labels,
+    };
+    Ok(Shown {
+        show: Show::Hidden,
+        name: name.to_string(),
+        note,
+        fields: names.into_iter().map(|n| (n, None)).collect(),
+        notes: None,
+    })
+}
+
+fn revealed(store: &Store, name: &str, field: Option<&str>) -> Result<Shown> {
+    if let Some(want) = field {
+        let value = read_field(store, name, Some(want))?;
+        return Ok(Shown {
+            show: Show::Revealed,
+            name: name.to_string(),
+            note: false,
+            fields: vec![(want.to_string(), Some(value))],
+            notes: None,
+        });
+    }
+    let (value, blob) = read_entry(store, name)?;
+    if blob == Some(true) {
+        return Ok(Shown {
+            show: Show::Revealed,
+            name: name.to_string(),
+            note: true,
+            fields: Vec::new(),
+            notes: Some(value),
+        });
+    }
+    let (fields, notes) = store::parts(&value);
+    let notes = notes.join("\n").trim().to_string();
+    Ok(Shown {
+        show: Show::Revealed,
+        name: name.to_string(),
+        note: false,
+        // An entry with fields and no password starts with its empty password line
+        fields: fields
+            .into_iter()
+            .filter(|(k, v)| !(k == "password" && v.is_empty()))
+            .map(|(k, v)| (k, Some(v)))
+            .collect(),
+        notes: (!notes.is_empty()).then_some(notes),
+    })
+}
+
+const HIDDEN: &str = "••••••••";
+
+fn text_of(shown: &Shown) -> String {
+    let reveal = shown.show == Show::Revealed;
+    // A revealed note, or one revealed field, prints bare, as get always has
+    if reveal && shown.note {
+        return format!("{}\n", shown.notes.as_deref().unwrap_or_default());
+    }
+    if reveal
+        && let [(_, Some(value))] = shown.fields.as_slice()
+        && shown.notes.is_none()
+    {
+        return format!("{value}\n");
+    }
+    let mut out = format!("{}\n", shown.name);
+    if shown.note {
+        let _ = writeln!(out, "  note  {HIDDEN}");
+        return out;
+    }
+    let width = shown
+        .fields
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (key, value) in &shown.fields {
+        let value = value.as_deref().unwrap_or(HIDDEN);
+        let mut lines = value.lines();
+        let _ = writeln!(out, "  {key:width$}  {}", lines.next().unwrap_or_default());
+        for more in lines {
+            let _ = writeln!(out, "  {:width$}  {more}", "");
+        }
+    }
+    if let Some(notes) = &shown.notes {
+        out.push('\n');
+        out.push_str(notes);
+        out.push('\n');
+    }
+    out
+}
+
+fn json_of(shown: &Shown) -> serde_json::Value {
+    serde_json::json!({
+        "name": shown.name,
+        "kind": if shown.note { "note" } else { "fields" },
+        "fields": shown.fields.iter()
+            .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
+            .collect::<Vec<_>>(),
+        "notes": shown.notes,
+    })
+}
+
+/// YAML by hand, every string in double quotes as JSON writes it, which YAML reads the same
+fn yaml_of(shown: &Shown) -> String {
+    let quote = |s: &str| serde_json::to_string(s).unwrap_or_default();
+    let or_null = |v: Option<&str>| v.map_or_else(|| "null".to_string(), quote);
+    let mut out = format!(
+        "name: {}\nkind: {}\n",
+        quote(&shown.name),
+        if shown.note { "note" } else { "fields" }
+    );
+    if shown.fields.is_empty() {
+        out.push_str("fields: []\n");
+    } else {
+        out.push_str("fields:\n");
+        for (k, v) in &shown.fields {
+            let _ = writeln!(
+                out,
+                "  - name: {}\n    value: {}",
+                quote(k),
+                or_null(v.as_deref())
+            );
+        }
+    }
+    let _ = writeln!(out, "notes: {}", or_null(shown.notes.as_deref()));
+    out
 }
 
 // The passphrase is asked before the broker is, so the export costs one Touch ID prompt
@@ -235,6 +421,16 @@ pub(crate) fn ls(store: &Store) -> Result<()> {
 
 /// One label a line, and no value, so Alfred can offer each field to `copy --field`
 pub(crate) fn list_fields(store: &Store, name: &str) -> Result<()> {
+    let labels = field_labels(store, name)?;
+    let mut out = std::io::stdout();
+    for label in labels {
+        writeln!(out, "{label}")?;
+    }
+    Ok(())
+}
+
+/// The field names of an entry, none for a note, with no value leaving the broker
+fn field_labels(store: &Store, name: &str) -> Result<Vec<String>> {
     let labels = if brokered(store) {
         broker::fields(store, name, &agent())?
     } else {
@@ -251,11 +447,7 @@ pub(crate) fn list_fields(store: &Store, name: &str) -> Result<()> {
         broker::append_audit(store, &agent(), name, decision, &broker::own_ancestry(), "")?;
         names?
     };
-    let mut out = std::io::stdout();
-    for label in labels {
-        writeln!(out, "{label}")?;
-    }
-    Ok(())
+    Ok(labels)
 }
 
 pub(crate) fn rm(store: &Store, name: &str) -> Result<()> {

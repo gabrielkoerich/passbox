@@ -119,7 +119,7 @@ fn reply<S: std::io::Read + Write>(
                 }
                 (Some((secret, grant)), _) => {
                     let answer = match request.field.as_str() {
-                        "" => Ok(Answer::whole(secret.value.clone())),
+                        "" => Ok(Answer::entry(secret.value.clone(), &secret)),
                         want => secret.field(want).map(|field| Answer::cut(field, want)),
                     };
                     // A refused field released nothing, so the log says so
@@ -163,12 +163,14 @@ fn reply<S: std::io::Read + Write>(
                     value: Some(answer.value),
                     error: None,
                     field: answer.field,
+                    blob: answer.blob,
                 },
                 Err(e) => Response {
                     ok: false,
                     value: None,
                     error: Some(format!("{e:#}")),
                     field: None,
+                    blob: None,
                 },
             }
         }
@@ -177,6 +179,7 @@ fn reply<S: std::io::Read + Write>(
             value: None,
             error: Some(format!("bad request: {e}")),
             field: None,
+            blob: None,
         },
     };
     writeln!(stream, "{}", serde_json::to_string(&response)?)?;
@@ -202,6 +205,7 @@ fn serve_tailnet(listener: &std::net::TcpListener, shared: &std::sync::Arc<Share
                         tailnet::serve_command()
                     )),
                     field: None,
+                    blob: None,
                 };
                 let _ = writeln!(
                     stream,

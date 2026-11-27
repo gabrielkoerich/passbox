@@ -10,12 +10,13 @@ use std::os::unix::net::UnixStream;
 
 /// A read, of the whole entry or of one `field`, which the broker cuts out so the rest of the entry
 /// never reaches this process. The flag says it did, since a broker older than the field cannot
+/// A read: the value, whether the broker cut it to the field asked for, and whether it is a note
 pub(crate) fn request(
     store: &Store,
     name: &str,
     agent: &str,
     field: &str,
-) -> Result<(String, bool)> {
+) -> Result<(String, bool, Option<bool>)> {
     let response = ask(
         store,
         &Request {
@@ -36,7 +37,7 @@ pub(crate) fn request(
     let value = response
         .value
         .ok_or_else(|| anyhow!("broker sent no value"))?;
-    Ok((value, cut))
+    Ok((value, cut, response.blob))
 }
 
 /// A read carrying a token the caller already holds, such as the one exec mints for its batch

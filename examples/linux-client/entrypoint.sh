@@ -27,7 +27,7 @@ cat <<'MSG'
 
 Ready. This machine holds no secrets. Try:
 
-    passbox get some/secret
+    passbox get some/secret --reveal
 
 A Touch ID prompt appears on the Mac naming this machine, and the value comes back here.
 
