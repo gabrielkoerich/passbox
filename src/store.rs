@@ -1070,22 +1070,62 @@ impl Secret {
 }
 
 /* The `pass` layout, which import keeps: the first line is the secret and later `key: value`
-lines are fields. Reading one field hands a caller the password without the note beside it. */
+lines are fields. Reading one field hands a caller the password without the note beside it. A
+value of more than one line is a YAML block, `key: |` and then its lines indented by two spaces,
+as gopass writes it. Rejected: a YAML parser, which the free notes would break, and whose Rust
+crates are unmaintained or carry an advisory */
 pub(crate) fn fields(value: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let mut lines = value.lines();
+    let mut lines = value.lines().peekable();
     if let Some(first) = lines.next() {
         out.push(("password".to_string(), first.to_string()));
     }
-    for line in lines {
-        if let Some((key, v)) = line.split_once(':') {
-            let (key, v) = (key.trim().to_lowercase(), v.trim());
-            if !key.is_empty() && !v.is_empty() {
-                out.push((key, v.to_string()));
+    while let Some(line) = lines.next() {
+        let Some((key, v)) = line.split_once(':') else {
+            continue;
+        };
+        let (key, v) = (key.trim().to_lowercase(), v.trim());
+        if key.is_empty() {
+            continue;
+        }
+
+        if v == "|" {
+            let mut block = Vec::new();
+            while let Some(next) = lines.next_if(|l| l.starts_with("  ") || l.trim().is_empty()) {
+                block.push(next.strip_prefix("  ").unwrap_or(""));
             }
+            while block.last().is_some_and(|l| l.is_empty()) {
+                block.pop();
+            }
+            if !block.is_empty() {
+                out.push((key, block.join("\n")));
+            }
+        } else if !v.is_empty() {
+            out.push((key, v.to_string()));
         }
     }
     out
+}
+
+/// A field as `fields` reads it back: one `key: value` line, or a block when the value spans lines
+#[cfg(any(feature = "host", test))]
+pub(crate) fn field_line(key: &str, value: &str) -> String {
+    let value = value.trim_end_matches('\n');
+    // A lone `|` on the line would read back as an empty block
+    if !value.contains('\n') && value.trim() != "|" {
+        return format!("{key}: {}", value.trim());
+    }
+    let body: Vec<String> = value
+        .lines()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("  {l}")
+            }
+        })
+        .collect();
+    format!("{key}: |\n{}", body.join("\n"))
 }
 
 /// One field of a value, where an empty first line is no password
@@ -1478,6 +1518,35 @@ mod tests {
         };
         assert!(err.to_string().contains("disagree"), "{err}");
         assert!(!store.pin_path().exists());
+    }
+
+    /// A value of more than one line is a YAML block, read whole and without its indent
+    #[test]
+    fn a_block_field_reads_back_whole() {
+        let value = "pw\nuser: gb\nkey: |\n  -----BEGIN-----\n  a: not a field\n\n  end\nurl: https://x\nfree note";
+        let all = fields(value);
+        assert_eq!(
+            pick("x", value, "key").unwrap(),
+            "-----BEGIN-----\na: not a field\n\nend"
+        );
+        assert_eq!(pick("x", value, "url").unwrap(), "https://x");
+        assert!(
+            !all.iter().any(|(k, _)| k == "a"),
+            "a line inside a block became a field"
+        );
+        assert_eq!(labels(value), ["password", "user", "key", "url"]);
+    }
+
+    #[test]
+    fn a_field_line_round_trips_through_the_parse() {
+        for v in ["one", "two\nlines", "with\n\nblank", "trailing\n", "|"] {
+            let value = format!("pw\n{}", field_line("k", v));
+            assert_eq!(
+                pick("x", &value, "k").unwrap(),
+                v.trim_end_matches('\n'),
+                "{v:?}"
+            );
+        }
     }
 
     #[test]

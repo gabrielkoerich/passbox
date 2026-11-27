@@ -149,7 +149,7 @@ It reads through the `op` CLI, so sign in with `op signin` first and passbox nev
 
 | 1Password | passbox |
 |---|---|
-| Login, password, and any item with a concealed field | the password on the first line, the username, URLs and other fields as `key: value` lines, then the notes. A password with more than one line makes the item a blob |
+| Login, password, and any item with a concealed field | the password on the first line, the username, URLs and other fields as `key: value` lines, a value of more than one line as a `key: |` block, then the notes. A password with more than one line makes the item a blob |
 | Secure note | its text, as a blob. A note with fields, such as several passwords, is kept as a login is |
 | Document | its text as a blob, or skipped when it is binary |
 | SSH key | the OpenSSH key as a blob, of every type. The agent offers Ed25519 and ECDSA keys, and the report names any other, such as RSA |
@@ -822,7 +822,15 @@ cargo test secure_enclave_round_trip -- --ignored   # the real Enclave, needs a 
 
 ### Fields in one entry
 
-An entry can hold more than a password. The first line is the secret, later `key: value` lines are fields, which is the layout `pass` uses and `import pass` keeps.
+An entry can hold more than a password. The first line is the secret, later `key: value` lines are fields, which is the layout `pass` uses and `import pass` keeps. A field whose value spans lines is a YAML block, as gopass writes it: `key: |`, then each line indented by two spaces.
+
+```
+hunter2
+username: gb
+license key: |
+  line one
+  line two
+```
 
 ```bash
 passbox get db/prod                   # the whole thing
