@@ -1,6 +1,6 @@
 # Examples
 
-Each is a small client over the CLI, with a runnable self-check against a throwaway store. None reads a value into the calling process, since `passbox get` refuses a pipe. The Rust one has no dependency: it runs itself under `passbox exec` and reads its environment.
+Each is a small client over the CLI, with a runnable self-check against a throwaway store. None reads a value into the calling process, since `passbox get --reveal` refuses a pipe. The Rust one has no dependency: it runs itself under `passbox exec` and reads its environment.
 
 | | Run the self-check |
 |---|---|

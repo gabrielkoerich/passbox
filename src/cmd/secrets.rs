@@ -162,6 +162,8 @@ struct Shown {
     note: bool,
     fields: Vec<(String, Option<String>)>,
     notes: Option<String>,
+    /// The whole value as stored, which revealed text prints untouched
+    raw: Option<String>,
 }
 
 /* Without `--reveal`, get shows the field names and hides every value, so a terminal's
@@ -205,11 +207,21 @@ pub(crate) fn get(
 }
 
 fn hidden(store: &Store, name: &str, field: Option<&str>) -> Result<Shown> {
-    let labels = field_labels(store, name)?;
-    let note = labels.is_empty();
+    // An entry whose lines read as no field lists none, and it is not a note either
+    let (labels, note) = match field_labels(store, name) {
+        Ok(labels) => {
+            let note = labels.is_empty();
+            (labels, note)
+        }
+        Err(e) if e.to_string() == format!("{name} has no field to copy") => (Vec::new(), false),
+        Err(e) => return Err(e),
+    };
     let names = match field {
         Some(want) if labels.iter().any(|l| l == want) => vec![want.to_string()],
-        Some(want) => bail!("{name} lists no field {want}, `passbox fields {name}` lists them"),
+        Some(want) => bail!(
+            "{name} lists no field {want}, `passbox get {name} --reveal --field {want}` reads a \
+             field by its exact name"
+        ),
         None => labels,
     };
     Ok(Shown {
@@ -218,6 +230,7 @@ fn hidden(store: &Store, name: &str, field: Option<&str>) -> Result<Shown> {
         note,
         fields: names.into_iter().map(|n| (n, None)).collect(),
         notes: None,
+        raw: None,
     })
 }
 
@@ -230,6 +243,7 @@ fn revealed(store: &Store, name: &str, field: Option<&str>) -> Result<Shown> {
             note: false,
             fields: vec![(want.to_string(), Some(value))],
             notes: None,
+            raw: None,
         });
     }
     let (value, blob) = read_entry(store, name)?;
@@ -239,7 +253,8 @@ fn revealed(store: &Store, name: &str, field: Option<&str>) -> Result<Shown> {
             name: name.to_string(),
             note: true,
             fields: Vec::new(),
-            notes: Some(value),
+            notes: Some(value.clone()),
+            raw: Some(value),
         });
     }
     let (fields, notes) = store::parts(&value);
@@ -255,21 +270,21 @@ fn revealed(store: &Store, name: &str, field: Option<&str>) -> Result<Shown> {
             .map(|(k, v)| (k, Some(v)))
             .collect(),
         notes: (!notes.is_empty()).then_some(notes),
+        // An entry with fields and no password starts with its empty password line
+        raw: Some(value.strip_prefix('\n').unwrap_or(&value).to_string()),
     })
 }
 
 const HIDDEN: &str = "••••••••";
 
 fn text_of(shown: &Shown) -> String {
-    let reveal = shown.show == Show::Revealed;
-    // A revealed note, or one revealed field, prints bare, as get always has
-    if reveal && shown.note {
-        return format!("{}\n", shown.notes.as_deref().unwrap_or_default());
-    }
-    if reveal
-        && let [(_, Some(value))] = shown.fields.as_slice()
-        && shown.notes.is_none()
-    {
+    // Revealed text prints the value as stored, or the one field asked for, as get always has
+    if shown.show == Show::Revealed {
+        let value = match (&shown.raw, shown.fields.as_slice()) {
+            (Some(raw), _) => raw.as_str(),
+            (None, [(_, Some(value))]) => value.as_str(),
+            _ => "",
+        };
         return format!("{value}\n");
     }
     let mut out = format!("{}\n", shown.name);
@@ -310,9 +325,30 @@ fn json_of(shown: &Shown) -> serde_json::Value {
     })
 }
 
-/// YAML by hand, every string in double quotes as JSON writes it, which YAML reads the same
+/// A YAML double-quoted string, escaping every character YAML does not allow raw, such as DEL,
+/// the C1 controls and the line breaks it would fold
+fn yaml_quoted(text: &str) -> String {
+    let mut out = String::from('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{feff}') => {
+                let _ = write!(out, "\\u{:04X}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// YAML by hand, every string double quoted, so `null`, `yes` or `- x` stay strings
 fn yaml_of(shown: &Shown) -> String {
-    let quote = |s: &str| serde_json::to_string(s).unwrap_or_default();
+    let quote = |s: &str| yaml_quoted(s);
     let or_null = |v: Option<&str>| v.map_or_else(|| "null".to_string(), quote);
     let mut out = format!(
         "name: {}\nkind: {}\n",
@@ -631,6 +667,16 @@ fn extra_lines(input: impl std::io::BufRead) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+
+    /// YAML refuses DEL and the C1 controls even quoted, and folds NEL into a space
+    #[test]
+    fn yaml_quotes_escape_what_yaml_does_not_allow_raw() {
+        assert_eq!(super::yaml_quoted("null"), "\"null\"");
+        assert_eq!(super::yaml_quoted("a\u{7f}b"), "\"a\\u007Fb\"");
+        assert_eq!(super::yaml_quoted("a\u{85}b"), "\"a\\u0085b\"");
+        assert_eq!(super::yaml_quoted("q\"\\\n"), "\"q\\\"\\\\\\n\"");
+        assert_eq!(super::yaml_quoted("ação"), "\"ação\"");
+    }
     use super::{extra_lines, named_fields};
     use crate::store;
 

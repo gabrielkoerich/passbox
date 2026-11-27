@@ -124,6 +124,77 @@ fn get_reveals_at_a_terminal_and_only_when_asked() {
     assert_eq!(json["notes"], "free note");
 }
 
+/// Revealed text is the value as stored, byte for byte, whatever its lines look like
+#[test]
+fn get_reveal_prints_the_value_as_stored() {
+    let cli = Cli::new();
+    for (name, value) in [
+        ("svc/json", "{\n  \"Type\": \"sa\",\n  \"key\": \"abc\"\n}"),
+        (
+            "odd/lines",
+            "pw1\nUser: Gb  \nfree line\nurl:\nempty: |\nlast: x",
+        ),
+        ("no/password", "\nusername: gb"),
+    ] {
+        cli.run(&["add", name], Some(value)).unwrap();
+        let shown = at_a_terminal(&cli, &["get", name, "--reveal"]);
+        let want = value.strip_prefix('\n').unwrap_or(value);
+        assert_eq!(shown.strip_suffix('\n').unwrap_or(&shown), want, "{name}");
+    }
+
+    cli.run(
+        &["add", "tls/key", "--blob"],
+        Some("-----BEGIN KEY-----\n  abc\n"),
+    )
+    .unwrap();
+    let note = at_a_terminal(&cli, &["get", "tls/key", "--reveal"]);
+    assert_eq!(note, "-----BEGIN KEY-----\n  abc\n");
+}
+
+#[test]
+fn get_encrypt_takes_no_reveal_or_format() {
+    let cli = Cli::new();
+    cli.run(&["add", "a/b"], Some("v")).unwrap();
+    for extra in ["--reveal", "--format=json"] {
+        let err = cli
+            .run(&["get", "a/b", "--encrypt", extra], None)
+            .unwrap_err();
+        assert!(err.contains("cannot be used with"), "{extra}: {err}");
+    }
+}
+
+/// A token lists the fields of what it opens with no prompt, so a job holding one never blocks
+#[test]
+#[cfg_attr(
+    not(feature = "mock-enclave"),
+    ignore = "needs --features mock-enclave"
+)]
+fn a_token_lists_fields_without_a_prompt() {
+    let bound = Bound::new();
+    let token = bound
+        .run(&["grant", "demo/one", "--for", "60"], None)
+        .unwrap();
+    bound.forget_prompts();
+    let out = bound
+        .cmd()
+        .env("PASSBOX_TOKEN", token.trim())
+        .args(["get", "demo/one"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("password") && !stdout.contains("value-one"),
+        "{stdout}"
+    );
+    assert!(bound.prompts().is_empty(), "{:?}", bound.prompts());
+}
+
 #[test]
 #[ignore = "needs a clipboard session"]
 fn copy_puts_the_value_on_the_clipboard() {
