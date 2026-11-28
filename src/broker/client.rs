@@ -9,13 +9,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
 /// A read, of the whole entry or of one `field`, which the broker cuts out so the rest of the entry
-/// never reaches this process. The flag says it did, since a broker older than the field cannot
+/// never reaches this process. It returns the value, whether the broker cut it, and whether it is a note
 pub(crate) fn request(
     store: &Store,
     name: &str,
     agent: &str,
     field: &str,
-) -> Result<(String, bool)> {
+) -> Result<(String, bool, Option<bool>)> {
     let response = ask(
         store,
         &Request {
@@ -36,7 +36,7 @@ pub(crate) fn request(
     let value = response
         .value
         .ok_or_else(|| anyhow!("broker sent no value"))?;
-    Ok((value, cut))
+    Ok((value, cut, response.blob))
 }
 
 /// A read carrying a token the caller already holds, such as the one exec mints for its batch
@@ -108,7 +108,7 @@ pub(crate) fn fields(store: &Store, name: &str, agent: &str) -> Result<Vec<Strin
             name: name.to_string(),
             agent: agent.to_string(),
             op: Op::Fields,
-            token: String::new(),
+            token: crate::held_token().unwrap_or_default().to_string(),
             ttl: 0,
             names: Vec::new(),
             action: String::new(),

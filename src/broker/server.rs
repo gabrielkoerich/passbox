@@ -13,7 +13,7 @@ use super::{
     Answer, Broker, KEY_TTL_SECS, MAX_GRANT_SECS, Op, Origin, Request, Response, Shared,
     TAILNET_PORT, UNNAMED, clock,
 };
-use crate::store::{self, Store};
+use crate::store::{self, Secret, Store};
 use anyhow::Result;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
@@ -71,6 +71,25 @@ fn serve_ssh(listener: &UnixListener, shared: &std::sync::Arc<Shared>) {
     }
 }
 
+/// What a token opens for one request, and the audit decision. A refused field released nothing,
+/// so the log says so
+fn token_answer(request: &Request, secret: &Secret) -> (Result<Answer>, &'static str) {
+    let answer = match (request.op, request.field.as_str()) {
+        // Names only, the list `passbox fields` reads, less than the token opens
+        (Op::Fields, _) => secret
+            .field_names()
+            .map(|names| Answer::whole(names.join("\n"))),
+        (_, "") => Ok(Answer::entry(secret.value.clone(), secret)),
+        (_, want) => secret.field(want).map(|field| Answer::cut(field, want)),
+    };
+    let decision = match (answer.is_ok(), request.op) {
+        (true, Op::Fields) => "fields listed by token",
+        (true, _) => "by token",
+        (false, _) => "withheld",
+    };
+    (answer, decision)
+}
+
 /// True when the request was a phone's `pending` call, which is held open and is not activity
 fn reply<S: std::io::Read + Write>(
     shared: &Shared,
@@ -100,10 +119,11 @@ fn reply<S: std::io::Read + Write>(
             if origin == Origin::Tailnet {
                 request.agent = remote_agent(&request.agent, caller);
             }
-            // A token read or a child grant needs no key and no prompt, so it never waits behind one
-            let by_token = (request.op == Op::Get && !request.token.is_empty())
-                .then(|| token_value(&shared.tokens, &shared.store, &request.token, &request.name))
-                .flatten();
+            // A token read, its field list or a child grant needs no key and no prompt, so it never waits
+            let by_token = (matches!(request.op, Op::Get | Op::Fields)
+                && !request.token.is_empty())
+            .then(|| token_value(&shared.tokens, &shared.store, &request.token, &request.name))
+            .flatten();
             let child = (request.op == Op::Grant && !request.token.is_empty())
                 .then(|| mint_child(shared, &request, caller))
                 .flatten();
@@ -118,16 +138,7 @@ fn reply<S: std::io::Read + Write>(
                     phone::handle(shared, &request, caller, origin).map(Answer::whole)
                 }
                 (Some((secret, grant)), _) => {
-                    let answer = match request.field.as_str() {
-                        "" => Ok(Answer::whole(secret.value.clone())),
-                        want => secret.field(want).map(|field| Answer::cut(field, want)),
-                    };
-                    // A refused field released nothing, so the log says so
-                    let decision = if answer.is_ok() {
-                        "by token"
-                    } else {
-                        "withheld"
-                    };
+                    let (answer, decision) = token_answer(&request, &secret);
                     shared
                         .store
                         .recipient()
@@ -163,12 +174,14 @@ fn reply<S: std::io::Read + Write>(
                     value: Some(answer.value),
                     error: None,
                     field: answer.field,
+                    blob: answer.blob,
                 },
                 Err(e) => Response {
                     ok: false,
                     value: None,
                     error: Some(format!("{e:#}")),
                     field: None,
+                    blob: None,
                 },
             }
         }
@@ -177,6 +190,7 @@ fn reply<S: std::io::Read + Write>(
             value: None,
             error: Some(format!("bad request: {e}")),
             field: None,
+            blob: None,
         },
     };
     writeln!(stream, "{}", serde_json::to_string(&response)?)?;
@@ -202,6 +216,7 @@ fn serve_tailnet(listener: &std::net::TcpListener, shared: &std::sync::Arc<Share
                         tailnet::serve_command()
                     )),
                     field: None,
+                    blob: None,
                 };
                 let _ = writeln!(
                     stream,

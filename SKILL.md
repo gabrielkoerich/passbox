@@ -35,7 +35,8 @@ passbox skill check        # exits 1 if the installed copy is older or differs
 ## Reading a secret
 
 ```bash
-passbox get github/token                    # prints it, refuses unless stdout is a terminal
+passbox get github/token                    # its field names, every value hidden, safe anywhere
+passbox get github/token --reveal           # prints it, refuses unless stdout is a terminal
 passbox copy github/token                   # to the clipboard, cleared after 20 seconds
 passbox ls                                  # tree of names, needs a prompt
 ```
@@ -74,7 +75,7 @@ A **grant** is one approval that mints a **token**: a bearer string that opens e
 
 ```bash
 export PASSBOX_TOKEN=$(passbox grant acme/signing-key acme/api-key --for 3600)
-passbox get acme/signing-key        # no prompt, audited as `by token`
+passbox get acme/signing-key --reveal   # no prompt, audited as `by token`
 ```
 
 The token goes to stdout and the covered names to stderr, so `$(...)` captures the token alone.
@@ -155,8 +156,9 @@ Every SSH signature prompts, so a job that connects to hosts while the owner is 
 The first line is the secret, later `key: value` lines are fields. This is the `pass` layout, which `import pass` keeps.
 
 ```bash
-passbox get db/prod                   # the whole thing
-passbox get db/prod --field username  # just that one
+passbox get db/prod                   # the field names, values hidden
+passbox get db/prod --reveal          # the whole thing, at a terminal
+passbox get db/prod --reveal --field username  # just that one
 ```
 
 Use `--field` when handing a value to something that needs only the password: it leaves the note and the username behind. `examples/python/passbox.py` in the repo parses the same layout.
@@ -171,7 +173,7 @@ A Linux box with no Enclave can ask a Mac. The client holds no store and no key.
 
 ```bash
 echo "100.x.y.z" > ~/.passbox/host    # the Mac's tailnet address or MagicDNS name
-passbox get github/token              # prompt appears on the Mac
+passbox get github/token --reveal     # prompt appears on the Mac
 ```
 
 Three things have to be true on the Mac, and each fails silently in its own way:

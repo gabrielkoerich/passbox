@@ -143,7 +143,7 @@ passbox ls                                               # names only
 
 Set `PASSBOX_AGENT=<your name>` so the prompt names you. Without it the prompt names the first program in your process chain that is not a shell, such as `claude`, and a client on another machine shows as `passbox`.
 
-`passbox get` prints a value to stdout. It exists for a person at a terminal, and it refuses when stdout is not a terminal, which is where you run. Its output would land in your context, so use `exec` or `run_with_secret`. For the clipboard a person uses `passbox copy`, which never routes the value through stdout.
+`passbox get` shows an entry's field names with every value hidden, which is safe for you to run. `passbox get --reveal` prints the values to stdout. It exists for a person at a terminal, and it refuses when stdout is not a terminal. Never run it, even in a terminal you drive, which passes that check. Its output would land in your context, so use `exec` or `run_with_secret`. For the clipboard a person uses `passbox copy`, which never routes the value through stdout.
 
 To store a secret the user gives you, pipe it in. Never write it to a file and never echo it:
 

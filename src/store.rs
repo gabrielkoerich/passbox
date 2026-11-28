@@ -1075,17 +1075,25 @@ value of more than one line is a YAML block, `key: |` and then its lines indente
 as gopass writes it. Rejected: a YAML parser, which the free notes would break, and whose Rust
 crates are unmaintained or carry an advisory */
 pub(crate) fn fields(value: &str) -> Vec<(String, String)> {
+    parts(value).0
+}
+
+/// The fields, and the lines that are none, the free notes, in the order they are written
+pub(crate) fn parts(value: &str) -> (Vec<(String, String)>, Vec<&str>) {
     let mut out = Vec::new();
+    let mut notes = Vec::new();
     let mut lines = value.lines().peekable();
     if let Some(first) = lines.next() {
         out.push(("password".to_string(), first.to_string()));
     }
     while let Some(line) = lines.next() {
         let Some((key, v)) = line.split_once(':') else {
+            notes.push(line);
             continue;
         };
         let (key, v) = (key.trim().to_lowercase(), v.trim());
-        if key.is_empty() {
+        if key.is_empty() || v.is_empty() {
+            notes.push(line);
             continue;
         }
 
@@ -1100,11 +1108,11 @@ pub(crate) fn fields(value: &str) -> Vec<(String, String)> {
             if !block.is_empty() {
                 out.push((key, block.join("\n")));
             }
-        } else if !v.is_empty() {
+        } else {
             out.push((key, v.to_string()));
         }
     }
-    out
+    (out, notes)
 }
 
 /// A field as `fields` reads it back: one `key: value` line, or a block when the value spans lines

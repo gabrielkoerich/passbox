@@ -156,6 +156,9 @@ pub(crate) struct Response {
     /// The field the value was cut to, absent from a broker that cuts none
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+    /// Whether a whole value is a note, which has no fields, absent from a broker older than it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob: Option<bool>,
 }
 
 /// A value, and the field it was cut to. Only the code that cuts sets the field, and the reply
@@ -164,18 +167,33 @@ pub(crate) struct Response {
 struct Answer {
     value: String,
     field: Option<String>,
+    blob: Option<bool>,
 }
 
 #[cfg(feature = "host")]
 impl Answer {
     fn whole(value: String) -> Self {
-        Answer { value, field: None }
+        Answer {
+            value,
+            field: None,
+            blob: None,
+        }
+    }
+
+    /// A whole secret, which says whether it is a note
+    fn entry(value: String, secret: &Secret) -> Self {
+        Answer {
+            value,
+            field: None,
+            blob: Some(secret.blob),
+        }
     }
 
     fn cut(value: String, field: &str) -> Self {
         Answer {
             value,
             field: Some(field.to_string()),
+            blob: None,
         }
     }
 }
@@ -473,7 +491,7 @@ impl Broker {
         {
             let answer = sshkey::release(&request.name, &secret.value, "").and_then(|value| {
                 match request.field.as_str() {
-                    "" => Ok(Answer::whole(value)),
+                    "" => Ok(Answer::entry(value, &secret)),
                     want => secret.field(want).map(|field| Answer::cut(field, want)),
                 }
             });
@@ -522,7 +540,7 @@ impl Broker {
             }
         };
         let answer = match request.field.as_str() {
-            "" => Answer::whole(value),
+            "" => Answer::entry(value, &secret),
             want => match secret.field(want) {
                 Ok(field) => Answer::cut(field, want),
                 Err(e) => {

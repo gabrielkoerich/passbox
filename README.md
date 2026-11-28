@@ -56,7 +56,8 @@ The release binary is statically linked against musl, so it runs on any distribu
 ```bash
 printf 'ghp_xxx' | passbox add github/token
 passbox ls
-passbox get github/token      # prints it, for a terminal
+passbox get github/token      # its field names, every value hidden
+passbox get github/token --reveal   # prints it, for a terminal
 passbox copy github/token     # to the clipboard, cleared after 20 seconds
 ```
 
@@ -705,7 +706,7 @@ curl -fsSL -o passbox.tar.gz \
 tar -xzf passbox.tar.gz && sudo install passbox /usr/local/bin/
 
 echo "100.x.y.z" > ~/.passbox/host      # the Mac's tailnet address, or its MagicDNS name
-passbox get github/token
+passbox get github/token --reveal
 ```
 
 The client appends port 8787 when the line has no port, and `host:port` names another. Use a name or an IPv4 address, since the colons of an IPv6 address read as a port. The release binary is x86_64. On ARM, such as a Raspberry Pi, build it with `cargo install passbox --no-default-features`.
@@ -722,7 +723,7 @@ The client appends port 8787 when the line has no port, and `host:port` names an
 fly launch --no-deploy --name passbox-poc
 fly secrets set TS_AUTHKEY=tskey-auth-... PASSBOX_HOST=100.x.y.z
 fly deploy --ha=false
-fly ssh console --pty -C "passbox get github/token"
+fly ssh console --pty -C "passbox get github/token --reveal"
 ```
 
 Give the container a real tun device. `tailscaled --tun=userspace-networking` reaches the tailnet only through a SOCKS proxy, so an ordinary `connect()` to a 100.x address times out with no hint why. The entrypoint uses `/dev/net/tun` when the platform provides one.
@@ -833,13 +834,17 @@ license key: |
 ```
 
 ```bash
-passbox get db/prod                   # the whole thing
-passbox get db/prod --field username  # just that one
+passbox get db/prod                   # the field names, every value hidden
+passbox get db/prod --reveal          # the whole thing
+passbox get db/prod --reveal --field username  # just that one
+passbox get db/prod --format json     # the fields as JSON, each value null unless --reveal
 passbox copy db/prod --field username # that one, to the clipboard
 passbox fields db/prod                # the field names, such as password, username, url, and none for a note
 ```
 
 At a terminal, `passbox add db/prod --field username --field url` asks for the password hidden and twice, as usual, then asks for each field by name. `-m` then reads more fields and notes one per line until an empty line. Field values and notes show as you type. Without either, `add` asks for the password alone. Piped input is stored whole.
+
+`get` hides every value unless `--reveal`, so its output is safe in a terminal's scrollback, on a shared screen, in a pipe or in front of an agent. `--reveal` prints the values only when stdout is a terminal. `--format json` and `--format yaml` give the same entry as data: its name, whether it is a note, each field with its value, and the free notes, every value `null` until revealed.
 
 Reading one field hands a caller the password without the note beside it. The broker cuts the field out, so the rest of the entry never leaves it. A note is one text and has no fields, so `--field` on a note is refused.
 
@@ -866,7 +871,7 @@ passbox exec --env API_KEY=acme/api --env DB=acme/db -- ./deploy
 
 One prompt covers every `--env`. The whole entry lands in the variable, so a program that wants a field splits the `key: value` lines itself. [`examples/rust`](examples/rust) runs itself this way.
 
-There is no in-process read. `passbox get` refuses a pipe, and the `passbox` crate is the CLI alone since 2.0.0, so `cargo install passbox` is still how it installs outside Homebrew.
+There is no in-process read. `passbox get --reveal` refuses a pipe, and the `passbox` crate is the CLI alone since 2.0.0, so `cargo install passbox` is still how it installs outside Homebrew.
 
 [`examples/`](examples) also holds [Python](examples/python) and [TypeScript](examples/typescript) clients, each with a runnable self-check. The same shape works in any language: shell out to `passbox exec` to hand a secret to a child process, and mint one grant per process rather than one per read.
 

@@ -29,7 +29,7 @@ docker run -it --rm \
 Then inside:
 
 ```bash
-passbox get github/token
+passbox get github/token --reveal
 ```
 
 `PASSBOX_HOST` is the Mac's tailnet name, or `name:port` for a port other than 8787. It can also live in `~/.passbox/host`, which is what the entrypoint writes.
